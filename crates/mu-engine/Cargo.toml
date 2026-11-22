@@ -10,7 +10,9 @@ fancy-regex = "0.20.2"
 mu-ansi = { version = "0.1.0", path = "../mu-ansi" }
 mu-config = { version = "0.1.0", path = "../mu-config" }
 mu-net = { version = "0.1.0", path = "../mu-net" }
+serde_json = { version = "1.0.154", features = ["preserve_order"] }
 tokio = { version = "1.54.1", features = ["sync"] }
+ureq = "3.5.2"
 
 [dev-dependencies]
 tempfile = "3.27.0"

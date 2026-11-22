@@ -10,11 +10,14 @@ use gtk::prelude::*;
 use gtk::{gio, glib};
 use mu_ansi::Palette;
 use mu_config::{Character, World};
-use mu_engine::{Engine, Output, Status, Target};
+use mu_ansi::StyledLine;
+use mu_engine::{Engine, Output, Status, Target, WebViewCommand};
 
 use crate::app::AppState;
 use crate::input::InputView;
+use crate::media_player::MediaPlayer;
 use crate::output::OutputView;
+use crate::stats_pane::StatsPane;
 
 /// The most events handled in one go before letting GTK redraw.
 const BATCH_LIMIT: usize = 500;
@@ -32,9 +35,14 @@ pub struct SessionView {
     disconnected: RefCell<Option<String>>,
     /// An important trigger fired while the tab wasn't selected.
     important: Cell<bool>,
-    spawn_tabs: gtk::Notebook,
+    /// The side dock: spawn windows, stat panes and web views, as tabs.
+    side: gtk::Notebook,
     spawns: RefCell<HashMap<String, Rc<OutputView>>>,
+    stats: RefCell<HashMap<String, StatsPane>>,
+    /// MCP status text, shown under the output.
+    status: gtk::Label,
     sounds: RefCell<Vec<gtk::MediaFile>>,
+    media: Rc<MediaPlayer>,
     on_open_uri: RefCell<Option<Box<dyn Fn(&str)>>>,
     on_logging_changed: RefCell<Option<Box<dyn Fn()>>>,
 }
@@ -46,16 +54,27 @@ impl SessionView {
         let output = OutputView::new(Palette::default(), settings.scrollback_lines);
         let input = InputView::new(settings.input_history_size);
 
+        let status = gtk::Label::builder()
+            .xalign(0.0)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .margin_start(10)
+            .margin_end(10)
+            .margin_top(3)
+            .margin_bottom(3)
+            .css_classes(["caption", "dim-label"])
+            .visible(false)
+            .build();
         let main = gtk::Box::new(gtk::Orientation::Vertical, 0);
         main.append(&output.scrolled);
+        main.append(&status);
         main.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
         main.append(&input.root);
 
-        let spawn_tabs = gtk::Notebook::builder().scrollable(true).visible(false).build();
+        let side = gtk::Notebook::builder().scrollable(true).visible(false).build();
         let root = gtk::Paned::builder()
             .orientation(gtk::Orientation::Horizontal)
             .start_child(&main)
-            .end_child(&spawn_tabs)
+            .end_child(&side)
             .resize_start_child(true)
             .resize_end_child(false)
             .shrink_end_child(false)
@@ -71,9 +90,12 @@ impl SessionView {
             generation: Cell::new(0),
             disconnected: RefCell::default(),
             important: Cell::new(false),
-            spawn_tabs,
+            side,
             spawns: RefCell::default(),
+            stats: RefCell::default(),
+            status,
             sounds: RefCell::default(),
+            media: Rc::default(),
             on_open_uri: RefCell::default(),
             on_logging_changed: RefCell::default(),
         });
@@ -288,6 +310,32 @@ impl SessionView {
                         f();
                     }
                 }
+                Output::Stats { pane, data } => self.update_stats(&pane, data.as_ref()),
+                Output::Media(command) => {
+                    let weak = Rc::downgrade(self);
+                    let notice: Rc<dyn Fn(String)> = Rc::new(move |text| {
+                        if let Some(this) = weak.upgrade() {
+                            this.output.notice(&text);
+                        }
+                    });
+                    self.media.run(command, notice);
+                }
+                Output::StatusText(text) => {
+                    self.status.set_visible(!text.is_empty());
+                    self.status.set_label(&text);
+                }
+                Output::Edit(request) => {
+                    let parent = self.root.root().and_downcast::<gtk::Window>();
+                    let weak = Rc::downgrade(self);
+                    crate::edit_window::show(parent.as_ref(), &request.clone(), move |text| {
+                        if let Some(this) = weak.upgrade() {
+                            let out = this.engine.borrow_mut().save_edit(&request, &text);
+                            this.apply(out);
+                        }
+                    });
+                }
+                Output::WebView(command) => self.webview(command),
+                Output::Gmcp { .. } | Output::Received(_) | Output::Sent(_) => {}
             }
         }
     }
@@ -305,18 +353,65 @@ impl SessionView {
                 this.follow_link(uri);
             }
         });
-        view.scrolled.set_size_request(260, -1);
-        self.spawn_tabs.append_page(&view.scrolled, Some(&gtk::Label::new(Some(name))));
-        if !self.spawn_tabs.is_visible() {
-            self.spawn_tabs.set_visible(true);
+        self.add_side_tab(&view.scrolled, name);
+        self.spawns.borrow_mut().insert(name.to_string(), view.clone());
+        view
+    }
+
+    /// Adds a tab to the side dock, showing the dock if it was hidden.
+    fn add_side_tab(&self, widget: &impl IsA<gtk::Widget>, title: &str) {
+        widget.set_size_request(260, -1);
+        self.side.append_page(widget, Some(&gtk::Label::new(Some(title))));
+        if !self.side.is_visible() {
+            self.side.set_visible(true);
             // Give the main output about two thirds of the width.
             let width = self.root.width();
             if width > 0 {
                 self.root.set_position(width * 2 / 3);
             }
         }
-        self.spawns.borrow_mut().insert(name.to_string(), view.clone());
-        view
+    }
+
+    fn remove_side_tab(&self, widget: &impl IsA<gtk::Widget>) {
+        if let Some(n) = self.side.page_num(widget) {
+            self.side.remove_page(Some(n));
+        }
+        if self.side.n_pages() == 0 {
+            self.side.set_visible(false);
+        }
+    }
+
+    fn update_stats(&self, name: &str, data: Option<&mu_engine::stats::StatPane>) {
+        let mut stats = self.stats.borrow_mut();
+        match data {
+            Some(data) => {
+                if !stats.contains_key(name) {
+                    let pane = StatsPane::new();
+                    self.add_side_tab(&pane.root, name);
+                    stats.insert(name.to_string(), pane);
+                }
+                stats[name].update(data);
+            }
+            None => {
+                if let Some(pane) = stats.remove(name) {
+                    self.remove_side_tab(&pane.root);
+                }
+            }
+        }
+    }
+
+    #[cfg(not(feature = "webview"))]
+    fn webview(&self, command: WebViewCommand) {
+        let WebViewCommand::Open(open) = command else { return };
+        let who = if open.from_server { "The server wants" } else { "You asked" };
+        self.output.notice(&format!(
+            "{who} to open a web view, but this build doesn't include them. Install webkitgtk-6.0 and build with --features webview."
+        ));
+        if let Some(url) = open.url {
+            let mut line = StyledLine::plain(format!("Open {url} in your browser instead"));
+            line.linkify();
+            self.output.append_line(&line);
+        }
     }
 
     fn play_sound(&self, path: &str) {
@@ -331,6 +426,13 @@ impl SessionView {
         let mut sounds = self.sounds.borrow_mut();
         sounds.retain(|m| !m.is_ended() && m.error().is_none());
         let media = gtk::MediaFile::for_filename(&path);
+        let output = Rc::downgrade(&self.output);
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        media.connect_error_notify(move |media| {
+            if let (Some(output), Some(e)) = (output.upgrade(), media.error()) {
+                output.notice(&crate::media_player::describe_error(&name, &e));
+            }
+        });
         media.play();
         sounds.push(media);
     }

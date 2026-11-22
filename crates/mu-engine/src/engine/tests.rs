@@ -143,7 +143,7 @@ fn prompts_run_triggers_but_partial_lines_do_not() {
     assert!(matches!(out[0], Output::Prompt { terminated: false, .. }));
     assert!(sent(&mut rx).is_empty());
     let out = e.handle_event(SessionEvent::Prompt("HP: 10>".into()));
-    assert!(matches!(out[0], Output::Prompt { terminated: true, .. }));
+    assert!(out.iter().any(|o| matches!(o, Output::Prompt { terminated: true, .. })));
     assert_eq!(sent(&mut rx), vec!["ok"]);
 }
 
@@ -261,4 +261,90 @@ fn reload_picks_up_new_rules() {
     assert_eq!(out.len(), 1, "the broken regex is reported");
     e.handle_event(SessionEvent::Line("hi".into()));
     assert_eq!(sent(&mut rx), vec!["wave"]);
+}
+
+fn gmcp(package: &str, data: &str) -> SessionEvent {
+    SessionEvent::Gmcp { package: package.into(), data: data.into() }
+}
+
+#[test]
+fn gmcp_stats_media_and_debug() {
+    let (mut e, _rx) = engine(&config(Rules::default(), Rules::default(), Rules::default()));
+    let out = e.handle_event(gmcp("Beip.Stats", r#"{"Player":{"values":{"HP":{"int":5}}}}"#));
+    assert!(out.iter().any(|o| matches!(o, Output::Stats { pane, data: Some(p) } if pane == "Player" && p.values.len() == 1)));
+    assert!(out.iter().any(|o| matches!(o, Output::Gmcp { package, .. } if package == "Beip.Stats")));
+
+    e.handle_event(gmcp("Client.Media.Default", r#"{"url":"https://x.org/"}"#));
+    let out = e.handle_event(gmcp("client.media.play", r#"{"name":"a.wav"}"#));
+    assert!(out.iter().any(|o| matches!(o, Output::Media(crate::media::MediaCommand::Play { url, .. }) if url == "https://x.org/a.wav")));
+    let out = e.handle_event(gmcp("Client.Media.Play", "{}"));
+    assert!(!notices(&out).is_empty());
+
+    assert_eq!(notices(&e.submit("/gmcp", false)), vec!["GMCP traffic is shown"]);
+    let out = e.handle_event(gmcp("Char.Vitals", r#"{"hp":1}"#));
+    assert_eq!(notices(&out), vec![r#"GMCP ← Char.Vitals {"hp":1}"#]);
+}
+
+#[test]
+fn webview_requests() {
+    let (mut e, _rx) = engine(&config(Rules::default(), Rules::default(), Rules::default()));
+    let out = e.handle_event(gmcp(
+        "WebView.Open",
+        r#"{"id":"Editor","dock":"right","url":"https://x.org/","http-request-headers":{"X-Token":"abc"}}"#,
+    ));
+    let open = out.iter().find_map(|o| match o {
+        Output::WebView(WebViewCommand::Open(open)) => Some(open.clone()),
+        _ => None,
+    });
+    let open = open.expect("open command");
+    assert_eq!((open.id.as_str(), open.dock.as_deref(), open.from_server), ("Editor", Some("right"), true));
+    assert_eq!(open.headers, vec![("X-Token".to_string(), "abc".to_string())]);
+    let out = e.handle_event(gmcp("webview.close", r#"{"id":"Editor"}"#));
+    assert!(out.contains(&Output::WebView(WebViewCommand::Close { id: "Editor".into() })));
+    assert!(!notices(&e.handle_event(gmcp("webview.open", "{}"))).is_empty());
+
+    let out = e.submit(r#"/webview url="https://beipdev.github.io/x.html""#, false);
+    assert!(matches!(&out[0], Output::WebView(WebViewCommand::Open(o)) if o.url.as_deref() == Some("https://beipdev.github.io/x.html") && !o.from_server));
+}
+
+#[test]
+fn mcp_is_handled_before_display_and_triggers() {
+    let global = Rules { triggers: vec![Trigger { matcher: pattern("#$#"), send: "oops".into(), ..Trigger::default() }], ..Rules::default() };
+    let (mut e, mut rx) = engine(&config(global, Rules::default(), Rules::default()));
+    let out = e.handle_event(SessionEvent::Line("#$#mcp version: 2.1 to: 2.1".into()));
+    assert!(main_lines(&out).is_empty());
+    let sent_lines = sent(&mut rx);
+    assert!(sent_lines[0].starts_with("#$#mcp authentication-key: "));
+    let key = sent_lines[0].split_whitespace().nth(2).unwrap().to_string();
+
+    let out = e.handle_event(SessionEvent::Line(format!(r#"#$#dns-com-awns-status {key} text: "On duty""#)));
+    assert!(out.contains(&Output::StatusText("On duty".into())));
+    let out = e.handle_event(SessionEvent::Line(format!(
+        r##"#$#dns-org-mud-moo-simpleedit-content {key} reference: "#1.d" name: "desc" type: string-list content*: "" _data-tag: 7"##
+    )));
+    assert!(out.is_empty());
+    e.handle_event(SessionEvent::Line("#$#* 7 content: hello".into()));
+    let out = e.handle_event(SessionEvent::Line("#$#: 7".into()));
+    let Some(Output::Edit(request)) = out.first() else { panic!("{out:?}") };
+    assert_eq!(request.content, "hello");
+    assert!(sent(&mut rx).is_empty(), "the trigger never saw MCP lines");
+
+    e.save_edit(request, "changed");
+    let lines = sent(&mut rx);
+    assert!(lines[0].starts_with(&format!("#$#dns-org-mud-moo-simpleedit-set {key} reference: \"#1.d\"")));
+    assert!(lines[1].ends_with("content: changed"));
+
+    // Quoted lines are shown without the #$" prefix.
+    let out = e.handle_event(SessionEvent::Line("#$\"#$#looks like mcp".into()));
+    assert_eq!(main_lines(&out)[0].text, "#$#looks like mcp");
+}
+
+#[test]
+fn mcp_can_be_turned_off() {
+    let mut cfg = config(Rules::default(), Rules::default(), Rules::default());
+    cfg.worlds[0].mcp = false;
+    let (mut e, mut rx) = engine(&cfg);
+    let out = e.handle_event(SessionEvent::Line("#$#mcp version: 2.1 to: 2.1".into()));
+    assert_eq!(main_lines(&out)[0].text, "#$#mcp version: 2.1 to: 2.1");
+    assert!(sent(&mut rx).is_empty());
 }

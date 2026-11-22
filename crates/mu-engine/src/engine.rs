@@ -12,7 +12,10 @@ use mu_net::{ConnectOptions, Encoding, SessionEvent, SessionHandle, SessionOptio
 use tokio::sync::mpsc::UnboundedReceiver;
 
 use crate::expand::{Captures, expand};
+use crate::mcp::{Disposition, Mcp, McpEvent};
+use crate::media::{Media, MediaCommand};
 use crate::rules::CompiledRules;
+use crate::stats::{StatPane, Stats};
 use crate::{KeyChord, Logger};
 
 /// A trigger that sends more often than this is suspended for the session, so a trigger that
@@ -32,6 +35,39 @@ pub enum Status {
     Connecting,
     Connected,
     Disconnected(Option<String>),
+}
+
+/// Text the server wants the user to edit (MCP simpleedit).
+#[derive(Debug, Clone, PartialEq)]
+pub struct EditRequest {
+    /// Opaque; pass it back to [`Engine::save_edit`].
+    pub reference: String,
+    pub name: String,
+    /// "string", "string-list" or "moo-code".
+    pub kind: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct WebViewOpen {
+    /// Opening another web view with the same id replaces it.
+    pub id: String,
+    pub url: Option<String>,
+    /// HTML to show when there's no URL.
+    pub source: Option<String>,
+    /// "left", "right", "top" or "bottom" to dock it; None for its own window.
+    pub dock: Option<String>,
+    pub width: Option<i32>,
+    pub height: Option<i32>,
+    pub headers: Vec<(String, String)>,
+    /// Opened by the server (GMCP) rather than the user, so the UI should ask permission.
+    pub from_server: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum WebViewCommand {
+    Open(WebViewOpen),
+    Close { id: String },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -59,6 +95,20 @@ pub enum Output {
     /// Variables at `scope` changed and should be saved.
     VariablesChanged { scope: Scope, variables: BTreeMap<String, String> },
     LoggingChanged(Option<PathBuf>),
+    /// A Beip.Stats pane changed. None means it was removed.
+    Stats { pane: String, data: Option<StatPane> },
+    Media(MediaCommand),
+    /// MCP status text (dns-com-awns-status). Empty clears it.
+    StatusText(String),
+    /// MCP simpleedit: open an editor.
+    Edit(EditRequest),
+    WebView(WebViewCommand),
+    /// Every GMCP message, for web views that subscribe to them.
+    Gmcp { package: String, data: String },
+    /// A line from the server before any processing, for web views.
+    Received(String),
+    /// A command sent to the server, for web views.
+    Sent(String),
 }
 
 pub struct Engine {
@@ -74,6 +124,12 @@ pub struct Engine {
     handle: Option<SessionHandle>,
     window_size: Option<(u16, u16)>,
     server_echo: bool,
+    stats: Stats,
+    media: Media,
+    mcp: Mcp,
+    /// Show GMCP traffic as notices.
+    gmcp_debug: bool,
+    webviews_supported: bool,
 }
 
 const HELP: &str = "Client commands:
@@ -83,6 +139,10 @@ const HELP: &str = "Client commands:
   /log                 start or stop logging to a file
   /clear               clear the output
   /reconnect, /disconnect
+  /gmcp                show or hide GMCP traffic
+  /gmcp Package {json} send a GMCP message
+  /mcp                 show MCP status
+  /webview url         open a web page in a web view
   //text               send text that starts with a /";
 
 impl Engine {
@@ -99,6 +159,11 @@ impl Engine {
             handle: None,
             window_size: None,
             server_echo: false,
+            stats: Stats::default(),
+            media: Media::default(),
+            mcp: Mcp::default(),
+            gmcp_debug: false,
+            webviews_supported: false,
         };
         let out = engine.reload(config);
         (engine, out)
@@ -137,6 +202,11 @@ impl Engine {
         self.handle.as_ref().is_some_and(|h| !h.is_closed())
     }
 
+    /// Tells the engine the UI can show web views, so it advertises "WebView 1" over GMCP.
+    pub fn set_webviews_supported(&mut self, supported: bool) {
+        self.webviews_supported = supported;
+    }
+
     pub fn is_logging(&self) -> bool {
         self.logger.is_some()
     }
@@ -160,6 +230,11 @@ impl Engine {
         opts.encoding = Encoding::from_name(&self.world.encoding).unwrap_or_default();
         opts.prompt_timeout = Some(Duration::from_millis(self.settings.prompt_timeout_ms));
         opts.telnet.client_name = "MU Client".into();
+        opts.telnet.gmcp_supports = vec!["Beip.Stats 1".into(), "Client.Media 1".into()];
+        if self.webviews_supported {
+            opts.telnet.gmcp_supports.push("WebView 1".into());
+        }
+        self.mcp = Mcp::default();
 
         let (handle, events) = spawn_session(opts);
         if let Some((w, h)) = self.window_size {
@@ -220,7 +295,8 @@ impl Engine {
             }
             SessionEvent::EncodingChanged(e) => out.push(Output::Notice(format!("Server switched encoding to {}", e.name()))),
             SessionEvent::Notice(text) => out.push(Output::Notice(text)),
-            SessionEvent::Gmcp { .. } | SessionEvent::Mssp(_) | SessionEvent::Compression(_) => {}
+            SessionEvent::Gmcp { package, data } => self.gmcp(package, data, &mut out),
+            SessionEvent::Mssp(_) | SessionEvent::Compression(_) => {}
             SessionEvent::Disconnected { error } => {
                 let reason = match &error {
                     Some(e) => format!("Disconnected: {e}"),
@@ -239,8 +315,102 @@ impl Engine {
         out
     }
 
+    fn gmcp(&mut self, package: String, data: String, out: &mut Vec<Output>) {
+        if self.gmcp_debug {
+            out.push(Output::Notice(format!("GMCP ← {package} {data}")));
+        }
+        let lower = package.to_ascii_lowercase();
+        match lower.as_str() {
+            "beip.stats" => match self.stats.apply(&data) {
+                Ok(panes) => {
+                    for pane in panes {
+                        let data = self.stats.pane(&pane).cloned();
+                        out.push(Output::Stats { pane, data });
+                    }
+                }
+                Err(e) => out.push(Output::Notice(e)),
+            },
+            "webview.open" => match parse_webview_open(&data) {
+                Ok(open) => out.push(Output::WebView(WebViewCommand::Open(open))),
+                Err(e) => out.push(Output::Notice(e)),
+            },
+            "webview.close" => {
+                let id = serde_json::from_str::<serde_json::Value>(&data)
+                    .ok()
+                    .and_then(|v| v.get("id").and_then(|i| i.as_str()).map(str::to_string));
+                if let Some(id) = id {
+                    out.push(Output::WebView(WebViewCommand::Close { id }));
+                }
+            }
+            _ => {
+                if let Some(message) = lower.strip_prefix("client.media.") {
+                    match self.media.handle(message, &data) {
+                        Ok(commands) => out.extend(commands.into_iter().map(Output::Media)),
+                        Err(e) => out.push(Output::Notice(e)),
+                    }
+                }
+            }
+        }
+        out.push(Output::Gmcp { package, data });
+    }
+
+    /// Sends a GMCP message, e.g. from a web view.
+    pub fn send_gmcp(&mut self, package: &str, data: Option<&str>) -> Vec<Output> {
+        let mut out = Vec::new();
+        if self.gmcp_debug {
+            out.push(Output::Notice(format!("GMCP → {package} {}", data.unwrap_or(""))));
+        }
+        if let Some(handle) = &self.handle {
+            handle.send_gmcp(package, data.map(str::to_string));
+        }
+        out
+    }
+
+    /// Handles text as if the server had sent it, e.g. from a web view.
+    pub fn inject_line(&mut self, text: &str) -> Vec<Output> {
+        let mut out = Vec::new();
+        self.incoming(text, None, &mut out);
+        out
+    }
+
+    /// Sends the user's edited text back for an MCP simpleedit request.
+    pub fn save_edit(&mut self, request: &EditRequest, content: &str) -> Vec<Output> {
+        for line in self.mcp.simpleedit_set(&request.reference, &request.kind, content) {
+            self.send_raw(&line);
+        }
+        vec![Output::Notice(format!("Sent your changes to \"{}\"", request.name))]
+    }
+
     /// Handles a line (prompt = None) or prompt (prompt = Some(terminated)) from the server.
     fn incoming(&mut self, text: &str, prompt: Option<bool>, out: &mut Vec<Output>) {
+        let quoted;
+        let text = if self.world.mcp {
+            let mut events = Vec::new();
+            let (disposition, sends) = self.mcp.on_line(text, &mut events);
+            for line in sends {
+                self.send_raw(&line);
+            }
+            for event in events {
+                out.push(match event {
+                    McpEvent::Status(text) => Output::StatusText(text),
+                    McpEvent::Edit { reference, name, kind, content } => {
+                        Output::Edit(EditRequest { reference, name, kind, content })
+                    }
+                    McpEvent::Notice(text) => Output::Notice(text),
+                });
+            }
+            match disposition {
+                Disposition::Hide => return,
+                Disposition::Quoted(text) => {
+                    quoted = text;
+                    quoted.as_str()
+                }
+                Disposition::Display => text,
+            }
+        } else {
+            text
+        };
+        out.push(Output::Received(text.to_string()));
         let mut line = self.ansi.parse_line(text);
         line.linkify();
         let plain = line.text.clone();
@@ -311,6 +481,7 @@ impl Engine {
         out.push(Output::Activity { important });
         for command in sends {
             self.send_raw(&command);
+            out.push(Output::Sent(command.clone()));
             if self.settings.local_echo {
                 out.push(Output::Echo(command));
             }
@@ -371,6 +542,7 @@ impl Engine {
 
     fn send_command(&mut self, command: &str, out: &mut Vec<Output>) {
         if self.send_raw(command) {
+            out.push(Output::Sent(command.to_string()));
             if self.settings.local_echo {
                 out.push(Output::Echo(command.to_string()));
             }
@@ -432,6 +604,36 @@ impl Engine {
                 }
             }
             "disconnect" | "quit" => self.disconnect(),
+            "gmcp" if args.is_empty() => {
+                self.gmcp_debug = !self.gmcp_debug;
+                out.push(Output::Notice(format!("GMCP traffic is {}", if self.gmcp_debug { "shown" } else { "hidden" })));
+            }
+            "gmcp" => {
+                let (package, data) = args.split_once(char::is_whitespace).unwrap_or((args, ""));
+                let data = data.trim();
+                out.extend(self.send_gmcp(package, (!data.is_empty()).then_some(data)));
+            }
+            "mcp" => out.push(Output::Notice(if self.mcp.is_active() {
+                "MCP 2.1 is active".into()
+            } else if self.world.mcp {
+                "MCP is on, but the server hasn't started it".into()
+            } else {
+                "MCP is off for this world".into()
+            })),
+            "webview" if !args.is_empty() => {
+                // Accept BeipMU's form, /webview url="...", as well as a bare URL.
+                let url = args.strip_prefix("url=").unwrap_or(args).trim_matches('"').to_string();
+                out.push(Output::WebView(WebViewCommand::Open(WebViewOpen {
+                    id: url.clone(),
+                    url: Some(url),
+                    source: None,
+                    dock: Some("right".into()),
+                    width: None,
+                    height: None,
+                    headers: Vec::new(),
+                    from_server: false,
+                })));
+            }
             _ => out.push(Output::Notice(format!(
                 "Unknown command /{name}. Type /help for client commands, or start the line with // to send a /."
             ))),
@@ -498,6 +700,32 @@ impl Engine {
             Err(e) => vec![Output::Notice(format!("Couldn't start logging: {e}"))],
         }
     }
+}
+
+fn parse_webview_open(json: &str) -> Result<WebViewOpen, String> {
+    let v: serde_json::Value = serde_json::from_str(json).map_err(|e| format!("webview.open: {e}"))?;
+    let s = |k: &str| v.get(k).and_then(|x| x.as_str()).map(str::to_string);
+    let n = |k: &str| v.get(k).and_then(|x| x.as_i64()).map(|x| x.clamp(50, 10_000) as i32);
+    let url = s("url");
+    let source = s("source");
+    if url.is_none() && source.is_none() {
+        return Err("webview.open: needs a url or source".into());
+    }
+    let headers = v
+        .get("http-request-headers")
+        .and_then(|h| h.as_object())
+        .map(|h| h.iter().map(|(k, v)| (k.clone(), v.as_str().map_or_else(|| v.to_string(), str::to_string))).collect())
+        .unwrap_or_default();
+    Ok(WebViewOpen {
+        id: s("id").or_else(|| url.clone()).unwrap_or_else(|| "Web View".into()),
+        url,
+        source,
+        dock: s("dock"),
+        width: n("width"),
+        height: n("height"),
+        headers,
+        from_server: true,
+    })
 }
 
 fn parse_hex(color: &str) -> Option<Color> {

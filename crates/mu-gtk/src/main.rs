@@ -5,11 +5,14 @@
 
 mod app;
 mod connect_dialog;
+mod edit_window;
 mod input;
 mod keys;
+mod media_player;
 mod output;
 mod rules_dialog;
 mod session;
+mod stats_pane;
 mod window;
 mod world_dialog;
 

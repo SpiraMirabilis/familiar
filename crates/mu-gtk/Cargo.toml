@@ -12,3 +12,8 @@ mu-config = { version = "0.1.0", path = "../mu-config" }
 mu-engine = { version = "0.1.0", path = "../mu-engine" }
 mu-net = { version = "0.1.0", path = "../mu-net" }
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "net", "time", "sync"] }
+webkit6 = { version = "0.6.1", optional = true }
+
+[features]
+# Embedded web views (GMCP webview.open, /webview). Needs WebKitGTK 6 (webkitgtk-6.0).
+webview = ["dep:webkit6"]

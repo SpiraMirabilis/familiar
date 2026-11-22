@@ -72,6 +72,11 @@ pub struct World {
     /// Charset name understood by `mu_net::Encoding::from_name`. "Auto" reads UTF-8 and falls
     /// back to Windows-1252 line by line.
     pub encoding: String,
+    /// Speak MCP 2.1 if the server offers it (MOOs and MUCKs).
+    pub mcp: bool,
+    /// Whether the server may open web views (GMCP webview.open). None means ask.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub allow_webviews: Option<bool>,
     #[serde(skip_serializing_if = "Rules::is_empty")]
     pub rules: Rules,
     #[serde(rename = "character", skip_serializing_if = "Vec::is_empty")]
@@ -87,6 +92,8 @@ impl Default for World {
             tls: false,
             verify_certificate: true,
             encoding: "Auto".into(),
+            mcp: true,
+            allow_webviews: None,
             rules: Rules::default(),
             characters: Vec::new(),
         }

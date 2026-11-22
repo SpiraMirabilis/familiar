@@ -7,9 +7,12 @@ pub mod expand;
 pub mod history;
 mod keys;
 pub mod log;
+pub mod mcp;
+pub mod media;
 pub mod rules;
+pub mod stats;
 
-pub use engine::{Engine, Output, Status, Target};
+pub use engine::{EditRequest, Engine, Output, Status, Target, WebViewCommand, WebViewOpen};
 pub use history::History;
 pub use keys::KeyChord;
 pub use log::Logger;
