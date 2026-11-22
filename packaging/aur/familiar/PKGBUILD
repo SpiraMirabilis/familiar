@@ -1,0 +1,44 @@
+# Maintainer: Michael Munson <michael.d.munson@gmail.com>
+pkgname=familiar
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Client for MUDs, MUSHes, MUCKs and MOOs, with GTK and terminal interfaces"
+arch=('x86_64' 'aarch64')
+url="https://github.com/SpiraMirabilis/familiar"
+license=('MIT')
+depends=('cairo' 'gdk-pixbuf2' 'glib2' 'glibc' 'gtk4' 'gtksourceview5' 'hicolor-icon-theme' 'libadwaita'
+         'libgcc' 'libsoup3' 'libspelling' 'pango' 'webkitgtk-6.0')
+# ring and QuickJS are C; GCC LTO objects can't be linked into Rust binaries.
+options=('!lto')
+makedepends=('cargo')
+optdepends=('gst-plugins-good: more sound formats'
+            'speech-dispatcher: text to speech'
+            'espeak-ng: a voice for speech-dispatcher'
+            'hunspell-en_us: spell checking (or another Hunspell dictionary)'
+            'pipewire: sounds in the terminal client (pw-play)'
+            'libnotify: desktop notifications from the terminal client')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+prepare() {
+  cd "$pkgname-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+  cd "$pkgname-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable CARGO_TARGET_DIR=target
+  make CARGOFLAGS=--frozen
+}
+
+check() {
+  cd "$pkgname-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable CARGO_TARGET_DIR=target
+  cargo test --frozen --workspace
+}
+
+package() {
+  cd "$pkgname-$pkgver"
+  make install DESTDIR="$pkgdir" PREFIX=/usr TARGET=target/release LICENSEDIR="/usr/share/licenses/$pkgname"
+}
