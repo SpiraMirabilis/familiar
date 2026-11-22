@@ -16,7 +16,7 @@ jobs:
         run: |
           pacman -Syu --noconfirm --needed base-devel git rust gtk4 libadwaita gtksourceview5 \
             libspelling webkitgtk-6.0 gstreamer gst-plugins-base
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Build
         run: make
       - name: Package
@@ -29,7 +29,7 @@ jobs:
           cp crates/config/LICENSE-BeipMU "$name/crates/config/"
           tar czf "$name.tar.gz" "$name"
           sha256sum "$name.tar.gz" > "$name.tar.gz.sha256"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: tarball
           path: familiar-*.tar.gz*
@@ -40,7 +40,7 @@ jobs:
       image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-51
       options: --privileged
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: flathub-infra/flatpak-github-actions/flatpak-builder@master
         with:
           bundle: familiar-${{ github.ref_name }}.flatpak
@@ -51,10 +51,10 @@ jobs:
     needs: [tarball, flatpak]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           merge-multiple: true
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           draft: true
           generate_release_notes: true
