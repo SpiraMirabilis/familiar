@@ -11,9 +11,12 @@ mu-ansi = { version = "0.1.0", path = "../mu-ansi" }
 mu-config = { version = "0.1.0", path = "../mu-config" }
 mu-engine = { version = "0.1.0", path = "../mu-engine" }
 mu-net = { version = "0.1.0", path = "../mu-net" }
+serde_json = { version = "1.0.154", optional = true }
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "net", "time", "sync"] }
 webkit6 = { version = "0.6.1", optional = true }
 
 [features]
+default = ["webview"]
 # Embedded web views (GMCP webview.open, /webview). Needs WebKitGTK 6 (webkitgtk-6.0).
-webview = ["dep:webkit6"]
+webview = ["dep:webkit6", "dep:serde_json"]
+serde_json = ["dep:serde_json"]

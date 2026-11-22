@@ -348,3 +348,12 @@ fn mcp_can_be_turned_off() {
     assert_eq!(main_lines(&out)[0].text, "#$#mcp version: 2.1 to: 2.1");
     assert!(sent(&mut rx).is_empty());
 }
+
+#[test]
+fn send_text_with_and_without_aliases() {
+    let global = Rules { aliases: vec![Alias { matcher: pattern("k"), replacement: "kill $1".into(), ..Alias::default() }], ..Rules::default() };
+    let (mut e, mut rx) = engine(&config(global, Rules::default(), Rules::default()));
+    e.send_text("k orc", true);
+    e.send_text("k orc\n/notacommand", false);
+    assert_eq!(sent(&mut rx), vec!["kill orc", "k orc", "/notacommand"]);
+}

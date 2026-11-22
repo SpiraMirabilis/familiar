@@ -13,6 +13,8 @@ mod output;
 mod rules_dialog;
 mod session;
 mod stats_pane;
+#[cfg(feature = "webview")]
+mod webview;
 mod window;
 mod world_dialog;
 

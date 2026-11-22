@@ -366,6 +366,18 @@ impl Engine {
         out
     }
 
+    /// Sends text for a web view or script: through aliases like typed input, or as is.
+    pub fn send_text(&mut self, text: &str, process_aliases: bool) -> Vec<Output> {
+        if process_aliases {
+            return self.submit(text, false);
+        }
+        let mut out = Vec::new();
+        for line in text.lines() {
+            self.send_command(line, &mut out);
+        }
+        out
+    }
+
     /// Handles text as if the server had sent it, e.g. from a web view.
     pub fn inject_line(&mut self, text: &str) -> Vec<Output> {
         let mut out = Vec::new();

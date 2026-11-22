@@ -6,11 +6,10 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::{Rc, Weak};
 
-use gtk::prelude::*;
+use adw::prelude::*;
 use gtk::{gio, glib};
 use mu_ansi::Palette;
 use mu_config::{Character, World};
-use mu_ansi::StyledLine;
 use mu_engine::{Engine, Output, Status, Target, WebViewCommand};
 
 use crate::app::AppState;
@@ -18,6 +17,18 @@ use crate::input::InputView;
 use crate::media_player::MediaPlayer;
 use crate::output::OutputView;
 use crate::stats_pane::StatsPane;
+#[cfg(feature = "webview")]
+use crate::webview::PageEvent;
+
+/// Without web views there are no pages to send events to.
+#[cfg(not(feature = "webview"))]
+#[allow(dead_code)]
+enum PageEvent<'a> {
+    Gmcp { package: &'a str, data: &'a str },
+    Receive(&'a str),
+    Send(&'a str),
+    Display(&'a str),
+}
 
 /// The most events handled in one go before letting GTK redraw.
 const BATCH_LIMIT: usize = 500;
@@ -43,13 +54,16 @@ pub struct SessionView {
     status: gtk::Label,
     sounds: RefCell<Vec<gtk::MediaFile>>,
     media: Rc<MediaPlayer>,
+    #[cfg(feature = "webview")]
+    webviews: RefCell<Vec<crate::webview::WebPane>>,
     on_open_uri: RefCell<Option<Box<dyn Fn(&str)>>>,
     on_logging_changed: RefCell<Option<Box<dyn Fn()>>>,
 }
 
 impl SessionView {
     pub fn new(state: Rc<AppState>, world: World, character: Option<Character>) -> Rc<Self> {
-        let (engine, notices) = Engine::new(&state.config.borrow(), world, character);
+        let (mut engine, notices) = Engine::new(&state.config.borrow(), world, character);
+        engine.set_webviews_supported(cfg!(feature = "webview"));
         let settings = state.config.borrow().settings.clone();
         let output = OutputView::new(Palette::default(), settings.scrollback_lines);
         let input = InputView::new(settings.input_history_size);
@@ -96,6 +110,8 @@ impl SessionView {
             status,
             sounds: RefCell::default(),
             media: Rc::default(),
+            #[cfg(feature = "webview")]
+            webviews: RefCell::default(),
             on_open_uri: RefCell::default(),
             on_logging_changed: RefCell::default(),
         });
@@ -269,7 +285,10 @@ impl SessionView {
     fn apply(self: &Rc<Self>, outputs: Vec<Output>) {
         for output in outputs {
             match output {
-                Output::Line { line, target: Target::Main } => self.output.append_line(&line),
+                Output::Line { line, target: Target::Main } => {
+                    self.output.append_line(&line);
+                    self.to_pages(|| PageEvent::Display(&line.text));
+                }
                 Output::Line { line, target: Target::Spawn(name) } => self.spawn(&name).append_line(&line),
                 Output::Prompt { line, terminated } => self.output.set_prompt(&line, terminated),
                 Output::Notice(text) => self.output.notice(&text),
@@ -335,7 +354,9 @@ impl SessionView {
                     });
                 }
                 Output::WebView(command) => self.webview(command),
-                Output::Gmcp { .. } | Output::Received(_) | Output::Sent(_) => {}
+                Output::Gmcp { package, data } => self.to_pages(|| PageEvent::Gmcp { package: &package, data: &data }),
+                Output::Received(text) => self.to_pages(|| PageEvent::Receive(&text)),
+                Output::Sent(text) => self.to_pages(|| PageEvent::Send(&text)),
             }
         }
     }
@@ -401,6 +422,155 @@ impl SessionView {
     }
 
     #[cfg(not(feature = "webview"))]
+    fn to_pages<'a>(&self, _event: impl FnOnce() -> PageEvent<'a>) {}
+
+    #[cfg(feature = "webview")]
+    fn to_pages<'a>(&self, event: impl Fn() -> PageEvent<'a>) {
+        for pane in self.webviews.borrow().iter() {
+            pane.deliver(event());
+        }
+    }
+
+    #[cfg(feature = "webview")]
+    fn webview(self: &Rc<Self>, command: WebViewCommand) {
+        let open = match command {
+            WebViewCommand::Close { id } => return self.close_webview(&id),
+            WebViewCommand::Open(open) => open,
+        };
+        if !open.from_server {
+            return self.open_webview(open);
+        }
+        let world = self.engine.borrow().world().name.clone();
+        let saved = self.state.config.borrow().world(&world).map(|w| w.allow_webviews);
+        match saved {
+            Some(Some(true)) => self.open_webview(open),
+            Some(Some(false)) => self.output.notice("Blocked a web view from the server (web views are off for this world)."),
+            // Not asked yet, or a quick-connect world that can't remember the answer.
+            Some(None) | None => self.ask_webview(open, &world, saved.is_some()),
+        }
+    }
+
+    #[cfg(feature = "webview")]
+    fn ask_webview(self: &Rc<Self>, open: mu_engine::WebViewOpen, world: &str, can_remember: bool) {
+        let target = open.url.clone().unwrap_or_else(|| "a page it sent".into());
+        let dialog = adw::AlertDialog::new(
+            Some("Open a Web View?"),
+            Some(&format!(
+                "{world} wants to open {target} inside the client. Pages it opens can send commands and read the output, like a script."
+            )),
+        );
+        dialog.add_response("block", "Block");
+        dialog.add_response("once", "Allow Once");
+        if can_remember {
+            dialog.add_response("always", "Always Allow");
+            dialog.set_response_appearance("always", adw::ResponseAppearance::Suggested);
+        }
+        dialog.set_default_response(Some("once"));
+        dialog.set_close_response("block");
+        let weak = Rc::downgrade(self);
+        let world = world.to_string();
+        dialog.connect_response(None, move |_, response| {
+            let Some(this) = weak.upgrade() else { return };
+            match response {
+                "once" => this.open_webview(open.clone()),
+                "always" => {
+                    if let Some(w) = this.state.config.borrow_mut().worlds.iter_mut().find(|w| w.name == world) {
+                        w.allow_webviews = Some(true);
+                    }
+                    if let Err(e) = this.state.save() {
+                        this.output.notice(&e);
+                    }
+                    this.open_webview(open.clone());
+                }
+                _ => this.output.notice("Blocked a web view from the server."),
+            }
+        });
+        dialog.present(Some(&self.root));
+    }
+
+    #[cfg(feature = "webview")]
+    fn open_webview(self: &Rc<Self>, open: mu_engine::WebViewOpen) {
+        // Same id: reuse the existing view.
+        if let Some(pane) = self.webviews.borrow().iter().find(|p| p.id == open.id) {
+            pane.load(&open);
+            if let Some(window) = &pane.window {
+                window.present();
+            } else if let Some(n) = self.side.page_num(&pane.view) {
+                self.side.set_current_page(Some(n));
+            }
+            return;
+        }
+        let weak = Rc::downgrade(self);
+        let id = open.id.clone();
+        let mut pane = crate::webview::WebPane::new(&open, move |message| {
+            if let Some(this) = weak.upgrade() {
+                this.on_page_message(&id, message);
+            }
+        });
+        if open.dock.is_some() {
+            self.add_side_tab(&pane.view, &open.id);
+            if let Some(n) = self.side.page_num(&pane.view) {
+                self.side.set_current_page(Some(n));
+            }
+        } else {
+            let header = adw::HeaderBar::new();
+            let toolbar = adw::ToolbarView::new();
+            toolbar.add_top_bar(&header);
+            toolbar.set_content(Some(&pane.view));
+            let window = adw::Window::builder()
+                .title(&open.id)
+                .default_width(open.width.unwrap_or(900))
+                .default_height(open.height.unwrap_or(700))
+                .content(&toolbar)
+                .build();
+            window.set_transient_for(self.root.root().and_downcast::<gtk::Window>().as_ref());
+            let weak = Rc::downgrade(self);
+            let id = open.id.clone();
+            window.connect_close_request(move |_| {
+                if let Some(this) = weak.upgrade() {
+                    this.webviews.borrow_mut().retain(|p| p.id != id);
+                }
+                glib::Propagation::Proceed
+            });
+            window.present();
+            pane.window = Some(window);
+        }
+        self.webviews.borrow_mut().push(pane);
+    }
+
+    #[cfg(feature = "webview")]
+    fn close_webview(&self, id: &str) {
+        let pane = {
+            let mut panes = self.webviews.borrow_mut();
+            let Some(i) = panes.iter().position(|p| p.id == id) else { return };
+            panes.remove(i)
+        };
+        match &pane.window {
+            Some(window) => window.close(),
+            None => self.remove_side_tab(&pane.view),
+        }
+    }
+
+    #[cfg(feature = "webview")]
+    fn on_page_message(self: &Rc<Self>, id: &str, message: crate::webview::BridgeMessage) {
+        use crate::webview::BridgeMessage;
+        let out = match message {
+            BridgeMessage::Send { text, aliases } => self.engine.borrow_mut().send_text(&text, aliases),
+            BridgeMessage::Gmcp { package, data } => self.engine.borrow_mut().send_gmcp(&package, data.as_deref()),
+            BridgeMessage::Receive(text) => self.engine.borrow_mut().inject_line(&text),
+            BridgeMessage::Display(text) => {
+                self.output.append_line(&mu_ansi::AnsiParser::new().parse_line(&text));
+                Vec::new()
+            }
+            BridgeMessage::Close => {
+                self.close_webview(id);
+                Vec::new()
+            }
+        };
+        self.apply(out);
+    }
+
+    #[cfg(not(feature = "webview"))]
     fn webview(&self, command: WebViewCommand) {
         let WebViewCommand::Open(open) = command else { return };
         let who = if open.from_server { "The server wants" } else { "You asked" };
@@ -408,7 +578,7 @@ impl SessionView {
             "{who} to open a web view, but this build doesn't include them. Install webkitgtk-6.0 and build with --features webview."
         ));
         if let Some(url) = open.url {
-            let mut line = StyledLine::plain(format!("Open {url} in your browser instead"));
+            let mut line = mu_ansi::StyledLine::plain(format!("Open {url} in your browser instead"));
             line.linkify();
             self.output.append_line(&line);
         }
