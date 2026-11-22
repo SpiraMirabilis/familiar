@@ -4,8 +4,10 @@
 //! OSC 8 hyperlink) carries over between lines, as it does in a terminal. Every CSI, OSC and
 //! other escape sequence is fully consumed, so unsupported sequences never leak into the text.
 
+mod linkify;
 mod palette;
 
+pub use linkify::find_urls;
 pub use palette::{Palette, Rgb};
 
 use std::sync::Arc;
