@@ -57,7 +57,7 @@ pub fn decode(encoding: &str, data: &str) -> Result<Vec<u8>, String> {
             .collect(),
         "hex_8" => {
             let digits: Vec<char> = data.chars().collect();
-            if digits.len() % 2 != 0 {
+            if !digits.len().is_multiple_of(2) {
                 return Err("hex_8 data needs an even number of digits".into());
             }
             digits
