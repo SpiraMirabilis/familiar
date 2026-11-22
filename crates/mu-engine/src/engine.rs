@@ -191,6 +191,8 @@ pub struct Engine {
     mcp: Mcp,
     /// Show GMCP traffic as notices.
     gmcp_debug: bool,
+    /// Show MCP traffic as notices.
+    mcp_debug: bool,
     webviews_supported: bool,
     script: Option<Box<dyn ScriptHost>>,
     puppets: Vec<(Puppet, Option<fancy_regex::Regex>)>,
@@ -228,7 +230,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/reconnect", "connect again"),
     ("/disconnect", "close the connection"),
     ("/gmcp [<Package> <json>]", "show or hide GMCP traffic, or send a GMCP message"),
-    ("/mcp", "show MCP status"),
+    ("/mcp [debug]", "show MCP status, or show and hide MCP traffic"),
     ("/webview <url>", "open a web page in a web view"),
     ("/@<code>", "run JavaScript (multi-line with Shift+Enter)"),
     ("/script load <path>", "run a script file"),
@@ -274,6 +276,7 @@ impl Engine {
             media: Media::default(),
             mcp: Mcp::default(),
             gmcp_debug: false,
+            mcp_debug: false,
             webviews_supported: false,
             script: None,
             puppets: Vec::new(),
@@ -907,6 +910,8 @@ impl Engine {
             }
             SessionEvent::Line(text) => self.incoming(&text, None, &mut out),
             SessionEvent::Prompt(text) => self.incoming(&text, Some(true), &mut out),
+            // MCP lines are never prompts; the whole line is handled when it arrives.
+            SessionEvent::PartialLine(text) if self.world.mcp && text.starts_with("#$") => {}
             SessionEvent::PartialLine(text) => {
                 // Parse with a copy of the ANSI state: the full line will be parsed again later.
                 let line = self.ansi.clone().parse_line(&text);
@@ -1090,10 +1095,15 @@ impl Engine {
             }
             vec![Output::Notice(format!("Sent {} lines", lines.len()))]
         } else {
+            let mut out = Vec::new();
             for line in self.mcp.simpleedit_set(&request.reference, &request.kind, content) {
+                if self.mcp_debug {
+                    out.push(Output::Notice(format!("MCP → {line}")));
+                }
                 self.send_raw(&line);
             }
-            vec![Output::Notice(format!("Sent your changes to \"{}\"", request.name))]
+            out.push(Output::Notice(format!("Sent your changes to \"{}\"", request.name)));
+            out
         };
         self.compile_watch = Some((request.reference.clone(), Instant::now() + COMPILE_WATCH));
         out
@@ -1122,9 +1132,15 @@ impl Engine {
     fn incoming(&mut self, text: &str, prompt: Option<bool>, out: &mut Vec<Output>) {
         let quoted;
         let text = if self.world.mcp {
+            if self.mcp_debug && text.starts_with("#$") {
+                out.push(Output::Notice(format!("MCP ← {text}")));
+            }
             let mut events = Vec::new();
             let (disposition, sends) = self.mcp.on_line(text, &mut events);
             for line in sends {
+                if self.mcp_debug {
+                    out.push(Output::Notice(format!("MCP → {line}")));
+                }
                 self.send_raw(&line);
             }
             for event in events {
@@ -1520,12 +1536,21 @@ impl Engine {
                 let data = data.trim();
                 out.extend(self.send_gmcp(package, (!data.is_empty()).then_some(data)));
             }
-            "mcp" => out.push(Output::Notice(if self.mcp.is_active() {
+            "mcp" if args == "debug" => {
+                self.mcp_debug = !self.mcp_debug;
+                out.push(Output::Notice(format!("MCP traffic is {}", if self.mcp_debug { "shown" } else { "hidden" })));
+            }
+            "mcp" => out.push(Output::Notice(if !self.world.mcp {
+                "MCP is off for this world (mcp = false in its config)".into()
+            } else if self.mcp.server_confirmed() {
                 "MCP 2.1 is active".into()
-            } else if self.world.mcp {
-                "MCP is on, but the server hasn't started it".into()
+            } else if self.mcp.is_active() {
+                "The server started MCP and the client answered with its key, but the server hasn't replied. \
+                 If it's a MOO built with OUT_OF_BAND_PREFIX, the answer went to #0:do_out_of_band_command. \
+                 /mcp debug shows the traffic."
+                    .into()
             } else {
-                "MCP is off for this world".into()
+                "MCP is on, but the server hasn't started it (no #$#mcp line yet)".into()
             })),
             "map" => self.map_command(args, out),
             "puppet" | "puppets" if args.is_empty() => {

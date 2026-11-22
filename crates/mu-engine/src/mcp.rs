@@ -146,6 +146,11 @@ impl Mcp {
         self.key.is_some()
     }
 
+    /// The server has sent something with our key, so it received our answer.
+    pub fn server_confirmed(&self) -> bool {
+        !self.server_packages.is_empty()
+    }
+
     pub fn server_supports(&self, package: &str) -> bool {
         self.server_packages.contains_key(package)
     }
@@ -157,9 +162,11 @@ impl Mcp {
         }
         let Some(body) = line.strip_prefix("#$#") else { return (Disposition::Display, Vec::new()) };
 
-        // The server starts MCP with "#$#mcp version: 2.1 to: 2.1".
+        // The server starts MCP with "#$#mcp version: 2.1 to: 2.1". Sent again, it's a new
+        // session (the MOO restarted MCP, e.g. after a reconnection was redirected), so answer
+        // again with a fresh key.
         if let Some(rest) = body.strip_prefix("mcp ")
-            && self.key.is_none()
+            && !rest.contains("authentication-key")
         {
             let Some(kv) = parse_keyvals(rest) else { return (Disposition::Display, Vec::new()) };
             let get = |k: &str| kv.iter().find(|(key, _, _)| key == k).map(|(_, v, _)| v.as_str());
@@ -173,6 +180,8 @@ impl Mcp {
             let key = random_key();
             let mut out = vec![format!("#$#mcp authentication-key: {key} version: 2.1 to: 2.1")];
             self.key = Some(key);
+            self.pending.clear();
+            self.server_packages.clear();
             for (name, min, max) in PACKAGES {
                 out.extend(self.format("mcp-negotiate-can", &[("package", name), ("min-version", min), ("max-version", max)], &[]));
             }

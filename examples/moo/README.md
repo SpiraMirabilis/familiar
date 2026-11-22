@@ -15,12 +15,26 @@ on a Stunt server built from `~/stunt`, in emergency mode against `Minimal.db`.
    `#65` (change the first line if your generic feature has another number), adds the verbs and
    runs `@fix-commands`. It must be owned by a wizard: reading and saving use
    `set_task_perms(player)`, so everyone edits with their own permissions.
-2. Check how your server treats `#$#` lines:
+2. Check how your server treats `#$#` lines: type `#$#ping` in your MOO. "I don't understand
+   that" (or your core's equivalent) means they reach the command parser; silence means they go
+   out of band. Then:
    - If it was built with `OUT_OF_BAND_PREFIX "#$#"` (the default in `~/stunt/options.h`), those
      lines go to `#0:do_out_of_band_command`, not the command parser. Program that verb with
      `mcp-simpleedit-feature-forwarder.moo`, replacing `FEATURE` with the feature's number.
    - Otherwise the feature's `#$#*` command verb receives them and nothing else is needed.
+   If `#0:do_out_of_band_command` already exists, add the forwarder's `if` block at its top
+   rather than replacing it.
 3. Each player who wants it: `@add-feature mcpedit`, then reconnect with an MCP client.
+
+## Troubleshooting
+
+- In MU Client, `/mcp` says whether MCP is running. "The client answered with its key, but the
+  server hasn't replied" means the client's answer isn't reaching the feature: usually step 2.
+  `/mcp debug` shows every MCP line in both directions.
+- On the MOO, `;FEATURE.sessions` shows each player's key. An empty key (`"key" -> ""`) means
+  the client's answer never arrived.
+- Running `;me:confunc_features()` (or the feature's `:confunc`) again restarts MCP; the client
+  answers again with a new key.
 
 ## How it works
 

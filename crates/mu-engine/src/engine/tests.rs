@@ -674,3 +674,26 @@ fn map_import_from_a_beipmu_atlas() {
     let out = e.submit("/map import /nonexistent.atlas", false);
     assert!(notices(&out)[0].starts_with("Couldn't import"));
 }
+
+#[test]
+fn mcp_restarts_and_partial_lines_and_debug() {
+    let (mut e, mut rx) = engine(&config(Rules::default(), Rules::default(), Rules::default()));
+    // A partial #$# line is never shown as a prompt.
+    assert!(e.handle_event(SessionEvent::PartialLine("#$#mcp version: 2.1 to: 2.1".into())).is_empty());
+    let out = e.handle_event(SessionEvent::Line("#$#mcp version: 2.1 to: 2.1".into()));
+    assert!(main_lines(&out).is_empty());
+    let first = sent(&mut rx);
+    assert!(first[0].starts_with("#$#mcp authentication-key: "), "{first:?}");
+    assert!(notices(&e.submit("/mcp", false))[0].contains("hasn't replied"));
+    // The MOO starts again (e.g. confunc run by hand): answer again with a new key.
+    let out = e.submit("/mcp debug", false);
+    assert_eq!(notices(&out), ["MCP traffic is shown"]);
+    let out = e.handle_event(SessionEvent::Line("#$#mcp version: 2.1 to: 2.1".into()));
+    let again = sent(&mut rx);
+    assert!(again[0].starts_with("#$#mcp authentication-key: ") && again[0] != first[0]);
+    let shown = notices(&out);
+    assert!(shown[0].starts_with("MCP ← #$#mcp version") && shown[1].starts_with("MCP → #$#mcp authentication-key"), "{shown:?}");
+    let key = again[0].split_whitespace().nth(2).unwrap().to_string();
+    e.handle_event(SessionEvent::Line(format!("#$#mcp-negotiate-can {key} package: mcp-negotiate min-version: 2.0 max-version: 2.0")));
+    assert_eq!(notices(&e.submit("/mcp", false)), ["MCP 2.1 is active"]);
+}
