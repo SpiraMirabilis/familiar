@@ -5,6 +5,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::{Rc, Weak};
+use std::time::Instant;
 
 use adw::prelude::*;
 use gtk::{gio, glib};
@@ -54,6 +55,8 @@ pub struct SessionView {
     status: gtk::Label,
     sounds: RefCell<Vec<gtk::MediaFile>>,
     media: Rc<MediaPlayer>,
+    /// The pending script timer and when it fires.
+    timer: RefCell<Option<(glib::SourceId, Instant)>>,
     #[cfg(feature = "webview")]
     webviews: RefCell<Vec<crate::webview::WebPane>>,
     on_open_uri: RefCell<Option<Box<dyn Fn(&str)>>>,
@@ -110,6 +113,7 @@ impl SessionView {
             status,
             sounds: RefCell::default(),
             media: Rc::default(),
+            timer: RefCell::default(),
             #[cfg(feature = "webview")]
             webviews: RefCell::default(),
             on_open_uri: RefCell::default(),
@@ -117,7 +121,66 @@ impl SessionView {
         });
         this.setup();
         this.apply(notices);
+        this.start_scripting();
         this
+    }
+
+    /// The startup scripts for this session: the global startup.js, then the world's script.
+    fn script_paths(&self) -> Vec<PathBuf> {
+        let mut paths = Vec::new();
+        let startup = mu_config::startup_script_path();
+        if startup.is_file() {
+            paths.push(startup);
+        }
+        let world_script = self.engine.borrow().world().script.clone();
+        if !world_script.is_empty() {
+            paths.push(match world_script.strip_prefix("~/") {
+                Some(rest) => glib::home_dir().join(rest),
+                None => PathBuf::from(world_script),
+            });
+        }
+        paths
+    }
+
+    /// Starts a fresh JavaScript runtime and runs the startup scripts.
+    fn start_scripting(self: &Rc<Self>) {
+        let host = match mu_script::JsHost::new() {
+            Ok(host) => host,
+            Err(e) => return self.output.notice(&format!("Scripting is unavailable: {e}")),
+        };
+        let mut out = self.engine.borrow_mut().set_script_host(Box::new(host));
+        for path in self.script_paths() {
+            let home = glib::home_dir();
+            let shown = match path.strip_prefix(&home) {
+                Ok(rest) => format!("~/{}", rest.display()),
+                Err(_) => path.display().to_string(),
+            };
+            out.push(Output::Notice(format!("Running {shown}")));
+            out.extend(self.engine.borrow_mut().load_script(&path));
+        }
+        self.apply(out);
+    }
+
+    /// Makes sure a GLib timer fires when the next script timer is due.
+    fn schedule_timer(self: &Rc<Self>) {
+        let deadline = self.engine.borrow_mut().next_deadline();
+        let mut timer = self.timer.borrow_mut();
+        if timer.as_ref().map(|(_, at)| *at) == deadline {
+            return;
+        }
+        if let Some((source, _)) = timer.take() {
+            source.remove();
+        }
+        let Some(deadline) = deadline else { return };
+        let weak = Rc::downgrade(self);
+        let source = glib::timeout_add_local_once(deadline.saturating_duration_since(Instant::now()), move || {
+            let Some(this) = weak.upgrade() else { return };
+            // This source has fired, so it mustn't be removed again.
+            this.timer.borrow_mut().take();
+            let out = this.engine.borrow_mut().tick(Instant::now());
+            this.apply(out);
+        });
+        *timer = Some((source, deadline));
     }
 
     pub fn title(&self) -> String {
@@ -283,6 +346,13 @@ impl SessionView {
     }
 
     fn apply(self: &Rc<Self>, outputs: Vec<Output>) {
+        self.apply_outputs(outputs);
+        if self.engine.borrow().has_scripting() {
+            self.schedule_timer();
+        }
+    }
+
+    fn apply_outputs(self: &Rc<Self>, outputs: Vec<Output>) {
         for output in outputs {
             match output {
                 Output::Line { line, target: Target::Main } => {
@@ -316,6 +386,13 @@ impl SessionView {
                 }
                 Output::ClearOutput => self.output.clear(),
                 Output::Reconnect => self.connect(),
+                Output::ReloadScripts => {
+                    if let Some((source, _)) = self.timer.borrow_mut().take() {
+                        source.remove();
+                    }
+                    self.output.notice("Restarting scripting");
+                    self.start_scripting();
+                }
                 Output::VariablesChanged { scope, variables } => {
                     if let Some(rules) = self.state.config.borrow_mut().rules_mut(&scope) {
                         rules.variables = variables;

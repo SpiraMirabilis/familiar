@@ -15,6 +15,7 @@ use crate::expand::{Captures, expand};
 use crate::mcp::{Disposition, Mcp, McpEvent};
 use crate::media::{Media, MediaCommand};
 use crate::rules::CompiledRules;
+use crate::script::{ScriptAction, ScriptContext, ScriptHost};
 use crate::stats::{StatPane, Stats};
 use crate::{KeyChord, Logger};
 
@@ -92,6 +93,8 @@ pub enum Output {
     ClearOutput,
     /// The UI should reconnect (the engine can't, since the UI owns the event loop).
     Reconnect,
+    /// The UI should start a fresh script host and call [`Engine::set_script_host`] again.
+    ReloadScripts,
     /// Variables at `scope` changed and should be saved.
     VariablesChanged { scope: Scope, variables: BTreeMap<String, String> },
     LoggingChanged(Option<PathBuf>),
@@ -130,7 +133,13 @@ pub struct Engine {
     /// Show GMCP traffic as notices.
     gmcp_debug: bool,
     webviews_supported: bool,
+    script: Option<Box<dyn ScriptHost>>,
+    /// How deeply script actions are nested (a script typing input that runs a script...).
+    script_depth: u32,
 }
+
+/// Deeper nesting than this is assumed to be a loop.
+const MAX_SCRIPT_DEPTH: u32 = 8;
 
 const HELP: &str = "Client commands:
   /set [name [value]]  show variables, or set one (use as %name% in triggers and aliases)
@@ -143,6 +152,9 @@ const HELP: &str = "Client commands:
   /gmcp Package {json} send a GMCP message
   /mcp                 show MCP status
   /webview url         open a web page in a web view
+  /@code               run JavaScript (multi-line with Shift+Enter)
+  /script load path    run a script file
+  /script reload       restart scripting and reload the startup scripts
   //text               send text that starts with a /";
 
 impl Engine {
@@ -164,6 +176,8 @@ impl Engine {
             mcp: Mcp::default(),
             gmcp_debug: false,
             webviews_supported: false,
+            script: None,
+            script_depth: 0,
         };
         let out = engine.reload(config);
         (engine, out)
@@ -179,7 +193,126 @@ impl Engine {
         self.variables = layers.iter().map(|r| r.variables.clone()).collect();
         let (rules, errors) = CompiledRules::compile(layers);
         self.rules = rules;
+        let merged = self.merged_variables();
+        if let Some(script) = self.script.as_mut() {
+            script.set_variables(&merged);
+        }
         errors.into_iter().map(Output::Notice).collect()
+    }
+
+    /// All variables visible to this session; more specific scopes win.
+    pub fn merged_variables(&self) -> BTreeMap<String, String> {
+        let mut all = BTreeMap::new();
+        for vars in self.variables.iter().rev() {
+            all.extend(vars.iter().map(|(k, v)| (k.clone(), v.clone())));
+        }
+        all
+    }
+
+    fn script_context(&self) -> ScriptContext {
+        ScriptContext {
+            world: self.world.name.clone(),
+            host: self.world.host.clone(),
+            port: self.world.port,
+            character: self.character.as_ref().map(|c| c.name.clone()),
+            connected: self.is_connected(),
+        }
+    }
+
+    /// Installs (or replaces) the script host. The caller loads the startup scripts after this.
+    pub fn set_script_host(&mut self, mut host: Box<dyn ScriptHost>) -> Vec<Output> {
+        host.set_context(&self.script_context());
+        host.set_variables(&self.merged_variables());
+        self.script = Some(host);
+        let mut out = Vec::new();
+        self.drain_script(&mut out);
+        out
+    }
+
+    pub fn has_scripting(&self) -> bool {
+        self.script.is_some()
+    }
+
+    /// Runs a script file in this session.
+    pub fn load_script(&mut self, path: &std::path::Path) -> Vec<Output> {
+        let mut out = Vec::new();
+        let Some(script) = self.script.as_mut() else {
+            out.push(Output::Notice("Scripting isn't available".into()));
+            return out;
+        };
+        if let Err(e) = script.load_file(path) {
+            out.push(Output::Notice(format!("Script error in {}: {e}", path.display())));
+        }
+        self.drain_script(&mut out);
+        out
+    }
+
+    /// Runs timers that are due. The UI calls this at [`Engine::next_deadline`].
+    pub fn tick(&mut self, now: Instant) -> Vec<Output> {
+        let mut out = Vec::new();
+        if let Some(script) = self.script.as_mut() {
+            script.tick(now);
+            self.drain_script(&mut out);
+        }
+        out
+    }
+
+    pub fn next_deadline(&mut self) -> Option<Instant> {
+        self.script.as_mut().and_then(|s| s.next_deadline())
+    }
+
+    /// Applies what scripts asked for since the last hook.
+    fn drain_script(&mut self, out: &mut Vec<Output>) {
+        let Some(actions) = self.script.as_mut().map(|s| s.take_actions()) else { return };
+        if actions.is_empty() {
+            return;
+        }
+        if self.script_depth >= MAX_SCRIPT_DEPTH {
+            out.push(Output::Notice("Script actions are nested too deeply (a script loop?); some were skipped.".into()));
+            return;
+        }
+        self.script_depth += 1;
+        for action in actions {
+            match action {
+                ScriptAction::Send(text) => {
+                    for line in text.lines() {
+                        if self.send_raw(line) {
+                            out.push(Output::Sent(line.to_string()));
+                            if self.settings.local_echo {
+                                out.push(Output::Echo(line.to_string()));
+                            }
+                        }
+                    }
+                }
+                ScriptAction::Input(text) => out.extend(self.submit(&text, false)),
+                ScriptAction::Notice(text) => out.push(Output::Notice(text)),
+                ScriptAction::Display(text) => {
+                    let mut line = AnsiParser::new().parse_line(&text);
+                    line.linkify();
+                    out.push(Output::Line { line, target: Target::Main });
+                }
+                ScriptAction::Spawn { window, text } => {
+                    let mut line = AnsiParser::new().parse_line(&text);
+                    line.linkify();
+                    out.push(Output::Line { line, target: Target::Spawn(window) });
+                }
+                ScriptAction::Gmcp { package, data } => out.extend(self.send_gmcp(&package, data.as_deref())),
+                ScriptAction::SetVariable { name, value } => self.set_variable(&name, value.as_deref(), true, out),
+                ScriptAction::Error(e) => out.push(Output::Notice(format!("Script error: {e}"))),
+            }
+        }
+        self.script_depth -= 1;
+        // Applying actions can run more hooks, which can queue more actions.
+        self.drain_script(out);
+    }
+
+    fn script_event(&mut self, name: &str, out: &mut Vec<Output>) {
+        let context = self.script_context();
+        if let Some(script) = self.script.as_mut() {
+            script.set_context(&context);
+            script.on_event(name);
+            self.drain_script(out);
+        }
     }
 
     pub fn title(&self) -> String {
@@ -280,6 +413,7 @@ impl Engine {
                 for line in login.lines().filter(|l| !l.is_empty()) {
                     self.send_raw(line);
                 }
+                self.script_event("connect", &mut out);
             }
             SessionEvent::Line(text) => self.incoming(&text, None, &mut out),
             SessionEvent::Prompt(text) => self.incoming(&text, Some(true), &mut out),
@@ -310,6 +444,7 @@ impl Engine {
                     out.push(Output::PasswordMode(false));
                 }
                 self.handle = None;
+                self.script_event("disconnect", &mut out);
             }
         }
         out
@@ -350,6 +485,10 @@ impl Engine {
                     }
                 }
             }
+        }
+        if let Some(script) = self.script.as_mut() {
+            script.on_gmcp(&package, &data);
+            self.drain_script(out);
         }
         out.push(Output::Gmcp { package, data });
     }
@@ -423,6 +562,10 @@ impl Engine {
             text
         };
         out.push(Output::Received(text.to_string()));
+        if let Some(script) = self.script.as_mut() {
+            script.on_receive(text);
+            self.drain_script(out);
+        }
         let mut line = self.ansi.parse_line(text);
         line.linkify();
         let plain = line.text.clone();
@@ -432,6 +575,7 @@ impl Engine {
         let mut important = false;
         let mut spawns: Vec<String> = Vec::new();
         let mut sends: Vec<String> = Vec::new();
+        let mut calls: Vec<(String, Vec<String>)> = Vec::new();
 
         for i in 0..self.rules.triggers.len() {
             let t = &self.rules.triggers[i];
@@ -462,6 +606,11 @@ impl Engine {
                 out.push(Output::Notify { title: self.title(), body: plain.clone() });
             }
             let stop = trigger.stop;
+            if !trigger.script.is_empty() {
+                let mut args = vec![plain.clone()];
+                args.extend((1..caps.len()).map(|i| caps.get(i).map_or(String::new(), |m| m.as_str().to_string())));
+                calls.push((trigger.script.clone(), args));
+            }
             if !trigger.send.is_empty() {
                 let caps = Captures::from_regex(&t.regex, &caps);
                 let template = trigger.send.clone();
@@ -475,6 +624,14 @@ impl Engine {
             }
         }
 
+        if let Some(script) = self.script.as_mut() {
+            for (function, args) in &calls {
+                script.call(function, args);
+            }
+            if !script.on_line(&plain) {
+                gag = true;
+            }
+        }
         if !gag_log {
             self.log(&plain, out);
         }
@@ -491,6 +648,7 @@ impl Engine {
             out.push(Output::Line { line: line.clone(), target: Target::Spawn(name) });
         }
         out.push(Output::Activity { important });
+        self.drain_script(out);
         for command in sends {
             self.send_raw(&command);
             out.push(Output::Sent(command.clone()));
@@ -536,6 +694,11 @@ impl Engine {
             self.send_raw(text);
             return out;
         }
+        // "/@" runs the whole input as JavaScript, so functions can span lines.
+        if let Some(code) = text.strip_prefix("/@") {
+            self.eval_script(code, &mut out);
+            return out;
+        }
         // Enter on an empty input still sends an empty line, which many MUDs use.
         let lines: Vec<&str> = if text.is_empty() { vec![""] } else { text.lines().collect() };
         for line in lines {
@@ -552,7 +715,34 @@ impl Engine {
         out
     }
 
+    fn eval_script(&mut self, code: &str, out: &mut Vec<Output>) {
+        let Some(script) = self.script.as_mut() else {
+            out.push(Output::Notice("Scripting isn't available".into()));
+            return;
+        };
+        let result = script.eval(code);
+        self.drain_script(out);
+        match result {
+            Ok(Some(value)) => out.push(Output::Notice(value)),
+            Ok(None) => {}
+            Err(e) => out.push(Output::Notice(format!("Script error: {e}"))),
+        }
+    }
+
     fn send_command(&mut self, command: &str, out: &mut Vec<Output>) {
+        let changed;
+        let mut command = command;
+        if let Some(script) = self.script.as_mut() {
+            let result = script.on_send(command);
+            self.drain_script(out);
+            match result {
+                Some(c) => {
+                    changed = c;
+                    command = &changed;
+                }
+                None => return, // A script dropped it.
+            }
+        }
         if self.send_raw(command) {
             out.push(Output::Sent(command.to_string()));
             if self.settings.local_echo {
@@ -585,10 +775,7 @@ impl Engine {
         match name.to_lowercase().as_str() {
             "help" | "?" => out.push(Output::Notice(HELP.into())),
             "set" if args.is_empty() => {
-                let mut all: BTreeMap<&str, &str> = BTreeMap::new();
-                for vars in self.variables.iter().rev() {
-                    all.extend(vars.iter().map(|(k, v)| (k.as_str(), v.as_str())));
-                }
+                let all = self.merged_variables();
                 if all.is_empty() {
                     out.push(Output::Notice("No variables. Set one with /set name value".into()));
                 }
@@ -602,9 +789,20 @@ impl Engine {
                     out.push(Output::Notice("Variable names can only contain letters, digits and _".into()));
                     return;
                 }
-                self.set_variable(var, Some(value.trim_start()), out);
+                self.set_variable(var, Some(value.trim_start()), false, out);
             }
-            "unset" if !args.is_empty() => self.set_variable(args, None, out),
+            "unset" if !args.is_empty() => self.set_variable(args, None, false, out),
+            "script" => {
+                let (sub, rest) = args.split_once(char::is_whitespace).unwrap_or((args, ""));
+                match sub {
+                    "load" if !rest.trim().is_empty() => out.extend(self.load_script(std::path::Path::new(rest.trim()))),
+                    "reload" => out.push(Output::ReloadScripts),
+                    _ => out.push(Output::Notice(format!(
+                        "Scripting is {}. Use /@code, /script load path or /script reload.",
+                        if self.script.is_some() { "on" } else { "off" }
+                    ))),
+                }
+            }
             "echo" => out.push(Output::Notice(args.to_string())),
             "clear" => out.push(Output::ClearOutput),
             "log" => out.extend(self.toggle_log()),
@@ -652,22 +850,34 @@ impl Engine {
         }
     }
 
-    fn set_variable(&mut self, name: &str, value: Option<&str>, out: &mut Vec<Output>) {
+    /// Sets or removes a variable at the most specific scope. `quiet` skips the notice (for
+    /// scripts).
+    fn set_variable(&mut self, name: &str, value: Option<&str>, quiet: bool, out: &mut Vec<Output>) {
         let Some(vars) = self.variables.first_mut() else { return };
         match value {
             Some(value) => {
                 vars.insert(name.to_string(), value.to_string());
-                out.push(Output::Notice(format!("%{name}% = {value}")));
+                if !quiet {
+                    out.push(Output::Notice(format!("%{name}% = {value}")));
+                }
             }
             None => {
                 if vars.remove(name).is_none() {
-                    out.push(Output::Notice(format!("%{name}% isn't set here")));
+                    if !quiet {
+                        out.push(Output::Notice(format!("%{name}% isn't set here")));
+                    }
                     return;
                 }
-                out.push(Output::Notice(format!("%{name}% removed")));
+                if !quiet {
+                    out.push(Output::Notice(format!("%{name}% removed")));
+                }
             }
         }
         out.push(Output::VariablesChanged { scope: self.scopes[0].clone(), variables: vars.clone() });
+        let merged = self.merged_variables();
+        if let Some(script) = self.script.as_mut() {
+            script.set_variables(&merged);
+        }
     }
 
     /// Handles a clicked link: `send:` sends a command, `prompt:` fills the input, anything

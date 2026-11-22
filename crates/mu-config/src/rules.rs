@@ -79,6 +79,9 @@ pub struct Trigger {
     /// Mark the tab as needing attention.
     #[serde(skip_serializing_if = "is_false")]
     pub important: bool,
+    /// Name of a script function to call with the line and the regex groups.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub script: String,
 }
 
 impl Default for Trigger {
@@ -96,6 +99,7 @@ impl Default for Trigger {
             sound: String::new(),
             notify: false,
             important: false,
+            script: String::new(),
         }
     }
 }

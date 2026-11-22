@@ -3,7 +3,7 @@
 A native Linux MU* (MUD/MUCK/MOO/MUSH) client in Rust, inspired by [BeipMU](https://github.com/BeipDev/BeipMU).
 It is a new codebase, not a port. The BeipMU sources are used only as a reference for features and protocols.
 
-## Status: M3 (GMCP, MCP, media, web views)
+## Status: M4 (scripting)
 
 | Crate | What it does |
 |---|---|
@@ -12,6 +12,7 @@ It is a new codebase, not a port. The BeipMU sources are used only as a referenc
 | `mu-net` | Async TCP/TLS (rustls, verified against system certs, with an option to skip verification). Encodings: Auto (UTF-8 with a per-line Windows-1252 fallback, the default), UTF-8, Windows-1252, CP437. A session task turns raw bytes into line, prompt and GMCP events. |
 | `mu-config` | Worlds, characters, settings and rules (triggers, aliases, macros, variables at global, world and character scope) in `~/.config/mu-client/config.toml`, plus a built-in directory of 40 public worlds. |
 | `mu-engine` | The UI-independent client: per-connection `Engine` that turns network events and input into render outputs. Triggers, aliases, keyboard macros, variables, `/` commands, input history, daily-rotating logs, GMCP (`Beip.Stats`, `Client.Media`, `WebView`), and MCP 2.1 (simpleedit, awns-status, awns-ping, vmoo-client). Shared by the GUI and the planned TUI. |
+| `mu-script` | JavaScript scripting with QuickJS: one isolated runtime per connection, a 2-second limit per call and a memory cap. Implements the engine's `ScriptHost` trait, so any frontend gets scripting. |
 | `mu-gtk` | GTK4/libadwaita client: a tab per connection, ANSI and full Unicode output with clickable links, a side dock with spawn windows and GMCP stat panes, input with history, password mode, NAWS, logging, sounds (trigger and server-driven), notifications, an MCP status line and text editor, web views, and a rules editor. |
 | `mu-cli` | Terminal client for testing against real servers. |
 
@@ -45,7 +46,11 @@ Links work in OSC 8 output and in plain URLs. `send:` links send a command and `
 - **Macros** bind keys (F5, Ctrl+K, number-pad keys…) to commands.
 - **Variables** (`%name%`) work in trigger sends and alias replacements.
 
-Client commands start with `/`: `/set`, `/unset`, `/echo`, `/log`, `/clear`, `/reconnect`, `/disconnect`, `/gmcp` (show GMCP traffic, or `/gmcp Package {json}` to send), `/mcp`, `/webview url`, `/help`. Type `//` to send a line that starts with `/`.
+### Scripting
+
+JavaScript (QuickJS) runs per connection. `~/.config/mu-client/startup.js` runs for every session, and each world can name its own script file. `/@code` runs code right away (Shift+Enter for multiple lines), and `/script reload` restarts scripting after you edit a file. Scripts get `mu.send`, `mu.input`, `mu.echo`, `mu.notice`, `mu.spawn`, `mu.gmcp`, `mu.vars`, `mu.world`/`mu.character`/`mu.connected`, events through `mu.on` (`line` to hide lines, `receive`, `send` to rewrite or drop commands, `gmcp` and `gmcp:Package`, `connect`, `disconnect`), timers and `console.log`. Triggers can call a script function with the line and its regex groups. See [examples/startup.js](examples/startup.js).
+
+Client commands start with `/`: `/set`, `/unset`, `/echo`, `/log`, `/clear`, `/reconnect`, `/disconnect`, `/gmcp` (show GMCP traffic, or `/gmcp Package {json}` to send), `/mcp`, `/webview url`, `/@code`, `/script load path`, `/script reload`, `/help`. Type `//` to send a line that starts with `/`.
 
 ### Protocols
 
@@ -60,7 +65,6 @@ Client commands start with `/`: `/set`, `/unset`, `/echo`, `/log`, `/clear`, `/r
 
 ## Roadmap
 
-M4 QuickJS scripting →
 M5 maps (with Room.Info), tilemap, avatars, puppets, speech, spellcheck → M6 BeipMU Config.txt, `.atlas` and script compatibility →
 M7 a full terminal UI (`mu-tui`, ratatui) sharing the same engine.
 

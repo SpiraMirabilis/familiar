@@ -74,6 +74,9 @@ pub struct World {
     pub encoding: String,
     /// Speak MCP 2.1 if the server offers it (MOOs and MUCKs).
     pub mcp: bool,
+    /// A JavaScript file to run for this world, after the global startup.js.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub script: String,
     /// Whether the server may open web views (GMCP webview.open). None means ask.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub allow_webviews: Option<bool>,
@@ -93,6 +96,7 @@ impl Default for World {
             verify_certificate: true,
             encoding: "Auto".into(),
             mcp: true,
+            script: String::new(),
             allow_webviews: None,
             rules: Rules::default(),
             characters: Vec::new(),
@@ -121,6 +125,11 @@ pub fn data_dir() -> PathBuf {
 
 pub fn default_config_path() -> PathBuf {
     config_dir().join("config.toml")
+}
+
+/// Runs for every session, if it exists.
+pub fn startup_script_path() -> PathBuf {
+    config_dir().join("startup.js")
 }
 
 pub fn log_dir() -> PathBuf {

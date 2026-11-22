@@ -26,6 +26,7 @@ pub struct WorldDialog {
     tls: adw::SwitchRow,
     verify: adw::SwitchRow,
     encoding: adw::ComboRow,
+    script: adw::EntryRow,
     characters_group: adw::PreferencesGroup,
     characters: RefCell<Vec<CharacterRows>>,
     save: gtk::Button,
@@ -65,8 +66,35 @@ pub fn show(
         )
         .build();
 
+    let script = adw::EntryRow::builder().title("Script file (optional)").text(&world.script).build();
+    let browse = gtk::Button::builder()
+        .icon_name("document-open-symbolic")
+        .tooltip_text("Choose a script file")
+        .valign(gtk::Align::Center)
+        .css_classes(["flat"])
+        .build();
+    script.add_suffix(&browse);
+    {
+        let script = script.clone();
+        browse.connect_clicked(move |button| {
+            let window = button.root().and_downcast::<gtk::Window>();
+            let script = script.clone();
+            gtk::FileDialog::builder().title("Choose a Script").build().open(
+                window.as_ref(),
+                None::<&gtk::gio::Cancellable>,
+                move |result| {
+                    if let Ok(file) = result
+                        && let Some(path) = file.path()
+                    {
+                        script.set_text(&path.to_string_lossy());
+                    }
+                },
+            );
+        });
+    }
+
     let server = adw::PreferencesGroup::builder().title("Server").build();
-    for row in [name.upcast_ref::<gtk::Widget>(), host.upcast_ref(), port.upcast_ref(), tls.upcast_ref(), verify.upcast_ref(), encoding.upcast_ref()] {
+    for row in [name.upcast_ref::<gtk::Widget>(), host.upcast_ref(), port.upcast_ref(), tls.upcast_ref(), verify.upcast_ref(), encoding.upcast_ref(), script.upcast_ref()] {
         server.add(row);
     }
 
@@ -110,6 +138,7 @@ pub fn show(
         tls,
         verify,
         encoding,
+        script,
         characters_group,
         characters: RefCell::default(),
         save,
@@ -207,6 +236,7 @@ impl WorldDialog {
             tls: self.tls.is_active(),
             verify_certificate: self.verify.is_active(),
             encoding: ENCODINGS[(self.encoding.selected() as usize).min(ENCODINGS.len() - 1)].to_string(),
+            script: self.script.text().trim().to_string(),
             characters: self
                 .characters
                 .borrow()
