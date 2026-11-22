@@ -44,3 +44,23 @@ Name: "{autodesktop}\Familiar"; Filename: "{app}\bin\familiar.exe"; Tasks: deskt
 
 [Run]
 Filename: "{app}\bin\familiar.exe"; Description: "{cm:LaunchProgram,Familiar}"; Flags: nowait postinstall skipifsilent
+
+[Code]
+// GLib starts a small helper (gdbus.exe, from our bin folder) that outlives the app by a few
+// seconds. While it runs, Windows won't let its files be removed, so uninstalling right after
+// closing Familiar would leave files behind. Stop ours (and only ours) first. Upgrades need
+// nothing: Setup closes programs that are using the files it replaces.
+procedure StopHelper();
+var
+  ResultCode: Integer;
+begin
+  Exec('powershell.exe',
+    '-NoProfile -Command "Get-Process gdbus -ErrorAction SilentlyContinue | Where-Object { $_.Path -like ''' + ExpandConstant('{app}') + '\*'' } | Stop-Process -Force"',
+    '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+begin
+  if CurUninstallStep = usUninstall then
+    StopHelper();
+end;
