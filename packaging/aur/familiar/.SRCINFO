@@ -28,6 +28,6 @@ pkgbase = familiar
 	optdepends = libnotify: desktop notifications from the terminal client
 	options = !lto
 	source = familiar-0.2.0.tar.gz::https://github.com/SpiraMirabilis/familiar/archive/refs/tags/v0.2.0.tar.gz
-	sha256sums = 4aeb95af5d3ad1eb0b701dcd28f84ed4cf03742d2d3992ce361d0c303374101a
+	sha256sums = c89ff431101a2a76b9e93a4a8ddceddb84f7d97717be458514332ce47711244a
 
 pkgname = familiar

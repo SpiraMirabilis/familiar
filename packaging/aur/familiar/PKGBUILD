@@ -18,7 +18,7 @@ optdepends=('gst-plugins-good: more sound formats'
             'pipewire: sounds in the terminal client (pw-play)'
             'libnotify: desktop notifications from the terminal client')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('4aeb95af5d3ad1eb0b701dcd28f84ed4cf03742d2d3992ce361d0c303374101a')
+sha256sums=('c89ff431101a2a76b9e93a4a8ddceddb84f7d97717be458514332ce47711244a')
 
 prepare() {
   cd "$pkgname-$pkgver"
