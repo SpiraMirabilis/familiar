@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use familiar_config::{Config, World};
+use familiar_config::{Config, Settings, World};
 use familiar_engine::{EditRequest, KeyChord, Output, Status};
 use familiar_net::SessionEvent;
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
@@ -26,6 +26,7 @@ pub const TUI_COMMANDS: &[(&str, &str)] = &[
     ("/world", "save or edit this tab's world (address, character, login)"),
     ("/close", "close this tab"),
     ("/sidebar", "show or hide the sidebar (map, stats, spawn windows)"),
+    ("/colors [standard|terminal]", "draw the 16 basic colours exactly, or with the terminal's theme"),
     ("/config", "edit the config file in $EDITOR"),
     ("/keys", "show keyboard shortcuts"),
     ("/quit", "disconnect everything and quit"),
@@ -222,6 +223,7 @@ impl App {
             Ok(c) => (c, None),
             Err(e) => (Config::default(), Some(e.to_string())),
         };
+        crate::theme::set_terminal_colors(config.settings.terminal_colors);
         let mut app = Self {
             config,
             config_path,
@@ -512,6 +514,7 @@ impl App {
             Ok(config) => {
                 self.config = config;
                 self.config_error = None;
+                crate::theme::set_terminal_colors(self.config.settings.terminal_colors);
                 for idx in 0..self.sessions.len() {
                     let out = self.sessions[idx].engine.reload(&self.config);
                     self.apply(idx, out);

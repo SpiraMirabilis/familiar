@@ -461,6 +461,23 @@ impl App {
             "sidebar" => self.run(Cmd::ToggleSidebar),
             "world" | "worlds" => self.run(Cmd::EditWorld),
             "config" => self.run(Cmd::EditConfig),
+            "colors" | "colours" => {
+                match args.to_lowercase().as_str() {
+                    "terminal" | "theme" => self.config.settings.terminal_colors = true,
+                    "standard" | "exact" => self.config.settings.terminal_colors = false,
+                    "" => {}
+                    _ => {
+                        self.toast("Use /colors standard or /colors terminal");
+                        return true;
+                    }
+                }
+                let themed = self.config.settings.terminal_colors;
+                if !args.is_empty() {
+                    crate::theme::set_terminal_colors(themed);
+                    self.save_config();
+                }
+                self.toast(if themed { "Basic colours: the terminal's theme" } else { "Basic colours: standard" });
+            }
             "keys" | "shortcuts" => self.run(Cmd::Help),
             _ => return false,
         }

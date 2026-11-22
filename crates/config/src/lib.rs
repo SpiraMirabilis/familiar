@@ -93,6 +93,10 @@ pub struct Settings {
     pub speak_output: bool,
     /// Underline misspellings in the input.
     pub spellcheck: bool,
+    /// Terminal client: draw the 16 basic colours with the terminal's own theme instead of the
+    /// standard ones. Themes often change them a lot (a pastel "red"), which misrepresents
+    /// what a server meant, so this is off by default.
+    pub terminal_colors: bool,
 }
 
 impl Default for Settings {
@@ -108,6 +112,7 @@ impl Default for Settings {
             inline_images: false,
             speak_output: false,
             spellcheck: true,
+            terminal_colors: false,
         }
     }
 }

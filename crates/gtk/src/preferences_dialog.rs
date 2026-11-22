@@ -93,6 +93,8 @@ pub fn show(parent: &impl IsA<gtk::Widget>, state: Rc<AppState>, on_change: impl
                 inline_images: inline_images.is_active(),
                 speak_output: speak.is_active(),
                 spellcheck: spellcheck.is_active(),
+                // Not shown here: it only concerns the terminal client.
+                ..state.config.borrow().settings.clone()
             };
             if state.config.borrow().settings == new {
                 return;

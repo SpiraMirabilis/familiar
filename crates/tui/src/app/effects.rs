@@ -62,7 +62,9 @@ impl App {
                 self.save_config();
             }
             Effect::Settings(settings) => {
-                self.config.settings = settings;
+                // Settings changed from inside a session (/images, /speech) don't know about ours.
+                let terminal_colors = self.config.settings.terminal_colors;
+                self.config.settings = Settings { terminal_colors, ..settings };
                 self.save_config();
             }
             Effect::OpenPuppet { name, focus } => {
