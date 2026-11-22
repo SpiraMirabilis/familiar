@@ -327,6 +327,8 @@ fn mcp_is_handled_before_display_and_triggers() {
     let out = e.handle_event(SessionEvent::Line("#$#: 7".into()));
     let Some(Output::Edit(request)) = out.first() else { panic!("{out:?}") };
     assert_eq!(request.content, "hello");
+    // string-list content (a description) isn't code.
+    assert_eq!(request.language, None);
     assert!(sent(&mut rx).is_empty(), "the trigger never saw MCP lines");
 
     e.save_edit(request, "changed");
@@ -356,4 +358,42 @@ fn send_text_with_and_without_aliases() {
     e.send_text("k orc", true);
     e.send_text("k orc\n/notacommand", false);
     assert_eq!(sent(&mut rx), vec!["kill orc", "k orc", "/notacommand"]);
+}
+
+#[test]
+fn compile_errors_after_an_upload() {
+    let (mut e, mut rx) = engine(&config(Rules::default(), Rules::default(), Rules::default()));
+    // Before any upload, "Line 3:" is just text.
+    let out = e.handle_event(SessionEvent::Line("Line 3:  syntax error".into()));
+    assert!(!out.iter().any(|o| matches!(o, Output::CompileError { .. })));
+
+    let out = e.submit("/edit", false);
+    let Some(Output::Edit(request)) = out.first() else { panic!("{out:?}") };
+    assert!(request.is_local());
+    assert_eq!(request.language.as_deref(), Some("moo"));
+    e.save_edit(request, "@program #1:test\nreturn 1\n.");
+    assert_eq!(sent(&mut rx), vec!["@program #1:test", "return 1", "."]);
+
+    let out = e.handle_event(SessionEvent::Line("Line 2:  parse error".into()));
+    assert!(out.contains(&Output::CompileError { reference: String::new(), line: 2, message: "parse error".into() }));
+    let out = e.handle_event(SessionEvent::Line("Error in line 7: Unrecognized word foo.".into()));
+    assert!(out.iter().any(|o| matches!(o, Output::CompileError { line: 7, .. })));
+    // It's still shown in the output too.
+    assert_eq!(main_lines(&out).len(), 1);
+
+    let out = e.submit("/edit MUF", false);
+    assert!(matches!(&out[0], Output::Edit(r) if r.language.as_deref() == Some("muf")));
+}
+
+#[test]
+fn moo_code_uses_the_world_language() {
+    let mut cfg = config(Rules::default(), Rules::default(), Rules::default());
+    cfg.worlds[0].program_language = "muf".into();
+    let (mut e, mut rx) = engine(&cfg);
+    e.handle_event(SessionEvent::Line("#$#mcp version: 2.1 to: 2.1".into()));
+    let key = sent(&mut rx)[0].split_whitespace().nth(2).unwrap().to_string();
+    let out = e.handle_event(SessionEvent::Line(format!(
+        r##"#$#dns-org-mud-moo-simpleedit-content {key} reference: "#5:do" name: "#5:do" type: moo-code content: "return;""##
+    )));
+    assert!(matches!(&out[0], Output::Edit(r) if r.language.as_deref() == Some("muf")));
 }

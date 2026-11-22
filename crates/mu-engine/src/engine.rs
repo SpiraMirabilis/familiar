@@ -44,10 +44,22 @@ pub struct EditRequest {
     /// Opaque; pass it back to [`Engine::save_edit`].
     pub reference: String,
     pub name: String,
-    /// "string", "string-list" or "moo-code".
+    /// "string", "string-list" or "moo-code" from MCP, or "local" for a scratch editor.
     pub kind: String,
     pub content: String,
+    /// Language for highlighting and indentation ("moo", "muf", ...). None for plain text.
+    pub language: Option<String>,
 }
+
+impl EditRequest {
+    /// A scratch editor whose text is sent line by line, e.g. after an @program command.
+    pub fn is_local(&self) -> bool {
+        self.kind == "local"
+    }
+}
+
+/// How long after an upload to watch the server's replies for compile errors.
+const COMPILE_WATCH: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct WebViewOpen {
@@ -98,6 +110,9 @@ pub enum Output {
     /// Variables at `scope` changed and should be saved.
     VariablesChanged { scope: Scope, variables: BTreeMap<String, String> },
     LoggingChanged(Option<PathBuf>),
+    /// The server reported a compile error in a program that was just sent from an editor.
+    /// `line` counts from 1.
+    CompileError { reference: String, line: u32, message: String },
     /// A Beip.Stats pane changed. None means it was removed.
     Stats { pane: String, data: Option<StatPane> },
     Media(MediaCommand),
@@ -134,6 +149,8 @@ pub struct Engine {
     gmcp_debug: bool,
     webviews_supported: bool,
     script: Option<Box<dyn ScriptHost>>,
+    /// After an upload: which editor it came from, and until when to look for errors.
+    compile_watch: Option<(String, Instant)>,
     /// How deeply script actions are nested (a script typing input that runs a script...).
     script_depth: u32,
 }
@@ -155,6 +172,7 @@ const HELP: &str = "Client commands:
   /@code               run JavaScript (multi-line with Shift+Enter)
   /script load path    run a script file
   /script reload       restart scripting and reload the startup scripts
+  /edit [language]     open a code editor whose text is sent line by line (moo, muf, lua)
   //text               send text that starts with a /";
 
 impl Engine {
@@ -177,6 +195,7 @@ impl Engine {
             gmcp_debug: false,
             webviews_supported: false,
             script: None,
+            compile_watch: None,
             script_depth: 0,
         };
         let out = engine.reload(config);
@@ -524,12 +543,46 @@ impl Engine {
         out
     }
 
-    /// Sends the user's edited text back for an MCP simpleedit request.
+    fn program_language(&self) -> String {
+        if self.world.program_language.is_empty() { "moo".into() } else { self.world.program_language.clone() }
+    }
+
+    /// Sends the user's edited text: back to the server for an MCP simpleedit request, or line
+    /// by line for a scratch editor. Afterwards, compile errors in the replies are reported.
     pub fn save_edit(&mut self, request: &EditRequest, content: &str) -> Vec<Output> {
-        for line in self.mcp.simpleedit_set(&request.reference, &request.kind, content) {
-            self.send_raw(&line);
+        let out = if request.is_local() {
+            let lines: Vec<&str> = content.lines().collect();
+            for line in &lines {
+                self.send_raw(line);
+            }
+            vec![Output::Notice(format!("Sent {} lines", lines.len()))]
+        } else {
+            for line in self.mcp.simpleedit_set(&request.reference, &request.kind, content) {
+                self.send_raw(&line);
+            }
+            vec![Output::Notice(format!("Sent your changes to \"{}\"", request.name))]
+        };
+        self.compile_watch = Some((request.reference.clone(), Instant::now() + COMPILE_WATCH));
+        out
+    }
+
+    /// Looks for "Line 3:  syntax error" (MOO) or "Error in line 3: ..." (FuzzBall MUF) soon
+    /// after an upload.
+    fn check_compile_error(&mut self, text: &str, out: &mut Vec<Output>) {
+        let Some((reference, until)) = &self.compile_watch else { return };
+        if Instant::now() > *until {
+            self.compile_watch = None;
+            return;
         }
-        vec![Output::Notice(format!("Sent your changes to \"{}\"", request.name))]
+        let rest = text
+            .trim_start()
+            .strip_prefix("Line ")
+            .or_else(|| text.trim_start().strip_prefix("Error in line "));
+        let Some(rest) = rest else { return };
+        let Some((number, message)) = rest.split_once(':') else { return };
+        if let Ok(line) = number.trim().parse::<u32>() {
+            out.push(Output::CompileError { reference: reference.clone(), line, message: message.trim().to_string() });
+        }
     }
 
     /// Handles a line (prompt = None) or prompt (prompt = Some(terminated)) from the server.
@@ -545,7 +598,8 @@ impl Engine {
                 out.push(match event {
                     McpEvent::Status(text) => Output::StatusText(text),
                     McpEvent::Edit { reference, name, kind, content } => {
-                        Output::Edit(EditRequest { reference, name, kind, content })
+                        let language = (kind == "moo-code").then(|| self.program_language());
+                        Output::Edit(EditRequest { reference, name, kind, content, language })
                     }
                     McpEvent::Notice(text) => Output::Notice(text),
                 });
@@ -562,6 +616,7 @@ impl Engine {
             text
         };
         out.push(Output::Received(text.to_string()));
+        self.check_compile_error(text, out);
         if let Some(script) = self.script.as_mut() {
             script.on_receive(text);
             self.drain_script(out);
@@ -830,6 +885,16 @@ impl Engine {
             } else {
                 "MCP is off for this world".into()
             })),
+            "edit" => {
+                let language = if args.is_empty() { self.program_language() } else { args.to_lowercase() };
+                out.push(Output::Edit(EditRequest {
+                    reference: String::new(),
+                    name: format!("Scratch ({language})"),
+                    kind: "local".into(),
+                    content: String::new(),
+                    language: Some(language),
+                }));
+            }
             "webview" if !args.is_empty() => {
                 // Accept BeipMU's form, /webview url="...", as well as a bare URL.
                 let url = args.strip_prefix("url=").unwrap_or(args).trim_matches('"').to_string();

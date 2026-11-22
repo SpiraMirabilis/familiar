@@ -74,6 +74,10 @@ pub struct World {
     pub encoding: String,
     /// Speak MCP 2.1 if the server offers it (MOOs and MUCKs).
     pub mcp: bool,
+    /// The language programs from this world are written in, for the code editor:
+    /// "moo", "muf", "lua" or any GtkSourceView language id. Empty means MOO.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub program_language: String,
     /// A JavaScript file to run for this world, after the global startup.js.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub script: String,
@@ -96,6 +100,7 @@ impl Default for World {
             verify_certificate: true,
             encoding: "Auto".into(),
             mcp: true,
+            program_language: String::new(),
             script: String::new(),
             allow_webviews: None,
             rules: Rules::default(),

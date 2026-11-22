@@ -4,8 +4,8 @@
 #![allow(clippy::type_complexity)]
 
 mod app;
+mod code_editor;
 mod connect_dialog;
-mod edit_window;
 mod input;
 mod keys;
 mod media_player;

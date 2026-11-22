@@ -7,6 +7,8 @@ use adw::prelude::*;
 use mu_config::{Character, World};
 
 const ENCODINGS: [&str; 4] = ["Auto", "UTF-8", "Windows-1252", "CP437"];
+/// Language ids for the code editor, and their names.
+const PROGRAM_LANGUAGES: [(&str, &str); 3] = [("moo", "MOO (Stunt)"), ("muf", "MUF"), ("lua", "Lua")];
 
 struct CharacterRows {
     /// Kept so fields the dialog doesn't edit (like rules) survive a save.
@@ -27,6 +29,7 @@ pub struct WorldDialog {
     verify: adw::SwitchRow,
     encoding: adw::ComboRow,
     script: adw::EntryRow,
+    program_language: adw::ComboRow,
     characters_group: adw::PreferencesGroup,
     characters: RefCell<Vec<CharacterRows>>,
     save: gtk::Button,
@@ -66,6 +69,13 @@ pub fn show(
         )
         .build();
 
+    let names: Vec<&str> = PROGRAM_LANGUAGES.iter().map(|(_, n)| *n).collect();
+    let program_language = adw::ComboRow::builder()
+        .title("Program language")
+        .subtitle("For the code editor (MCP simpleedit and /edit)")
+        .model(&gtk::StringList::new(&names))
+        .selected(PROGRAM_LANGUAGES.iter().position(|(id, _)| *id == world.program_language).unwrap_or(0) as u32)
+        .build();
     let script = adw::EntryRow::builder().title("Script file (optional)").text(&world.script).build();
     let browse = gtk::Button::builder()
         .icon_name("document-open-symbolic")
@@ -94,7 +104,7 @@ pub fn show(
     }
 
     let server = adw::PreferencesGroup::builder().title("Server").build();
-    for row in [name.upcast_ref::<gtk::Widget>(), host.upcast_ref(), port.upcast_ref(), tls.upcast_ref(), verify.upcast_ref(), encoding.upcast_ref(), script.upcast_ref()] {
+    for row in [name.upcast_ref::<gtk::Widget>(), host.upcast_ref(), port.upcast_ref(), tls.upcast_ref(), verify.upcast_ref(), encoding.upcast_ref(), program_language.upcast_ref(), script.upcast_ref()] {
         server.add(row);
     }
 
@@ -139,6 +149,7 @@ pub fn show(
         verify,
         encoding,
         script,
+        program_language,
         characters_group,
         characters: RefCell::default(),
         save,
@@ -237,6 +248,7 @@ impl WorldDialog {
             verify_certificate: self.verify.is_active(),
             encoding: ENCODINGS[(self.encoding.selected() as usize).min(ENCODINGS.len() - 1)].to_string(),
             script: self.script.text().trim().to_string(),
+            program_language: PROGRAM_LANGUAGES[(self.program_language.selected() as usize).min(PROGRAM_LANGUAGES.len() - 1)].0.to_string(),
             characters: self
                 .characters
                 .borrow()

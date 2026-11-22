@@ -1,0 +1,413 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  MOO as accepted by the Stunt server in ~/stunt: LambdaMOO plus try/except, break/continue,
+  maps, bitwise operators, /* comments */, $#colour literals, b"bytes" literals and string
+  escapes. Built from parser.y's next_token() and keywords.gperf. The built-in function list
+  is every register_function() name in the Stunt source (209 of them).
+
+  MOO keywords and names are case-insensitive (gperf builds keywords.gperf with its ignore-case option).
+-->
+<language id="moo" name="MOO (Stunt)" version="2.0" _section="Source">
+  <metadata>
+    <property name="globs">*.moo</property>
+    <property name="block-comment-start">/*</property>
+    <property name="block-comment-end">*/</property>
+  </metadata>
+
+  <styles>
+    <style id="comment" name="Comment" map-to="def:comment"/>
+    <style id="string" name="String" map-to="def:string"/>
+    <style id="escape" name="Escape" map-to="def:special-char"/>
+    <style id="bytes" name="Bytes Literal" map-to="def:string"/>
+    <style id="keyword" name="Keyword" map-to="def:keyword"/>
+    <style id="error-code" name="Error Code" map-to="def:constant"/>
+    <style id="object" name="Object Number" map-to="def:special-constant"/>
+    <style id="colour" name="Colour Literal" map-to="def:special-constant"/>
+    <style id="sysref" name="$ Reference" map-to="def:type"/>
+    <style id="integer" name="Integer" map-to="def:decimal"/>
+    <style id="float" name="Float" map-to="def:floating-point"/>
+    <style id="builtin" name="Built-in Function" map-to="def:builtin"/>
+    <style id="type-name" name="Type Constant" map-to="def:type"/>
+    <style id="variable" name="Built-in Variable" map-to="def:special-constant"/>
+    <style id="verb" name="Verb Call" map-to="def:function"/>
+    <style id="operator" name="Operator" map-to="def:operator"/>
+  </styles>
+
+  <default-regex-options case-sensitive="false"/>
+
+  <definitions>
+    <!-- MOO has no line comments; by convention a statement that is only a string is one. -->
+    <context id="string-statement" style-ref="comment" class="comment">
+      <match>^\s*"(?:\\.|[^"\\])*"\s*;\s*$</match>
+    </context>
+
+    <context id="block-comment" style-ref="comment" class="comment" class-disabled="no-spell-check">
+      <start>/\*</start>
+      <end>\*/</end>
+      <include>
+        <context ref="def:in-comment"/>
+      </include>
+    </context>
+
+    <context id="escape" style-ref="escape">
+      <match>\\(?:x[0-9a-f]{2}|u[0-9a-f]{4}|[nrte0"\\])</match>
+    </context>
+
+    <context id="string" style-ref="string" end-at-line-end="true" class="string" class-disabled="no-spell-check">
+      <start>"</start>
+      <end>"</end>
+      <include>
+        <context ref="escape"/>
+      </include>
+    </context>
+
+    <!-- Only a lowercase b starts a bytes literal. -->
+    <context id="bytes" style-ref="bytes" end-at-line-end="true" class="string" class-disabled="no-spell-check">
+      <start>(?-i)\bb"</start>
+      <end>"</end>
+      <include>
+        <context ref="escape"/>
+      </include>
+    </context>
+
+    <context id="colour" style-ref="colour">
+      <match>\$#[a-z0-9_]+</match>
+    </context>
+
+    <context id="object" style-ref="object">
+      <match>#-?[0-9]+</match>
+    </context>
+
+    <context id="sysref" style-ref="sysref">
+      <match>\$[a-z_][a-z0-9_]*</match>
+    </context>
+
+    <context id="keywords" style-ref="keyword">
+      <keyword>if</keyword>
+      <keyword>else</keyword>
+      <keyword>elseif</keyword>
+      <keyword>endif</keyword>
+      <keyword>for</keyword>
+      <keyword>in</keyword>
+      <keyword>endfor</keyword>
+      <keyword>fork</keyword>
+      <keyword>endfork</keyword>
+      <keyword>return</keyword>
+      <keyword>while</keyword>
+      <keyword>endwhile</keyword>
+      <keyword>try</keyword>
+      <keyword>except</keyword>
+      <keyword>finally</keyword>
+      <keyword>endtry</keyword>
+      <keyword>break</keyword>
+      <keyword>continue</keyword>
+      <keyword>ANY</keyword>
+    </context>
+
+    <!-- Built-in variables (sym_table.cc), but not as property or verb names like x.player. -->
+    <context id="type-names" style-ref="type-name">
+      <prefix>(?&lt;![.:$])\b</prefix>
+      <keyword>NUM</keyword>
+      <keyword>OBJ</keyword>
+      <keyword>STR</keyword>
+      <keyword>LIST</keyword>
+      <keyword>ERR</keyword>
+      <keyword>INT</keyword>
+      <keyword>FLOAT</keyword>
+      <keyword>MAP</keyword>
+      <keyword>ANON</keyword>
+      <keyword>BYTES</keyword>
+      <keyword>COLOR</keyword>
+    </context>
+
+    <context id="variables" style-ref="variable">
+      <prefix>(?&lt;![.:$])\b</prefix>
+      <keyword>player</keyword>
+      <keyword>this</keyword>
+      <keyword>caller</keyword>
+      <keyword>verb</keyword>
+      <keyword>args</keyword>
+      <keyword>argstr</keyword>
+      <keyword>dobj</keyword>
+      <keyword>dobjstr</keyword>
+      <keyword>prepstr</keyword>
+      <keyword>iobj</keyword>
+      <keyword>iobjstr</keyword>
+    </context>
+
+    <context id="error-codes" style-ref="error-code">
+      <keyword>E_NONE</keyword>
+      <keyword>E_TYPE</keyword>
+      <keyword>E_DIV</keyword>
+      <keyword>E_PERM</keyword>
+      <keyword>E_PROPNF</keyword>
+      <keyword>E_VERBNF</keyword>
+      <keyword>E_VARNF</keyword>
+      <keyword>E_INVIND</keyword>
+      <keyword>E_RECMOVE</keyword>
+      <keyword>E_MAXREC</keyword>
+      <keyword>E_RANGE</keyword>
+      <keyword>E_ARGS</keyword>
+      <keyword>E_NACC</keyword>
+      <keyword>E_INVARG</keyword>
+      <keyword>E_QUOTA</keyword>
+      <keyword>E_FLOAT</keyword>
+      <keyword>E_FILE</keyword>
+      <keyword>E_EXEC</keyword>
+      <keyword>E_INTRPT</keyword>
+    </context>
+
+    <!-- Built-in functions are only highlighted where they're called. -->
+    <context id="builtins" style-ref="builtin">
+      <suffix>(?=\s*\()</suffix>
+      <keyword>abs</keyword>
+      <keyword>acos</keyword>
+      <keyword>add_property</keyword>
+      <keyword>add_verb</keyword>
+      <keyword>ancestors</keyword>
+      <keyword>asin</keyword>
+      <keyword>atan</keyword>
+      <keyword>binary_hash</keyword>
+      <keyword>binary_hmac</keyword>
+      <keyword>binary_to_bytes</keyword>
+      <keyword>boot_player</keyword>
+      <keyword>buffered_output_length</keyword>
+      <keyword>bytes_to_binary</keyword>
+      <keyword>caller_perms</keyword>
+      <keyword>callers</keyword>
+      <keyword>ceil</keyword>
+      <keyword>children</keyword>
+      <keyword>chparent</keyword>
+      <keyword>chparents</keyword>
+      <keyword>chr</keyword>
+      <keyword>clear_property</keyword>
+      <keyword>color</keyword>
+      <keyword>connected_players</keyword>
+      <keyword>connected_seconds</keyword>
+      <keyword>connection_name</keyword>
+      <keyword>connection_option</keyword>
+      <keyword>connection_options</keyword>
+      <keyword>cos</keyword>
+      <keyword>cosh</keyword>
+      <keyword>crypt</keyword>
+      <keyword>ctime</keyword>
+      <keyword>db_disk_size</keyword>
+      <keyword>decode</keyword>
+      <keyword>decode_base64</keyword>
+      <keyword>decode_binary</keyword>
+      <keyword>decompiled_verb_code</keyword>
+      <keyword>delete_property</keyword>
+      <keyword>delete_verb</keyword>
+      <keyword>descendants</keyword>
+      <keyword>disassemble</keyword>
+      <keyword>dump_database</keyword>
+      <keyword>encode</keyword>
+      <keyword>encode_base64</keyword>
+      <keyword>encode_binary</keyword>
+      <keyword>equal</keyword>
+      <keyword>eval</keyword>
+      <keyword>exec</keyword>
+      <keyword>exp</keyword>
+      <keyword>file_chmod</keyword>
+      <keyword>file_close</keyword>
+      <keyword>file_eof</keyword>
+      <keyword>file_flush</keyword>
+      <keyword>file_last_access</keyword>
+      <keyword>file_last_change</keyword>
+      <keyword>file_last_modify</keyword>
+      <keyword>file_list</keyword>
+      <keyword>file_mkdir</keyword>
+      <keyword>file_mode</keyword>
+      <keyword>file_name</keyword>
+      <keyword>file_open</keyword>
+      <keyword>file_openmode</keyword>
+      <keyword>file_read</keyword>
+      <keyword>file_readline</keyword>
+      <keyword>file_readlines</keyword>
+      <keyword>file_remove</keyword>
+      <keyword>file_rename</keyword>
+      <keyword>file_rmdir</keyword>
+      <keyword>file_seek</keyword>
+      <keyword>file_size</keyword>
+      <keyword>file_stat</keyword>
+      <keyword>file_tell</keyword>
+      <keyword>file_type</keyword>
+      <keyword>file_version</keyword>
+      <keyword>file_write</keyword>
+      <keyword>file_writeline</keyword>
+      <keyword>floatstr</keyword>
+      <keyword>floor</keyword>
+      <keyword>flush_input</keyword>
+      <keyword>force_input</keyword>
+      <keyword>function_info</keyword>
+      <keyword>gc_stats</keyword>
+      <keyword>generate_json</keyword>
+      <keyword>getenv</keyword>
+      <keyword>idle_seconds</keyword>
+      <keyword>index</keyword>
+      <keyword>isa</keyword>
+      <keyword>is_clear_property</keyword>
+      <keyword>is_member</keyword>
+      <keyword>is_player</keyword>
+      <keyword>kill_task</keyword>
+      <keyword>length</keyword>
+      <keyword>listappend</keyword>
+      <keyword>listdelete</keyword>
+      <keyword>listen</keyword>
+      <keyword>listeners</keyword>
+      <keyword>listinsert</keyword>
+      <keyword>listset</keyword>
+      <keyword>load_server_options</keyword>
+      <keyword>log</keyword>
+      <keyword>log10</keyword>
+      <keyword>log_cache_stats</keyword>
+      <keyword>mapdelete</keyword>
+      <keyword>mapkeys</keyword>
+      <keyword>mapvalues</keyword>
+      <keyword>match</keyword>
+      <keyword>max</keyword>
+      <keyword>max_object</keyword>
+      <keyword>memory_usage</keyword>
+      <keyword>min</keyword>
+      <keyword>mysql_close</keyword>
+      <keyword>mysql_connect</keyword>
+      <keyword>mysql_connections</keyword>
+      <keyword>mysql_escape_string</keyword>
+      <keyword>mysql_field_names</keyword>
+      <keyword>mysql_next_row</keyword>
+      <keyword>mysql_ping</keyword>
+      <keyword>mysql_query</keyword>
+      <keyword>mysql_set_options</keyword>
+      <keyword>mysql_status</keyword>
+      <keyword>notify</keyword>
+      <keyword>object_bytes</keyword>
+      <keyword>open_network_connection</keyword>
+      <keyword>ord</keyword>
+      <keyword>output_delimiters</keyword>
+      <keyword>parent</keyword>
+      <keyword>parents</keyword>
+      <keyword>parse_json</keyword>
+      <keyword>pass</keyword>
+      <keyword>players</keyword>
+      <keyword>process_id</keyword>
+      <keyword>properties</keyword>
+      <keyword>property_info</keyword>
+      <keyword>queued_tasks</keyword>
+      <keyword>queue_info</keyword>
+      <keyword>raise</keyword>
+      <keyword>random</keyword>
+      <keyword>random_bytes</keyword>
+      <keyword>read</keyword>
+      <keyword>read_http</keyword>
+      <keyword>read_stdin</keyword>
+      <keyword>renumber</keyword>
+      <keyword>reset_max_object</keyword>
+      <keyword>respond_to</keyword>
+      <keyword>resume</keyword>
+      <keyword>rindex</keyword>
+      <keyword>rmatch</keyword>
+      <keyword>run_gc</keyword>
+      <keyword>salt</keyword>
+      <keyword>seconds_left</keyword>
+      <keyword>server_log</keyword>
+      <keyword>server_version</keyword>
+      <keyword>setadd</keyword>
+      <keyword>set_connection_option</keyword>
+      <keyword>set_player_flag</keyword>
+      <keyword>set_property_info</keyword>
+      <keyword>setremove</keyword>
+      <keyword>set_task_local</keyword>
+      <keyword>set_task_perms</keyword>
+      <keyword>set_verb_args</keyword>
+      <keyword>set_verb_code</keyword>
+      <keyword>set_verb_info</keyword>
+      <keyword>shutdown</keyword>
+      <keyword>sin</keyword>
+      <keyword>sinh</keyword>
+      <keyword>sqlite_close</keyword>
+      <keyword>sqlite_column_names</keyword>
+      <keyword>sqlite_delete</keyword>
+      <keyword>sqlite_finalize</keyword>
+      <keyword>sqlite_handles</keyword>
+      <keyword>sqlite_next_row</keyword>
+      <keyword>sqlite_open</keyword>
+      <keyword>sqlite_prepare</keyword>
+      <keyword>sqlite_query</keyword>
+      <keyword>sqlite_status</keyword>
+      <keyword>sqrt</keyword>
+      <keyword>strcmp</keyword>
+      <keyword>string_hash</keyword>
+      <keyword>string_hmac</keyword>
+      <keyword>strsub</keyword>
+      <keyword>strtr</keyword>
+      <keyword>substitute</keyword>
+      <keyword>suspend</keyword>
+      <keyword>switch_player</keyword>
+      <keyword>tan</keyword>
+      <keyword>tanh</keyword>
+      <keyword>task_id</keyword>
+      <keyword>task_local</keyword>
+      <keyword>task_perms</keyword>
+      <keyword>task_stack</keyword>
+      <keyword>ticks_left</keyword>
+      <keyword>time</keyword>
+      <keyword>tofloat</keyword>
+      <keyword>toint</keyword>
+      <keyword>toliteral</keyword>
+      <keyword>tonum</keyword>
+      <keyword>toobj</keyword>
+      <keyword>tostr</keyword>
+      <keyword>trunc</keyword>
+      <keyword>typeof</keyword>
+      <keyword>unlisten</keyword>
+      <keyword>valid</keyword>
+      <keyword>value_bytes</keyword>
+      <keyword>value_hash</keyword>
+      <keyword>value_hmac</keyword>
+      <keyword>verb_args</keyword>
+      <keyword>verb_cache_stats</keyword>
+      <keyword>verb_code</keyword>
+      <keyword>verb_info</keyword>
+      <keyword>verbs</keyword>
+    </context>
+
+    <context id="verb-call" style-ref="verb">
+      <match>(?&lt;=:)[a-z_][a-z0-9_]*(?=\s*\()</match>
+    </context>
+
+    <!-- 1.5, 1., .5 and 1e3, but not the 1 in the range 1..5. -->
+    <context id="float" style-ref="float">
+      <match>(?&lt;![a-z0-9_.$#])(?:[0-9]+\.[0-9]+(?:e[+-]?[0-9]+)?|[0-9]+\.(?![.0-9])(?:e[+-]?[0-9]+)?|\.[0-9]+(?:e[+-]?[0-9]+)?|[0-9]+e[+-]?[0-9]+)(?![a-z0-9_])</match>
+    </context>
+
+    <!-- Not after a single dot, but after .. as in x[1..5]. -->
+    <context id="integer" style-ref="integer">
+      <match>(?&lt;![a-z0-9_$#])(?:(?&lt;=\.\.)|(?&lt;!\.))[0-9]+(?![a-z0-9_])</match>
+    </context>
+
+    <context id="operators" style-ref="operator">
+      <match>-&gt;|=&gt;|\.\.|&amp;&amp;|\|\||==|!=|&lt;=|&gt;=|&amp;\.|\|\.|\^\.|&lt;&lt;|&gt;&gt;|[-+*/%^!~&lt;&gt;=?|@`'$]</match>
+    </context>
+
+    <context id="moo" class="no-spell-check">
+      <include>
+        <context ref="string-statement"/>
+        <context ref="block-comment"/>
+        <context ref="bytes"/>
+        <context ref="string"/>
+        <context ref="colour"/>
+        <context ref="object"/>
+        <context ref="sysref"/>
+        <context ref="keywords"/>
+        <context ref="error-codes"/>
+        <context ref="type-names"/>
+        <context ref="variables"/>
+        <context ref="builtins"/>
+        <context ref="verb-call"/>
+        <context ref="float"/>
+        <context ref="integer"/>
+        <context ref="operators"/>
+      </include>
+    </context>
+  </definitions>
+</language>

@@ -1,0 +1,362 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  MUF (Multi-User Forth), the language of FuzzBall MUCKs. Words are separated by whitespace and
+  are case-insensitive; ( parentheses ) are comments. The primitive list covers the common
+  FuzzBall primitives rather than every one.
+-->
+<language id="muf" name="MUF" version="2.0" _section="Source">
+  <metadata>
+    <property name="globs">*.muf;*.m</property>
+    <property name="block-comment-start">(</property>
+    <property name="block-comment-end">)</property>
+  </metadata>
+
+  <styles>
+    <style id="comment" name="Comment" map-to="def:comment"/>
+    <style id="string" name="String" map-to="def:string"/>
+    <style id="escape" name="Escape" map-to="def:special-char"/>
+    <style id="keyword" name="Keyword" map-to="def:keyword"/>
+    <style id="directive" name="Directive" map-to="def:preprocessor"/>
+    <style id="definition" name="Word Definition" map-to="def:function"/>
+    <style id="variable" name="Built-in Variable" map-to="def:special-constant"/>
+    <style id="object" name="Object Number" map-to="def:special-constant"/>
+    <style id="integer" name="Integer" map-to="def:decimal"/>
+    <style id="float" name="Float" map-to="def:floating-point"/>
+    <style id="builtin" name="Primitive" map-to="def:builtin"/>
+    <style id="operator" name="Operator" map-to="def:operator"/>
+  </styles>
+
+  <default-regex-options case-sensitive="false"/>
+  <!-- MUF words are anything between whitespace, so "var!" and "?dup" are single words. -->
+  <keyword-char-class>[^\s]</keyword-char-class>
+
+  <definitions>
+    <context id="comment" style-ref="comment" class="comment" class-disabled="no-spell-check">
+      <start>\(</start>
+      <end>\)</end>
+      <include>
+        <context ref="def:in-comment"/>
+      </include>
+    </context>
+
+    <context id="escape" style-ref="escape">
+      <match>\\.</match>
+    </context>
+
+    <context id="string" style-ref="string" end-at-line-end="true" class="string" class-disabled="no-spell-check">
+      <start>"</start>
+      <end>"</end>
+      <include>
+        <context ref="escape"/>
+      </include>
+    </context>
+
+    <!-- ": name" starts a word definition; the name is highlighted. -->
+    <context id="definition">
+      <match>(?&lt;!\S)(:)\s+(\S+)</match>
+      <include>
+        <context sub-pattern="1" style-ref="keyword"/>
+        <context sub-pattern="2" style-ref="definition"/>
+      </include>
+    </context>
+
+    <context id="end-definition" style-ref="keyword">
+      <match>(?&lt;!\S);(?!\S)</match>
+    </context>
+
+    <context id="directives" style-ref="directive">
+      <keyword>\$include</keyword>
+      <keyword>\$define</keyword>
+      <keyword>\$enddef</keyword>
+      <keyword>\$def</keyword>
+      <keyword>\$undef</keyword>
+      <keyword>\$ifdef</keyword>
+      <keyword>\$ifndef</keyword>
+      <keyword>\$else</keyword>
+      <keyword>\$endif</keyword>
+      <keyword>\$iflib</keyword>
+      <keyword>\$ifnlib</keyword>
+      <keyword>\$ifver</keyword>
+      <keyword>\$ifnver</keyword>
+      <keyword>\$iflibver</keyword>
+      <keyword>\$ifnlibver</keyword>
+      <keyword>\$author</keyword>
+      <keyword>\$version</keyword>
+      <keyword>\$lib\-version</keyword>
+      <keyword>\$note</keyword>
+      <keyword>\$echo</keyword>
+      <keyword>\$abort</keyword>
+      <keyword>\$pubdef</keyword>
+      <keyword>\$libdef</keyword>
+      <keyword>\$cleardefs</keyword>
+      <keyword>\$language</keyword>
+      <keyword>\$warn</keyword>
+    </context>
+
+    <context id="keywords" style-ref="keyword">
+      <keyword>if</keyword>
+      <keyword>else</keyword>
+      <keyword>then</keyword>
+      <keyword>begin</keyword>
+      <keyword>while</keyword>
+      <keyword>until</keyword>
+      <keyword>repeat</keyword>
+      <keyword>continue</keyword>
+      <keyword>break</keyword>
+      <keyword>for</keyword>
+      <keyword>foreach</keyword>
+      <keyword>exit</keyword>
+      <keyword>try</keyword>
+      <keyword>catch</keyword>
+      <keyword>catch_detailed</keyword>
+      <keyword>endcatch</keyword>
+      <keyword>abort</keyword>
+      <keyword>public</keyword>
+      <keyword>wizcall</keyword>
+      <keyword>lvar</keyword>
+      <keyword>var</keyword>
+      <keyword>var!</keyword>
+      <keyword>jmp</keyword>
+      <keyword>call</keyword>
+      <keyword>execute</keyword>
+    </context>
+
+    <context id="variables" style-ref="variable">
+      <keyword>me</keyword>
+      <keyword>loc</keyword>
+      <keyword>trigger</keyword>
+      <keyword>command</keyword>
+    </context>
+
+    <context id="object" style-ref="object">
+      <match>(?&lt;!\S)#-?[0-9]+(?!\S)</match>
+    </context>
+
+    <context id="float" style-ref="float">
+      <match>(?&lt;!\S)-?(?:[0-9]+\.[0-9]*|\.[0-9]+)(?:e[+-]?[0-9]+)?(?!\S)</match>
+    </context>
+
+    <context id="integer" style-ref="integer">
+      <match>(?&lt;!\S)-?[0-9]+(?!\S)</match>
+    </context>
+
+    <!-- Primitives with punctuation, like player? and ?dup. A regex rather than a keyword list,
+         which didn't match them. -->
+    <context id="punctuated-primitives" style-ref="builtin">
+      <match>(?&lt;!\S)(?:\?dup|\-rot|number\?|string\?|int\?|float\?|dbref\?|array\?|dictionary\?|lock\?|address\?|thing\?|room\?|player\?|exit\?|program\?|ok\?|flag\?|propdir\?|ispid\?|awake\?)(?!\S)</match>
+    </context>
+
+    <context id="primitives" style-ref="builtin">
+      <keyword>pop</keyword>
+      <keyword>dup</keyword>
+      <keyword>dupn</keyword>
+      <keyword>ldup</keyword>
+      <keyword>popn</keyword>
+      <keyword>over</keyword>
+      <keyword>pick</keyword>
+      <keyword>put</keyword>
+      <keyword>rot</keyword>
+      <keyword>rotate</keyword>
+      <keyword>swap</keyword>
+      <keyword>nip</keyword>
+      <keyword>tuck</keyword>
+      <keyword>depth</keyword>
+      <keyword>fulldepth</keyword>
+      <keyword>reverse</keyword>
+      <keyword>lreverse</keyword>
+      <keyword>abs</keyword>
+      <keyword>sign</keyword>
+      <keyword>int</keyword>
+      <keyword>float</keyword>
+      <keyword>round</keyword>
+      <keyword>floor</keyword>
+      <keyword>ceil</keyword>
+      <keyword>sqrt</keyword>
+      <keyword>pow</keyword>
+      <keyword>exp</keyword>
+      <keyword>log</keyword>
+      <keyword>log10</keyword>
+      <keyword>sin</keyword>
+      <keyword>cos</keyword>
+      <keyword>tan</keyword>
+      <keyword>asin</keyword>
+      <keyword>acos</keyword>
+      <keyword>atan</keyword>
+      <keyword>atan2</keyword>
+      <keyword>random</keyword>
+      <keyword>srand</keyword>
+      <keyword>frand</keyword>
+      <keyword>gaussian</keyword>
+      <keyword>bitand</keyword>
+      <keyword>bitor</keyword>
+      <keyword>bitxor</keyword>
+      <keyword>bitshift</keyword>
+      <keyword>and</keyword>
+      <keyword>or</keyword>
+      <keyword>not</keyword>
+      <keyword>xor</keyword>
+      <keyword>min</keyword>
+      <keyword>max</keyword>
+      <keyword>strcat</keyword>
+      <keyword>strcut</keyword>
+      <keyword>strlen</keyword>
+      <keyword>strcmp</keyword>
+      <keyword>stringcmp</keyword>
+      <keyword>strncmp</keyword>
+      <keyword>stringpfx</keyword>
+      <keyword>instr</keyword>
+      <keyword>instring</keyword>
+      <keyword>rinstr</keyword>
+      <keyword>rinstring</keyword>
+      <keyword>subst</keyword>
+      <keyword>split</keyword>
+      <keyword>rsplit</keyword>
+      <keyword>explode</keyword>
+      <keyword>explode_array</keyword>
+      <keyword>toupper</keyword>
+      <keyword>tolower</keyword>
+      <keyword>striplead</keyword>
+      <keyword>striptail</keyword>
+      <keyword>strip</keyword>
+      <keyword>midstr</keyword>
+      <keyword>intostr</keyword>
+      <keyword>atoi</keyword>
+      <keyword>strtof</keyword>
+      <keyword>ftostr</keyword>
+      <keyword>ftostrc</keyword>
+      <keyword>fmtstring</keyword>
+      <keyword>smatch</keyword>
+      <keyword>notify</keyword>
+      <keyword>notify_except</keyword>
+      <keyword>notify_exclude</keyword>
+      <keyword>notify_descriptor</keyword>
+      <keyword>ansi_strlen</keyword>
+      <keyword>ansi_strcut</keyword>
+      <keyword>ansi_strip</keyword>
+      <keyword>ansi_midstr</keyword>
+      <keyword>textattr</keyword>
+      <keyword>name</keyword>
+      <keyword>setname</keyword>
+      <keyword>location</keyword>
+      <keyword>contents</keyword>
+      <keyword>next</keyword>
+      <keyword>exits</keyword>
+      <keyword>owner</keyword>
+      <keyword>pennies</keyword>
+      <keyword>addpennies</keyword>
+      <keyword>moveto</keyword>
+      <keyword>dbtop</keyword>
+      <keyword>dbcmp</keyword>
+      <keyword>set</keyword>
+      <keyword>mlevel</keyword>
+      <keyword>truename</keyword>
+      <keyword>getlink</keyword>
+      <keyword>setlink</keyword>
+      <keyword>newobject</keyword>
+      <keyword>newroom</keyword>
+      <keyword>newexit</keyword>
+      <keyword>copyobj</keyword>
+      <keyword>recycle</keyword>
+      <keyword>getpropstr</keyword>
+      <keyword>getpropval</keyword>
+      <keyword>getpropfval</keyword>
+      <keyword>getprop</keyword>
+      <keyword>setprop</keyword>
+      <keyword>addprop</keyword>
+      <keyword>remove_prop</keyword>
+      <keyword>envprop</keyword>
+      <keyword>envpropstr</keyword>
+      <keyword>nextprop</keyword>
+      <keyword>parseprop</keyword>
+      <keyword>array_make</keyword>
+      <keyword>array_make_dict</keyword>
+      <keyword>array_count</keyword>
+      <keyword>array_first</keyword>
+      <keyword>array_last</keyword>
+      <keyword>array_next</keyword>
+      <keyword>array_prev</keyword>
+      <keyword>array_getitem</keyword>
+      <keyword>array_setitem</keyword>
+      <keyword>array_appenditem</keyword>
+      <keyword>array_insertitem</keyword>
+      <keyword>array_delitem</keyword>
+      <keyword>array_getrange</keyword>
+      <keyword>array_setrange</keyword>
+      <keyword>array_delrange</keyword>
+      <keyword>array_keys</keyword>
+      <keyword>array_vals</keyword>
+      <keyword>array_explode</keyword>
+      <keyword>array_join</keyword>
+      <keyword>array_sort</keyword>
+      <keyword>array_reverse</keyword>
+      <keyword>array_union</keyword>
+      <keyword>array_intersect</keyword>
+      <keyword>array_diff</keyword>
+      <keyword>array_findval</keyword>
+      <keyword>array_excludeval</keyword>
+      <keyword>array_matchkey</keyword>
+      <keyword>array_matchval</keyword>
+      <keyword>array_extract</keyword>
+      <keyword>array_cut</keyword>
+      <keyword>array_nunion</keyword>
+      <keyword>array_compare</keyword>
+      <keyword>array_notify</keyword>
+      <keyword>array_get_propvals</keyword>
+      <keyword>array_put_propvals</keyword>
+      <keyword>time</keyword>
+      <keyword>systime</keyword>
+      <keyword>date</keyword>
+      <keyword>timesplit</keyword>
+      <keyword>timefmt</keyword>
+      <keyword>sleep</keyword>
+      <keyword>pid</keyword>
+      <keyword>kill</keyword>
+      <keyword>background</keyword>
+      <keyword>foreground</keyword>
+      <keyword>preempt</keyword>
+      <keyword>instances</keyword>
+      <keyword>fork</keyword>
+      <keyword>queue</keyword>
+      <keyword>event_wait</keyword>
+      <keyword>event_send</keyword>
+      <keyword>event_count</keyword>
+      <keyword>timer_start</keyword>
+      <keyword>timer_stop</keyword>
+      <keyword>read</keyword>
+      <keyword>tread</keyword>
+      <keyword>read_wants_blanks</keyword>
+      <keyword>descr</keyword>
+      <keyword>descrcon</keyword>
+      <keyword>descriptors</keyword>
+      <keyword>descr_array</keyword>
+      <keyword>conhost</keyword>
+      <keyword>condbref</keyword>
+      <keyword>concount</keyword>
+      <keyword>online</keyword>
+      <keyword>online_array</keyword>
+      <keyword>interp</keyword>
+    </context>
+
+    <context id="operators" style-ref="operator">
+      <match>(?&lt;!\S)(?:@|!|\+\+|--|\+|-|\*|/|%|=|&lt;|&gt;|&lt;=|&gt;=|!=|\{|\}|\[|\]|-&gt;)(?!\S)</match>
+    </context>
+
+    <context id="muf" class="no-spell-check">
+      <include>
+        <context ref="comment"/>
+        <context ref="string"/>
+        <context ref="definition"/>
+        <context ref="end-definition"/>
+        <context ref="directives"/>
+        <context ref="keywords"/>
+        <context ref="variables"/>
+        <context ref="object"/>
+        <context ref="float"/>
+        <context ref="integer"/>
+        <context ref="punctuated-primitives"/>
+        <context ref="primitives"/>
+        <context ref="operators"/>
+      </include>
+    </context>
+  </definitions>
+</language>

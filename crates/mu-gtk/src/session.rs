@@ -55,6 +55,8 @@ pub struct SessionView {
     status: gtk::Label,
     sounds: RefCell<Vec<gtk::MediaFile>>,
     media: Rc<MediaPlayer>,
+    /// Open code editors by reference ("" for the latest scratch editor), for compile errors.
+    editors: RefCell<HashMap<String, Weak<crate::code_editor::CodeEditor>>>,
     /// The pending script timer and when it fires.
     timer: RefCell<Option<(glib::SourceId, Instant)>>,
     #[cfg(feature = "webview")]
@@ -114,6 +116,7 @@ impl SessionView {
             sounds: RefCell::default(),
             media: Rc::default(),
             timer: RefCell::default(),
+            editors: RefCell::default(),
             #[cfg(feature = "webview")]
             webviews: RefCell::default(),
             on_open_uri: RefCell::default(),
@@ -420,15 +423,12 @@ impl SessionView {
                     self.status.set_visible(!text.is_empty());
                     self.status.set_label(&text);
                 }
-                Output::Edit(request) => {
-                    let parent = self.root.root().and_downcast::<gtk::Window>();
-                    let weak = Rc::downgrade(self);
-                    crate::edit_window::show(parent.as_ref(), &request.clone(), move |text| {
-                        if let Some(this) = weak.upgrade() {
-                            let out = this.engine.borrow_mut().save_edit(&request, &text);
-                            this.apply(out);
-                        }
-                    });
+                Output::Edit(request) => self.open_editor(request),
+                Output::CompileError { reference, line, message } => {
+                    let editor = self.editors.borrow().get(&reference).and_then(Weak::upgrade);
+                    if let Some(editor) = editor {
+                        editor.add_error(line, &message);
+                    }
                 }
                 Output::WebView(command) => self.webview(command),
                 Output::Gmcp { package, data } => self.to_pages(|| PageEvent::Gmcp { package: &package, data: &data }),
@@ -454,6 +454,36 @@ impl SessionView {
         self.add_side_tab(&view.scrolled, name);
         self.spawns.borrow_mut().insert(name.to_string(), view.clone());
         view
+    }
+
+    fn open_editor(self: &Rc<Self>, request: mu_engine::EditRequest) {
+        // The server sending the same program again reuses its editor.
+        if !request.is_local() {
+            let existing = self.editors.borrow().get(&request.reference).and_then(Weak::upgrade);
+            if let Some(editor) = existing {
+                if !editor.is_modified() {
+                    editor.load(&request.content);
+                }
+                editor.present();
+                return;
+            }
+        }
+        let parent = self.root.root().and_downcast::<gtk::Window>();
+        let weak = Rc::downgrade(self);
+        let sent = request.clone();
+        let editor = crate::code_editor::CodeEditor::open(parent.as_ref(), &request, move |text| {
+            if let Some(this) = weak.upgrade() {
+                let out = this.engine.borrow_mut().save_edit(&sent, &text);
+                this.apply(out);
+            }
+        });
+        self.editors.borrow_mut().retain(|_, e| e.strong_count() > 0);
+        self.editors.borrow_mut().insert(request.reference.clone(), Rc::downgrade(&editor));
+        // Keep the editor alive until its window closes.
+        let keep = RefCell::new(Some(editor.clone()));
+        editor.window.connect_destroy(move |_| {
+            keep.borrow_mut().take();
+        });
     }
 
     /// Adds a tab to the side dock, showing the dock if it was hidden.
