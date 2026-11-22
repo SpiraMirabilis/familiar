@@ -50,7 +50,7 @@
     notice(...parts) {
       post('notice', parts.map(show).join(' '));
     },
-    /** Speaks text aloud (speech-dispatcher). */
+    /** Speaks text aloud. */
     speak(...parts) {
       post('speak', parts.map(show).join(' '));
     },

@@ -47,8 +47,44 @@ jobs:
           manifest-path: packaging/flatpak/io.github.SpiraMirabilis.Familiar.yml
           cache-key: flatpak-builder-${{ github.sha }}
 
+  # The GTK client with everything it needs (zip and installer), and the terminal client alone.
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            zip mingw-w64-ucrt-x86_64-gtk4 mingw-w64-ucrt-x86_64-libadwaita mingw-w64-ucrt-x86_64-gtksourceview5
+            mingw-w64-ucrt-x86_64-libspelling mingw-w64-ucrt-x86_64-librsvg mingw-w64-ucrt-x86_64-pkgconf
+            mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-rust mingw-w64-ucrt-x86_64-hunspell-en
+            mingw-w64-ucrt-x86_64-adwaita-icon-theme mingw-w64-ucrt-x86_64-ntldd
+      - name: Build and bundle
+        run: packaging/windows/bundle.sh
+      - name: Installer
+        shell: pwsh
+        run: |
+          choco install innosetup --no-progress -y
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /Q "/DAppVersion=$($env:GITHUB_REF_NAME.TrimStart('v'))" packaging\windows\familiar.iss
+      - name: Terminal client and checksums
+        run: |
+          cd dist
+          cp familiar/familiar-tui.exe "familiar-tui-${GITHUB_REF_NAME#v}-x86_64-windows.exe"
+          for file in familiar-*-windows*.zip familiar-*-windows*.exe; do sha256sum "$file" > "$file.sha256"; done
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows
+          path: |
+            dist/familiar-*-windows*.zip*
+            dist/familiar-*-windows*.exe*
+
   release:
-    needs: [tarball, flatpak]
+    needs: [tarball, flatpak, windows]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v8
@@ -62,3 +98,4 @@ jobs:
             familiar-*.tar.gz
             familiar-*.tar.gz.sha256
             familiar-*.flatpak
+            familiar-*-windows*

@@ -30,3 +30,33 @@ jobs:
         run: |
           desktop-file-validate data/*.desktop
           appstreamcli validate --no-net data/*.metainfo.xml
+
+  # The engine, the terminal client and everything under them, natively on Windows.
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: Swatinem/rust-cache@v2
+      - name: Clippy
+        run: cargo clippy --workspace --exclude familiar-gtk --all-targets --locked -- -D warnings
+      - name: Tests
+        run: cargo test --workspace --exclude familiar-gtk --locked
+
+  # The GTK client on Windows, against MSYS2's GTK (no web views: WebKitGTK doesn't exist there).
+  windows-gtk:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-gtk4 mingw-w64-ucrt-x86_64-libadwaita mingw-w64-ucrt-x86_64-gtksourceview5
+            mingw-w64-ucrt-x86_64-libspelling mingw-w64-ucrt-x86_64-pkgconf mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-rust
+      - name: Check
+        run: cargo check -p familiar-gtk --no-default-features --features spelling --locked

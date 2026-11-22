@@ -10,7 +10,8 @@ licences, e.g. to `/usr/share/licenses/$pkgname`).
 1. Update the version in `Cargo.toml` (workspace), `CHANGELOG.md`, the `<releases>` in
    `data/io.github.SpiraMirabilis.Familiar.metainfo.xml` and `pkgver` in `aur/familiar/PKGBUILD`.
 2. `cargo test --workspace`, then tag `vX.Y.Z` and push the tag. The release workflow builds a
-   tarball and a Flatpak bundle and attaches them to a draft GitHub release.
+   tarball, a Flatpak bundle and the Windows files (zip, installer, terminal client) and attaches
+   them to a draft GitHub release.
 3. AUR: put the tarball's sha256 in `aur/familiar/PKGBUILD`, run `makepkg --printsrcinfo > .SRCINFO`
    in each AUR folder, and push them to the AUR's git repositories.
 4. crates.io: `cargo publish --workspace` (familiar-cli isn't published).
@@ -37,3 +38,25 @@ screenshots to the metainfo (Flathub requires them).
 
 Inside the Flatpak, settings live in `~/.var/app/io.github.SpiraMirabilis.Familiar/config/familiar/`,
 separate from a native install. Text to speech uses the host's speech-dispatcher socket.
+
+## Windows (`windows/`)
+
+`bundle.sh` runs in an MSYS2 UCRT64 shell. It builds the GTK client (without web views, which need
+WebKitGTK) and the terminal client, then copies them into `dist/familiar/` with every DLL they load
+and the data GTK needs at runtime: icon themes, GSettings schemas, GtkSourceView's languages and
+styles, the image loaders, and the spell checker's Hunspell provider with English dictionaries.
+The layout mirrors MSYS2's (`bin/`, `lib/`, `share/`) because the libraries find their data relative
+to the `bin` folder their DLLs are in; a flat folder breaks the spell checker. Sound doesn't go
+through GStreamer on Windows, so none of its plugins are shipped.
+
+`familiar.iss` turns that folder into an installer with [Inno Setup](https://jrsoftware.org/isinfo.php):
+`iscc /DAppVersion=X.Y.Z packaging\windows\familiar.iss`. It installs per user without
+administrator rights by default. `familiar.ico` is generated from the SVG icon:
+
+```sh
+magick -background none -density 384 data/io.github.SpiraMirabilis.Familiar.svg \
+  -define icon:auto-resize=256,128,64,48,32,24,16 packaging/windows/familiar.ico
+```
+
+Test a bundle on a Windows without MSYS2 on `PATH`, since a missing DLL or data file only shows
+there. The files aren't code-signed, so Windows SmartScreen warns on first run.

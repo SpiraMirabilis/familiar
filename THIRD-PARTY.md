@@ -1,6 +1,6 @@
 # Third-party material
 
-Familiar is its own code, written for Linux. It is inspired by [BeipMU](https://github.com/BeipDev/BeipMU)
+Familiar is its own code. It is inspired by [BeipMU](https://github.com/BeipDev/BeipMU)
 and imports BeipMU's files, but it isn't a port of BeipMU and isn't affiliated with its developers.
 "BeipMU" is the name of their project.
 
@@ -13,3 +13,9 @@ text is in `crates/config/LICENSE-BeipMU`):
 
 Familiar's own licence is in `LICENSE`. Rust dependencies keep their own licences; `cargo about` or
 `cargo license` lists them.
+
+The Windows zip and installer also contain the libraries Familiar runs on there, as built by the
+[MSYS2](https://www.msys2.org) project: GTK 4, libadwaita, GtkSourceView, libspelling, Enchant,
+Hunspell and its English dictionaries, ICU, Pango, Cairo, HarfBuzz, GLib, librsvg, the Adwaita icon
+theme and the libraries those depend on. Most are under the LGPL; each one's licence is in the
+`licenses` folder of the Windows files.
