@@ -1,0 +1,620 @@
+//! Keyboard, paste and mouse input.
+
+use super::*;
+
+impl App {
+    pub fn on_event(&mut self, event: Event) {
+        match event {
+            Event::Key(key) if key.kind != KeyEventKind::Release => self.on_key(crate::keys::normalize(key, cfg!(windows))),
+            Event::Mouse(mouse) => self.on_mouse(mouse),
+            Event::Paste(text) => {
+                if let Some(Overlay::World(form)) = &mut self.overlay {
+                    form.focused().input.insert(&text.replace(['\r', '\n'], " "));
+                } else if let Some(Overlay::Picker(p)) = &mut self.overlay {
+                    p.query.insert(&text.replace(['\r', '\n'], " "));
+                    self.picker_query_changed();
+                } else if let Some(input) = self.current_input() {
+                    input.insert(&text.replace("\r\n", "\n").replace('\r', "\n"));
+                }
+            }
+            Event::FocusGained => self.focused = true,
+            Event::FocusLost => self.focused = false,
+            _ => {}
+        }
+    }
+
+    pub(super) fn on_key(&mut self, key: KeyEvent) {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let alt = key.modifiers.contains(KeyModifiers::ALT);
+        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+
+        if self.overlay.is_some() {
+            return self.on_overlay_key(key);
+        }
+        // Keys that work everywhere.
+        match key.code {
+            KeyCode::Char('c') if ctrl => {
+                match self.current_input() {
+                    Some(input) if !input.is_empty() => {
+                        input.take(false);
+                    }
+                    _ => self.arm_quit(),
+                }
+                return;
+            }
+            KeyCode::Char('d') if ctrl && self.current_input().is_none_or(|i| i.is_empty()) => return self.arm_quit(),
+            KeyCode::Char('o') if ctrl => return self.open_connect_picker(),
+            KeyCode::Char('k') if ctrl && self.current_input().is_none_or(|i| i.is_empty()) => return self.open_palette(),
+            KeyCode::Char('p') if ctrl => return self.open_palette(),
+            KeyCode::Char('r') if ctrl => return self.open_history(),
+            KeyCode::Char('b') if ctrl => return self.run(Cmd::ToggleSidebar),
+            KeyCode::Char('g') if ctrl => return self.run(Cmd::EditInput),
+            KeyCode::F(1) => return self.run(Cmd::Help),
+            KeyCode::Char(c @ '1'..='9') if alt => return self.switch_to(c as usize - '1' as usize),
+            KeyCode::Right if alt => return self.run(Cmd::NextTab),
+            KeyCode::Left if alt => return self.run(Cmd::PrevTab),
+            KeyCode::PageDown if ctrl => return self.run(Cmd::NextTab),
+            KeyCode::PageUp if ctrl => return self.run(Cmd::PrevTab),
+            KeyCode::Char(']') if alt => return self.run(Cmd::NextPanel),
+            KeyCode::Char('e') if alt => {
+                // Reopen the last program sent from the editor, at its first error.
+                if let Some((i, _)) = self.current()
+                    && let Some((request, line)) = self.sessions[i].last_edit.clone()
+                {
+                    self.external = Some(External::Edit { session: self.sessions[i].id, request, line });
+                } else {
+                    self.toast("Nothing to reopen: no program has been edited here yet");
+                }
+                return;
+            }
+            KeyCode::Char('[') if alt => {
+                if let Some((i, _)) = self.current() {
+                    let s = &mut self.sessions[i];
+                    let n = s.panels().len().max(1);
+                    s.panel = (s.panel + n - 1) % n;
+                }
+                return;
+            }
+            _ => {}
+        }
+        let Some((idx, puppet)) = self.current() else { return };
+
+        // Keyboard macros, for keys the client doesn't use itself.
+        let reserved = matches!(key.code, KeyCode::Char(_)) && !ctrl && !alt
+            || matches!(key.code, KeyCode::Enter | KeyCode::Backspace | KeyCode::Delete | KeyCode::Left | KeyCode::Right | KeyCode::Home | KeyCode::End | KeyCode::Tab | KeyCode::BackTab | KeyCode::Esc)
+            || (ctrl && matches!(key.code, KeyCode::Char('a' | 'e' | 'u' | 'w' | 'y' | 'j' | 'l')))
+            || (matches!(key.code, KeyCode::Up | KeyCode::Down | KeyCode::PageUp | KeyCode::PageDown) && !key.state.contains(KeyEventState::KEYPAD));
+        if (!reserved || key.state.contains(KeyEventState::KEYPAD))
+            && puppet.is_none()
+            && let Some(chord) = chord(&key)
+            && let Some(out) = self.sessions[idx].engine.run_macro(&chord)
+        {
+            self.sessions[idx].output.scroll_to_bottom();
+            self.apply(idx, out);
+            return;
+        }
+
+        // The / command popup.
+        let suggestions = self.suggestions();
+        if !suggestions.is_empty() {
+            let n = suggestions.len();
+            match key.code {
+                KeyCode::Up => return self.suggestion = (self.suggestion + n - 1) % n,
+                KeyCode::Down => return self.suggestion = (self.suggestion + 1) % n,
+                KeyCode::Tab => {
+                    let pick = &suggestions[self.suggestion.min(n - 1)];
+                    self.sessions[idx].input.set(&pick.insert);
+                    self.suggestion = 0;
+                    return;
+                }
+                KeyCode::Enter if !shift && !alt => {
+                    let pick = &suggestions[self.suggestion.min(n - 1)];
+                    let typed = self.sessions[idx].input.text.trim_end().to_string();
+                    // Finish an incomplete command word rather than sending it.
+                    if pick.insert.trim_end() != typed && pick.insert.to_lowercase().starts_with(&typed.to_lowercase()) && pick.insert.ends_with(' ') {
+                        self.sessions[idx].input.set(&pick.insert);
+                        self.suggestion = 0;
+                        return;
+                    }
+                }
+                KeyCode::Esc => {
+                    self.suggestions_hidden = true;
+                    return;
+                }
+                _ => {}
+            }
+        }
+
+        // Scrolling.
+        let (w, h) = self.view;
+        let page = (h as isize - 2).max(1);
+        match key.code {
+            KeyCode::PageUp => return self.scroll(page, w, h),
+            KeyCode::PageDown => return self.scroll(-page, w, h),
+            KeyCode::Up if shift => return self.scroll(1, w, h),
+            KeyCode::Down if shift => return self.scroll(-1, w, h),
+            KeyCode::Home if ctrl => return self.scroll(isize::MAX / 4, w, h),
+            KeyCode::End if ctrl => {
+                if let Some(b) = self.current_buffer() {
+                    b.scroll_to_bottom();
+                }
+                return;
+            }
+            KeyCode::Esc => {
+                let scrolled = self.current_buffer().is_some_and(|b| b.scroll > 0);
+                if scrolled {
+                    if let Some(b) = self.current_buffer() {
+                        b.scroll_to_bottom();
+                    }
+                    return;
+                }
+                // Esc twice clears the input.
+                if self.esc_at.is_some_and(|t| t.elapsed() < Duration::from_millis(600)) {
+                    if let Some(i) = self.current_input() {
+                        i.take(false);
+                    }
+                    self.esc_at = None;
+                } else {
+                    self.esc_at = Some(Instant::now());
+                }
+                return;
+            }
+            _ => {}
+        }
+
+        if key.code == KeyCode::Tab {
+            // Complete a word from recent output (names, mostly), cycling on repeated presses.
+            let s = &mut self.sessions[idx];
+            let (word, words) = match &puppet {
+                Some(name) => {
+                    let p = s.puppet_mut(name);
+                    let word = p.input.current_word().1.to_string();
+                    let words = p.buffer.words_starting(&word, 400);
+                    (word, words)
+                }
+                None => {
+                    let word = s.input.current_word().1.to_string();
+                    (word.clone(), s.output.words_starting(&word, 400))
+                }
+            };
+            let input = match &puppet {
+                Some(name) => &mut s.puppet_mut(name).input,
+                None => &mut s.input,
+            };
+            if !input.complete(|_| words) && word.is_empty() {
+                input.insert("    ");
+            }
+            return;
+        }
+        let session = &mut self.sessions[idx];
+        let input = match &puppet {
+            Some(name) => &mut session.puppet_mut(name).input,
+            None => &mut session.input,
+        };
+        self.suggestions_hidden = self.suggestions_hidden && !input.text.is_empty();
+        let before = input.text.clone();
+        match key.code {
+            KeyCode::Enter if shift || alt => input.insert("\n"),
+            KeyCode::Char('j') if ctrl => input.insert("\n"),
+            KeyCode::Enter => return self.submit(),
+            KeyCode::Backspace if ctrl || alt => input.kill_word(),
+            KeyCode::Backspace => input.backspace(),
+            KeyCode::Delete => input.delete(),
+            KeyCode::Left if ctrl => input.word_left(),
+            KeyCode::Right if ctrl => input.word_right(),
+            KeyCode::Left => input.left(),
+            KeyCode::Right => input.right(),
+            KeyCode::Char('b') if alt => input.word_left(),
+            KeyCode::Char('f') if alt => input.word_right(),
+            KeyCode::Char('d') if alt => input.kill_word_forward(),
+            KeyCode::Home => input.home(),
+            KeyCode::End => input.end(),
+            KeyCode::Char('a') if ctrl => input.home(),
+            KeyCode::Char('e') if ctrl => input.end(),
+            KeyCode::Char('u') if ctrl => input.kill_to_start(),
+            KeyCode::Char('k') if ctrl => input.kill_to_end(),
+            KeyCode::Char('w') if ctrl => input.kill_word(),
+            KeyCode::Char('y') if ctrl => input.yank(),
+            KeyCode::Char('l') if ctrl => {}
+            KeyCode::Up => {
+                if !input.line_up() {
+                    input.history_older();
+                }
+            }
+            KeyCode::Down => {
+                if !input.line_down() {
+                    input.history_newer();
+                }
+            }
+            KeyCode::Char(c) if !ctrl => {
+                let mut buf = [0; 4];
+                input.insert(c.encode_utf8(&mut buf));
+            }
+            _ => {}
+        }
+        if input.text != before {
+            self.suggestion = 0;
+            if input.text.is_empty() {
+                self.suggestions_hidden = false;
+            }
+        }
+    }
+
+    pub(super) fn arm_quit(&mut self) {
+        if self.quit_armed.is_some() {
+            self.quit = true;
+        } else {
+            self.quit_armed = Some(Instant::now());
+        }
+    }
+
+    pub(super) fn scroll(&mut self, delta: isize, w: u16, h: u16) {
+        if let Some(b) = self.current_buffer() {
+            b.scroll_by(delta, w, h);
+        }
+    }
+
+    pub(super) fn on_overlay_key(&mut self, key: KeyEvent) {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        if matches!(self.overlay, Some(Overlay::Help)) {
+            self.overlay = None;
+            return;
+        }
+        if matches!(self.overlay, Some(Overlay::World(_))) {
+            return self.on_form_key(key);
+        }
+        // In the world picker: Ctrl+N adds a world, Ctrl+E edits the selected one and Ctrl+D
+        // (twice) deletes it.
+        if let Some(Overlay::Picker(p)) = &self.overlay
+            && p.kind == PickerKind::Connect
+            && ctrl
+        {
+            let selected = p.matches.get(p.selected).map(|(i, _)| &p.items[*i]);
+            let saved = selected.and_then(|item| match &item.action {
+                Action::Connect { world, character } if item.group == "Saved worlds" => Some((world.name.clone(), character.clone())),
+                _ => None,
+            });
+            match key.code {
+                KeyCode::Char('n') => {
+                    // Start from an address typed into the filter, if there is one.
+                    let typed = parse_address(p.query.text.trim());
+                    let mut form = WorldForm::new(None, None, false);
+                    if let Some(w) = typed {
+                        form.fields[crate::form::HOST].input.set(&w.host);
+                        form.fields[crate::form::PORT].input.set(&w.port.to_string());
+                        form.fields[crate::form::TLS].on = w.tls;
+                    }
+                    self.overlay = Some(Overlay::World(Box::new(form)));
+                    return;
+                }
+                KeyCode::Char('e') => {
+                    if let Some((name, character)) = saved
+                        && let Some(w) = self.config.world(&name).cloned()
+                    {
+                        self.overlay = Some(Overlay::World(Box::new(WorldForm::new(Some(&w), character.as_deref(), true))));
+                    }
+                    return;
+                }
+                KeyCode::Char('d') => {
+                    if let Some((name, _)) = saved {
+                        if self.delete_armed.as_deref() == Some(name.as_str()) {
+                            self.config.worlds.retain(|w| w.name != name);
+                            self.save_config();
+                            self.delete_armed = None;
+                            self.toast(&format!("Deleted {name}"));
+                            self.open_connect_picker();
+                        } else {
+                            self.toast(&format!("Press Ctrl+D again to delete {name}"));
+                            self.delete_armed = Some(name);
+                        }
+                    }
+                    return;
+                }
+                _ => {}
+            }
+        }
+        let Some(Overlay::Picker(p)) = &mut self.overlay else { return };
+        let n = p.matches.len().max(1);
+        match key.code {
+            KeyCode::Esc => {
+                if self.tabs.is_empty() {
+                    // Nothing behind the picker: Esc clears the filter instead.
+                    p.query.take(false);
+                    self.picker_query_changed();
+                } else {
+                    self.overlay = None;
+                }
+            }
+            KeyCode::Char('c') if ctrl => {
+                if self.tabs.is_empty() {
+                    self.arm_quit();
+                } else {
+                    self.overlay = None;
+                }
+            }
+            KeyCode::Enter => self.run_picker(),
+            KeyCode::Up => p.selected = (p.selected + n - 1) % n,
+            KeyCode::Char('p') if ctrl => p.selected = (p.selected + n - 1) % n,
+            KeyCode::Down | KeyCode::Tab => p.selected = (p.selected + 1) % n,
+            KeyCode::Char('n') if ctrl => p.selected = (p.selected + 1) % n,
+            KeyCode::PageUp => p.selected = p.selected.saturating_sub(8),
+            KeyCode::PageDown => p.selected = (p.selected + 8).min(n - 1),
+            KeyCode::Backspace => {
+                p.query.backspace();
+                self.picker_query_changed();
+            }
+            KeyCode::Char('u') if ctrl => {
+                p.query.take(false);
+                self.picker_query_changed();
+            }
+            KeyCode::Char('w') if ctrl => {
+                p.query.kill_word();
+                self.picker_query_changed();
+            }
+            KeyCode::Left => p.query.left(),
+            KeyCode::Right => p.query.right(),
+            KeyCode::Char(c) if !ctrl => {
+                let mut buf = [0; 4];
+                p.query.insert(c.encode_utf8(&mut buf));
+                self.picker_query_changed();
+            }
+            _ => {}
+        }
+    }
+
+    pub(super) fn on_form_key(&mut self, key: KeyEvent) {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let Some(Overlay::World(form)) = &mut self.overlay else { return };
+        form.error = None;
+        match key.code {
+            KeyCode::Esc => {
+                // Back to the picker if that's where the form came from (or nothing's open).
+                self.overlay = None;
+                if self.tabs.is_empty() {
+                    self.open_connect_picker();
+                }
+            }
+            KeyCode::Tab | KeyCode::Down => form.next(),
+            KeyCode::BackTab | KeyCode::Up => form.prev(),
+            KeyCode::Enter | KeyCode::Char('s') if key.code == KeyCode::Enter || ctrl => {
+                let connect = key.code == KeyCode::Enter;
+                let Some(Overlay::World(mut form)) = self.overlay.take() else { return };
+                match form.save(&mut self.config) {
+                    Ok((world, character)) => {
+                        self.save_config();
+                        self.toast(&format!("Saved {}", world.name));
+                        // Open tabs on this world pick up the new character and login.
+                        for idx in 0..self.sessions.len() {
+                            let out = self.sessions[idx].engine.reload(&self.config);
+                            self.apply(idx, out);
+                        }
+                        if connect && !self.sessions.iter().any(|s| s.engine.world().name == world.name && s.engine.is_connected()) {
+                            self.open_session(world, character);
+                        } else if self.tabs.is_empty() {
+                            self.open_connect_picker();
+                        }
+                    }
+                    Err(e) => {
+                        form.error = Some(e);
+                        self.overlay = Some(Overlay::World(form));
+                    }
+                }
+            }
+            KeyCode::Char(' ') if form.fields[form.focus].kind == FieldKind::Toggle => {
+                let f = form.focused();
+                f.on = !f.on;
+            }
+            _ if form.fields[form.focus].kind == FieldKind::Toggle => {}
+            KeyCode::Backspace => form.focused().input.backspace(),
+            KeyCode::Delete => form.focused().input.delete(),
+            KeyCode::Left => form.focused().input.left(),
+            KeyCode::Right => form.focused().input.right(),
+            KeyCode::Home => form.focused().input.home(),
+            KeyCode::End => form.focused().input.end(),
+            KeyCode::Char('u') if ctrl => form.focused().input.kill_to_start(),
+            KeyCode::Char('w') if ctrl => form.focused().input.kill_word(),
+            KeyCode::Char(c) if !ctrl => {
+                let mut buf = [0; 4];
+                form.focused().input.insert(c.encode_utf8(&mut buf));
+            }
+            _ => {}
+        }
+    }
+
+    pub(super) fn submit(&mut self) {
+        let Some((idx, puppet)) = self.current() else { return };
+        self.sessions[idx].output.scroll_to_bottom();
+        let secret = self.sessions[idx].password && puppet.is_none();
+        let input = match &puppet {
+            Some(name) => &mut self.sessions[idx].puppet_mut(name).input,
+            None => &mut self.sessions[idx].input,
+        };
+        let remember = !secret && !input.text.trim().is_empty();
+        let text = input.take(remember);
+        self.suggestion = 0;
+        self.suggestions_hidden = false;
+        if let Some(name) = puppet {
+            let out = self.sessions[idx].engine.puppet_submit(&name, &text);
+            self.sessions[idx].puppet_mut(&name).buffer.scroll_to_bottom();
+            return self.apply(idx, out);
+        }
+        if text.is_empty() && matches!(self.sessions[idx].status, Status::Disconnected(_)) {
+            return self.connect(idx);
+        }
+        if !secret && self.client_command(&text) {
+            return;
+        }
+        let out = self.sessions[idx].engine.submit(&text, secret);
+        self.apply(idx, out);
+    }
+
+    /// Commands the terminal client handles itself. Returns true if `text` was one.
+    pub(super) fn client_command(&mut self, text: &str) -> bool {
+        let Some(command) = text.strip_prefix('/') else { return false };
+        let (name, args) = command.split_once(' ').unwrap_or((command, ""));
+        let args = args.trim();
+        match name.to_lowercase().as_str() {
+            "connect" if args.is_empty() => self.open_connect_picker(),
+            "connect" => self.connect_command(args),
+            "close" => self.close_tab(),
+            "quit" | "exit" => self.quit = true,
+            "sidebar" => self.run(Cmd::ToggleSidebar),
+            "world" | "worlds" => self.run(Cmd::EditWorld),
+            "config" => self.run(Cmd::EditConfig),
+            "keys" | "shortcuts" => self.run(Cmd::Help),
+            _ => return false,
+        }
+        true
+    }
+
+    /// `/connect WORLD [CHARACTER]` (world names may have spaces) or `/connect host:port`.
+    pub fn connect_command(&mut self, args: &str) {
+        let args = args.trim();
+        let lower = args.to_lowercase();
+        let found = self
+            .config
+            .worlds
+            .iter()
+            .map(|w| w.name.clone())
+            .filter(|n| lower == n.to_lowercase() || lower.starts_with(&format!("{} ", n.to_lowercase())))
+            .max_by_key(String::len);
+        match found {
+            Some(world) => {
+                let character = args[world.len()..].trim();
+                self.open_saved(&world, (!character.is_empty()).then_some(character));
+            }
+            None => match parse_address(args) {
+                Some(world) => self.open_session(world, None),
+                None => self.toast(&format!("No saved world called {args}")),
+            },
+        }
+    }
+
+    pub(super) fn on_mouse(&mut self, mouse: MouseEvent) {
+        let at = Position::new(mouse.column, mouse.row);
+        match mouse.kind {
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                let delta = if mouse.kind == MouseEventKind::ScrollUp { 3 } else { -3 };
+                if let Some(Overlay::Picker(p)) = &mut self.overlay {
+                    let n = p.matches.len().max(1);
+                    p.selected = if delta > 0 { p.selected.saturating_sub(1) } else { (p.selected + 1).min(n - 1) };
+                } else if self.hits.sidebar.contains(at) {
+                    if let Some((i, _)) = self.current() {
+                        let s = &mut self.sessions[i];
+                        if let Some(Panel::Spawn(name)) = s.panels().get(s.panel).cloned() {
+                            let (w, h) = (self.hits.sidebar.width.saturating_sub(2), self.hits.sidebar.height.saturating_sub(2));
+                            s.spawn_mut(&name).0.buffer.scroll_by(delta, w, h);
+                        }
+                    }
+                } else {
+                    let (w, h) = self.view;
+                    self.scroll(delta, w, h);
+                }
+            }
+            MouseEventKind::Down(MouseButton::Left) => {
+                if let Some(Overlay::Picker(p)) = &mut self.overlay {
+                    if let Some((_, i)) = self.hits.picker_items.iter().find(|(r, _)| r.contains(at)) {
+                        p.selected = *i;
+                        self.run_picker();
+                    }
+                    return;
+                }
+                if matches!(self.overlay, Some(Overlay::Help)) {
+                    self.overlay = None;
+                    return;
+                }
+                if let Some(&(_, t)) = self.hits.tabs.iter().find(|(r, _)| r.contains(at)) {
+                    return self.switch_to(t);
+                }
+                if let Some(&(_, p)) = self.hits.panels.iter().find(|(r, _)| r.contains(at)) {
+                    if let Some((i, _)) = self.current() {
+                        self.sessions[i].panel = p;
+                    }
+                    return;
+                }
+                if let Some(uri) = self.hits.links.iter().find(|(y, x0, x1, _)| *y == at.y && (*x0..*x1).contains(&at.x)).map(|l| l.3.clone()) {
+                    if let Some((i, _)) = self.current() {
+                        let out = self.sessions[i].engine.follow_link(&uri);
+                        self.apply(i, out);
+                    }
+                    return;
+                }
+                if let Some((rect, (x0, y0, x1, y1), area)) = self.hits.map.clone()
+                    && rect.contains(at)
+                    && let Some((i, _)) = self.current()
+                {
+                    // Walk to the clicked room.
+                    let fx = (at.x - rect.x) as f64 + 0.5;
+                    let fy = (at.y - rect.y) as f64 + 0.5;
+                    let x = x0 + fx / rect.width as f64 * (x1 - x0);
+                    let y = y0 + fy / rect.height as f64 * (y1 - y0);
+                    let room = self.sessions[i].engine.map().room_at(&area, x, y);
+                    if let Some(room) = room {
+                        let out = self.sessions[i].engine.map_walk_to(room);
+                        self.apply(i, out);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// "host:port", "host port" or "host:port tls" as a new world. Stricter than the GTK client's
+/// address box, because here the same text is also a search of the saved worlds: there must be
+/// a port, and the host has to look like one.
+pub(super) fn parse_address(text: &str) -> Option<World> {
+    let address = familiar_config::Address::parse(text)?;
+    address.port?;
+    (address.host.contains(['.', ':']) || address.host == "localhost").then(|| address.into_world(0))
+}
+
+/// A key as a macro chord, in the GTK client's naming (GDK key names).
+pub(super) fn chord(key: &KeyEvent) -> Option<KeyChord> {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let alt = key.modifiers.contains(KeyModifiers::ALT);
+    let mut shift = key.modifiers.contains(KeyModifiers::SHIFT);
+    let keypad = key.state.contains(KeyEventState::KEYPAD);
+    let name = match key.code {
+        KeyCode::F(n) => format!("F{n}"),
+        KeyCode::Char(c) if keypad => match c {
+            '0'..='9' => format!("KP_{c}"),
+            '+' => "KP_Add".into(),
+            '-' => "KP_Subtract".into(),
+            '*' => "KP_Multiply".into(),
+            '/' => "KP_Divide".into(),
+            '.' => "KP_Decimal".into(),
+            _ => return None,
+        },
+        KeyCode::Char(c) => {
+            // Shifted characters already say so.
+            shift &= ctrl || alt;
+            c.to_uppercase().to_string()
+        }
+        KeyCode::Enter if keypad => "KP_Enter".into(),
+        KeyCode::Up if keypad => "KP_8".into(),
+        KeyCode::Down if keypad => "KP_2".into(),
+        KeyCode::Left if keypad => "KP_4".into(),
+        KeyCode::Right if keypad => "KP_6".into(),
+        KeyCode::Home if keypad => "KP_7".into(),
+        KeyCode::End if keypad => "KP_1".into(),
+        KeyCode::PageUp if keypad => "KP_9".into(),
+        KeyCode::PageDown if keypad => "KP_3".into(),
+        KeyCode::Up => "Up".into(),
+        KeyCode::Down => "Down".into(),
+        KeyCode::Left => "Left".into(),
+        KeyCode::Right => "Right".into(),
+        KeyCode::PageUp => "Page_Up".into(),
+        KeyCode::PageDown => "Page_Down".into(),
+        KeyCode::Home => "Home".into(),
+        KeyCode::End => "End".into(),
+        KeyCode::Insert => "Insert".into(),
+        KeyCode::Delete => "Delete".into(),
+        KeyCode::Enter => "Return".into(),
+        KeyCode::Esc => "Escape".into(),
+        KeyCode::Tab => "Tab".into(),
+        KeyCode::Backspace => "BackSpace".into(),
+        _ => return None,
+    };
+    Some(KeyChord::new(&name, ctrl, alt, shift))
+}
