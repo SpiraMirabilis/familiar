@@ -14,6 +14,7 @@ pub struct InputView {
     /// A GtkSourceView (with no source features on) so libspelling can check it.
     pub view: sourceview5::View,
     /// Keeps spellchecking running for as long as the input exists.
+    #[cfg(feature = "spelling")]
     _spelling: Option<libspelling::TextBufferAdapter>,
     password: gtk::PasswordEntry,
     history: RefCell<History>,
@@ -27,6 +28,9 @@ impl InputView {
         let buffer = sourceview5::Buffer::new(None);
         crate::code_editor::follow_dark_mode(&buffer);
         // Underline misspellings; right-click a word for suggestions.
+        #[cfg(not(feature = "spelling"))]
+        let _ = spellcheck;
+        #[cfg(feature = "spelling")]
         let spelling = spellcheck.then(|| {
             let adapter = libspelling::TextBufferAdapter::new(&buffer, &libspelling::Checker::default());
             adapter.set_enabled(true);
@@ -58,6 +62,7 @@ impl InputView {
             .margin_bottom(6)
             .build();
 
+        #[cfg(feature = "spelling")]
         if let Some(adapter) = &spelling {
             view.set_extra_menu(Some(&adapter.menu_model()));
             view.insert_action_group("spelling", Some(adapter));
@@ -69,6 +74,7 @@ impl InputView {
         let this = Rc::new(Self {
             root,
             view,
+            #[cfg(feature = "spelling")]
             _spelling: spelling,
             password,
             history: RefCell::new(History::new(history_size)),

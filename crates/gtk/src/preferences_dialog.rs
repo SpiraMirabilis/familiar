@@ -50,7 +50,9 @@ pub fn show(parent: &impl IsA<gtk::Widget>, state: Rc<AppState>, on_change: impl
         appearance.add(row);
     }
     let input = adw::PreferencesGroup::builder().title("Input").build();
-    input.add(&spellcheck);
+    if cfg!(feature = "spelling") {
+        input.add(&spellcheck);
+    }
     input.add(&history);
     let other = adw::PreferencesGroup::builder().title("Speech and Logs").build();
     other.add(&speak);

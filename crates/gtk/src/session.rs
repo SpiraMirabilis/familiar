@@ -411,6 +411,10 @@ impl SessionView {
                 Output::PasswordMode(on) => self.input.set_password_mode(on),
                 Output::Status(status) => self.set_status(&status),
                 Output::Activity { important } => self.mark_activity(important),
+                // GLib has no notification backend on Windows.
+                #[cfg(windows)]
+                Output::Notify { title, body } => familiar_platform::notify(crate::APP_NAME, &title, &body),
+                #[cfg(not(windows))]
                 Output::Notify { title, body } => {
                     let notification = gio::Notification::new(&title);
                     notification.set_body(Some(&body));
