@@ -712,3 +712,31 @@ fn mcp_lines_wrapped_in_colour_codes() {
     let out = e.handle_event(SessionEvent::Line("\x1b[31mred\x1b[0m".into()));
     assert_eq!(main_lines(&out)[0].text, "red");
 }
+
+#[test]
+fn simpleedit_through_a_core_that_colours_every_line() {
+    // What a real core's :tell sent: each line ends with " ESC[00m".
+    let (mut e, mut rx) = engine(&config(Rules::default(), Rules::default(), Rules::default()));
+    e.handle_event(SessionEvent::Line("#$#mcp version: 2.1 to: 2.1".into()));
+    let key = sent(&mut rx)[0].split_whitespace().nth(2).unwrap().to_string();
+    let tell = |t: String| SessionEvent::Line(format!("{t} \x1b[00m"));
+    let mut out = Vec::new();
+    for line in [
+        format!("#$#dns-org-mud-moo-simpleedit-content {key} name: \"#1:x\" reference: \"#1:x\" type: \"moo-code\" content*: \"\" _data-tag: 9301"),
+        "#$#* 9301 content: noParents = {};".into(),
+        "#$#* 9301 content:   return 1;".into(),
+        "#$#: 9301".into(),
+    ] {
+        out.extend(e.handle_event(tell(line)));
+    }
+    let edit = out.iter().find_map(|o| if let Output::Edit(r) = o { Some(r.clone()) } else { None }).expect("an editor opens");
+    assert_eq!(edit.content, "noParents = {};\n  return 1;");
+    assert!(main_lines(&out).is_empty());
+    // Compile errors in coloured lines are still found.
+    e.save_edit(&edit, "noParents = {}");
+    let out = e.handle_event(tell("\x1b[1mLine 1:  syntax error".into()));
+    assert!(out.iter().any(|o| matches!(o, Output::CompileError { line: 1, message, .. } if message == "syntax error")), "{out:?}");
+    // A broken message with our key is reported rather than dropped silently.
+    let out = e.handle_event(SessionEvent::Line(format!("#$#dns-com-awns-status {key} text: \"unterminated")));
+    assert!(notices(&out)[0].starts_with("Ignored an MCP message"), "{out:?}");
+}

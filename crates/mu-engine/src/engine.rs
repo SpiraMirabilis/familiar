@@ -1117,6 +1117,14 @@ impl Engine {
             self.compile_watch = None;
             return;
         }
+        // Cores that colour every line would otherwise hide "Line 3:" behind escape codes.
+        let plain;
+        let text = if text.contains('\x1b') {
+            plain = mu_ansi::AnsiParser::new().parse_line(text).text;
+            plain.as_str()
+        } else {
+            text
+        };
         let rest = text
             .trim_start()
             .strip_prefix("Line ")
@@ -1133,18 +1141,20 @@ impl Engine {
         let quoted;
         // Some cores' :tell wraps every line in colour codes, which would hide the #$# that
         // marks an MCP line; look past them.
+        // Such cores often add a space before the reset code too, so trailing spaces go as well.
         let uncoloured;
         let mcp_text = if self.world.mcp && text.contains('\x1b') {
             uncoloured = mu_ansi::AnsiParser::new().parse_line(text).text;
-            if uncoloured.starts_with("#$") { uncoloured.as_str() } else { text }
+            if uncoloured.starts_with("#$") { uncoloured.trim_end() } else { text }
         } else {
             text
         };
+        if self.world.mcp && self.mcp_debug && mcp_text.starts_with("#$") {
+            // The raw line, with escape characters made visible.
+            out.push(Output::Notice(format!("MCP ← {}", text.replace('\x1b', "␛"))));
+        }
         let text = if self.world.mcp {
             let text = mcp_text;
-            if self.mcp_debug && text.starts_with("#$") {
-                out.push(Output::Notice(format!("MCP ← {text}")));
-            }
             let mut events = Vec::new();
             let (disposition, sends) = self.mcp.on_line(text, &mut events);
             for line in sends {

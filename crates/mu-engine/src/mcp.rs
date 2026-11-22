@@ -214,7 +214,10 @@ impl Mcp {
                 // Wrong key: someone (maybe another player) is trying to spoof the server.
                 return (Disposition::Hide, Vec::new());
             }
-            let Some(kv) = parse_keyvals(rest) else { return (Disposition::Hide, Vec::new()) };
+            let Some(kv) = parse_keyvals(rest) else {
+                events.push(McpEvent::Notice(format!("Ignored an MCP message the client couldn't read: {name} {rest}")));
+                return (Disposition::Hide, Vec::new());
+            };
             let mut message = Message { name: name.to_ascii_lowercase(), ..Message::default() };
             for (k, v, is_list) in kv {
                 if is_list {
