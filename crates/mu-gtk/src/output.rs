@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use gtk::glib::translate::IntoGlib;
 use gtk::prelude::*;
-use gtk::{gdk, pango};
+use gtk::{gdk, glib, pango};
 use mu_ansi::{Palette, Rgb, Style, StyledLine};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -106,24 +106,80 @@ impl OutputView {
         *self.on_link.borrow_mut() = Some(Box::new(f));
     }
 
+    /// Keeps the view pinned to the bottom while `follow` is set.
+    ///
+    /// `follow` only changes in response to user input (wheel, scrollbar, selection drags, Page
+    /// Up/Down). The adjustment's value can't be used to decide it: GtkTextView measures wrapped
+    /// lines lazily and moves the adjustment itself as it does, which would look like the user
+    /// scrolling up.
     fn setup_scrolling(&self) {
         let adj = self.scrolled.vadjustment();
         let follow = self.follow.clone();
-        adj.connect_value_changed(move |adj| {
-            follow.set(adj.value() >= adj.upper() - adj.page_size() - 4.0);
-        });
-        let follow = self.follow.clone();
-        adj.connect_upper_notify(move |adj| {
-            if follow.get() {
-                adj.set_value(adj.upper() - adj.page_size());
-            }
-        });
-        let follow = self.follow.clone();
-        adj.connect_page_size_notify(move |adj| {
-            if follow.get() {
-                adj.set_value(adj.upper() - adj.page_size());
-            }
-        });
+        let pointer_down = Rc::new(Cell::new(false));
+
+        let at_bottom = |adj: &gtk::Adjustment| adj.value() >= adj.upper() - adj.page_size() - 4.0;
+        let to_bottom = |adj: &gtk::Adjustment| adj.set_value(adj.upper() - adj.page_size());
+
+        {
+            let follow = follow.clone();
+            let pointer_down = pointer_down.clone();
+            adj.connect_value_changed(move |adj| {
+                if pointer_down.get() {
+                    // Dragging the scrollbar, or a selection that auto-scrolls.
+                    follow.set(at_bottom(adj));
+                } else if follow.get() && !at_bottom(adj) {
+                    to_bottom(adj);
+                }
+            });
+        }
+        for notify in ["upper", "page-size"] {
+            let follow = follow.clone();
+            adj.connect_notify_local(Some(notify), move |adj, _| {
+                if follow.get() {
+                    to_bottom(adj);
+                }
+            });
+        }
+
+        // Wheel and touchpad. This runs before the scrolled window moves, so scrolling up stops
+        // following before the value changes.
+        let scroll = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
+        scroll.set_propagation_phase(gtk::PropagationPhase::Capture);
+        {
+            let follow = follow.clone();
+            let adj = adj.clone();
+            scroll.connect_scroll(move |_, _, dy| {
+                if dy < 0.0 {
+                    follow.set(false);
+                } else {
+                    let follow = follow.clone();
+                    let adj = adj.clone();
+                    glib::idle_add_local_once(move || follow.set(at_bottom(&adj)));
+                }
+                glib::Propagation::Proceed
+            });
+        }
+        self.scrolled.add_controller(scroll);
+
+        // Mouse button held on the scrollbar or the text (selecting). While it's down, the user
+        // is in control; on release, follow again if they left the view at the bottom.
+        let legacy = gtk::EventControllerLegacy::new();
+        legacy.set_propagation_phase(gtk::PropagationPhase::Capture);
+        {
+            let adj = adj.clone();
+            legacy.connect_event(move |_, event| {
+                match event.event_type() {
+                    gdk::EventType::ButtonPress => pointer_down.set(true),
+                    gdk::EventType::ButtonRelease => {
+                        pointer_down.set(false);
+                        follow.set(at_bottom(&adj));
+                    }
+                    _ => {}
+                }
+                glib::Propagation::Proceed
+            });
+        }
+        self.scrolled.add_controller(legacy);
     }
 
     fn link_at(&self, x: f64, y: f64) -> Option<Arc<str>> {
@@ -295,8 +351,11 @@ impl OutputView {
     pub fn scroll_page(&self, up: bool) {
         let adj = self.scrolled.vadjustment();
         let step = adj.page_size() * 0.9;
-        let value = if up { adj.value() - step } else { adj.value() + step };
-        adj.set_value(value.clamp(adj.lower(), adj.upper() - adj.page_size()));
+        let bottom = adj.upper() - adj.page_size();
+        let value = (if up { adj.value() - step } else { adj.value() + step }).clamp(adj.lower(), bottom);
+        // Set follow first, so the value-changed handler doesn't snap back to the bottom.
+        self.follow.set(value >= bottom - 4.0);
+        adj.set_value(value);
     }
 
     pub fn scroll_to_end(&self) {
