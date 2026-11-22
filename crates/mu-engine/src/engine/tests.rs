@@ -33,6 +33,7 @@ fn engine(config: &Config) -> (Engine, UnboundedReceiver<SessionCommand>) {
     let character = world.characters[0].clone();
     let (mut engine, notices) = Engine::new(config, world, Some(character));
     assert!(notices.is_empty(), "{notices:?}");
+    engine.detach_map();
     let (handle, rx) = SessionHandle::channel();
     engine.attach(handle);
     (engine, rx)
@@ -396,4 +397,51 @@ fn moo_code_uses_the_world_language() {
         r##"#$#dns-org-mud-moo-simpleedit-content {key} reference: "#5:do" name: "#5:do" type: moo-code content: "return;""##
     )));
     assert!(matches!(&out[0], Output::Edit(r) if r.language.as_deref() == Some("muf")));
+}
+
+#[test]
+fn room_info_builds_the_map_and_walking_follows_it() {
+    let (mut e, mut rx) = engine(&config(Rules::default(), Rules::default(), Rules::default()));
+    let out = e.handle_event(gmcp("Room.Info", r#"{"num": 1, "name": "Square", "area": "Town", "exits": {"n": 2}}"#));
+    assert!(out.contains(&Output::MapChanged));
+    let square = e.current_room().unwrap();
+    e.submit("n", false);
+    e.handle_event(gmcp("room.info", r#"{"num": 2, "name": "Gate", "area": "Town", "exits": {"s": 1}}"#));
+    let gate = e.current_room().unwrap();
+    assert_ne!(square, gate);
+    assert_eq!(e.map().path(square, gate), Some(vec!["n".to_string()]));
+    sent(&mut rx);
+
+    e.map_walk_to(square);
+    assert_eq!(sent(&mut rx), vec!["s"]);
+    // With Room.Info, the position waits for the server to confirm.
+    assert_eq!(e.current_room(), Some(gate));
+}
+
+#[test]
+fn map_commands_and_tracking_by_name() {
+    let (mut e, mut rx) = engine(&config(Rules::default(), Rules::default(), Rules::default()));
+    e.submit("/map addroom Hall", false);
+    e.submit(r#"/map addroom "Long Kitchen" north south"#, false);
+    let kitchen = e.current_room().unwrap();
+    assert_eq!(e.map().room(kitchen).unwrap().name, "Long Kitchen");
+    e.submit("/map here hall", false);
+    let hall = e.current_room().unwrap();
+    assert_ne!(hall, kitchen);
+
+    // No Room.Info: moving north and seeing the kitchen's name moves us there.
+    e.submit("north", false);
+    e.handle_event(SessionEvent::Line("Long Kitchen".into()));
+    assert_eq!(e.current_room(), Some(kitchen));
+
+    sent(&mut rx);
+    e.submit("/map go hall", false);
+    assert_eq!(sent(&mut rx), vec!["south"]);
+    assert_eq!(e.current_room(), Some(hall), "without Room.Info, a walk is assumed to work");
+
+    assert!(notices(&e.submit("/map go nowhere", false))[0].contains("No room"));
+    assert!(notices(&e.submit("/map clear", false))[0].contains("/map clear yes"));
+    e.submit("/map clear yes", false);
+    assert!(e.map().is_empty());
+    assert_eq!(e.submit("/map", false), vec![Output::ShowMap]);
 }

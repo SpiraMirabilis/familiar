@@ -39,7 +39,7 @@ pub struct SessionView {
     pub output: Rc<OutputView>,
     pub input: Rc<InputView>,
     state: Rc<AppState>,
-    engine: RefCell<Engine>,
+    engine: Rc<RefCell<Engine>>,
     page: RefCell<Option<adw::TabPage>>,
     /// Incremented on each connect, so events from an old connection are dropped.
     generation: Cell<u64>,
@@ -55,6 +55,7 @@ pub struct SessionView {
     status: gtk::Label,
     sounds: RefCell<Vec<gtk::MediaFile>>,
     media: Rc<MediaPlayer>,
+    map: RefCell<Option<Rc<crate::map_view::MapView>>>,
     /// Open code editors by reference ("" for the latest scratch editor), for compile errors.
     editors: RefCell<HashMap<String, Weak<crate::code_editor::CodeEditor>>>,
     /// The pending script timer and when it fires.
@@ -104,7 +105,7 @@ impl SessionView {
             output,
             input,
             state,
-            engine: RefCell::new(engine),
+            engine: Rc::new(RefCell::new(engine)),
             page: RefCell::default(),
             generation: Cell::new(0),
             disconnected: RefCell::default(),
@@ -117,6 +118,7 @@ impl SessionView {
             media: Rc::default(),
             timer: RefCell::default(),
             editors: RefCell::default(),
+            map: RefCell::default(),
             #[cfg(feature = "webview")]
             webviews: RefCell::default(),
             on_open_uri: RefCell::default(),
@@ -125,7 +127,46 @@ impl SessionView {
         this.setup();
         this.apply(notices);
         this.start_scripting();
+        if !this.engine.borrow().map().is_empty() {
+            this.show_map(false);
+        }
+        // Save the map now and then; it's also saved on disconnect and when the tab closes.
+        let weak = Rc::downgrade(&this);
+        glib::timeout_add_seconds_local(30, move || {
+            let Some(this) = weak.upgrade() else { return glib::ControlFlow::Break };
+            this.save_map();
+            glib::ControlFlow::Continue
+        });
         this
+    }
+
+    pub fn save_map(&self) {
+        if let Err(e) = self.engine.borrow_mut().save_map() {
+            self.output.notice(&format!("Couldn't save the map: {e}"));
+        }
+    }
+
+    /// Adds the map tab if needed, and switches to it if `select`.
+    fn show_map(self: &Rc<Self>, select: bool) {
+        let existing = self.map.borrow().clone();
+        let view = match existing {
+            Some(view) => view,
+            None => {
+                let weak = Rc::downgrade(self);
+                let view = crate::map_view::MapView::new(self.engine.clone(), move |out| {
+                    if let Some(this) = weak.upgrade() {
+                        this.apply(out);
+                    }
+                });
+                self.add_side_tab(&view.root, "Map");
+                *self.map.borrow_mut() = Some(view.clone());
+                view
+            }
+        };
+        if select && let Some(n) = self.side.page_num(&view.root) {
+            self.side.set_current_page(Some(n));
+        }
+        view.refresh();
     }
 
     /// The startup scripts for this session: the global startup.js, then the world's script.
@@ -409,6 +450,15 @@ impl SessionView {
                         f();
                     }
                 }
+                Output::MapChanged => {
+                    let view = self.map.borrow().clone();
+                    match view {
+                        Some(view) => view.refresh(),
+                        None if !self.engine.borrow().map().is_empty() => self.show_map(false),
+                        None => {}
+                    }
+                }
+                Output::ShowMap => self.show_map(true),
                 Output::Stats { pane, data } => self.update_stats(&pane, data.as_ref()),
                 Output::Media(command) => {
                     let weak = Rc::downgrade(self);

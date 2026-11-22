@@ -94,6 +94,16 @@ impl MainWindow {
         let this = Rc::new(Self { window, tab_view, stack, toasts, state, sessions: RefCell::default() });
         this.setup_actions(app);
         this.setup_tabs();
+        // Closing the window quits, so save every session's map first.
+        let weak = Rc::downgrade(&this);
+        this.window.connect_close_request(move |_| {
+            if let Some(this) = weak.upgrade() {
+                for (_, session) in this.sessions.borrow().iter() {
+                    session.save_map();
+                }
+            }
+            glib::Propagation::Proceed
+        });
         if let Some(e) = this.state.load_error() {
             this.toast(&format!("Couldn't read the config file: {e}"));
         }
@@ -118,6 +128,7 @@ impl MainWindow {
                 let mut sessions = this.sessions.borrow_mut();
                 if let Some(pos) = sessions.iter().position(|(p, _)| p == page) {
                     let (_, session) = sessions.remove(pos);
+                    session.save_map();
                     session.disconnect();
                     if session.is_logging() {
                         session.toggle_log();

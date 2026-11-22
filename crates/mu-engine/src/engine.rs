@@ -17,6 +17,7 @@ use crate::media::{Media, MediaCommand};
 use crate::rules::CompiledRules;
 use crate::script::{ScriptAction, ScriptContext, ScriptHost};
 use crate::stats::{StatPane, Stats};
+use mu_map::{Atlas, RoomId, RoomInfo};
 use crate::{KeyChord, Logger};
 
 /// A trigger that sends more often than this is suspended for the session, so a trigger that
@@ -113,6 +114,10 @@ pub enum Output {
     /// The server reported a compile error in a program that was just sent from an editor.
     /// `line` counts from 1.
     CompileError { reference: String, line: u32, message: String },
+    /// The map or the current room changed; redraw it.
+    MapChanged,
+    /// The user asked to see the map.
+    ShowMap,
     /// A Beip.Stats pane changed. None means it was removed.
     Stats { pane: String, data: Option<StatPane> },
     Media(MediaCommand),
@@ -149,6 +154,15 @@ pub struct Engine {
     gmcp_debug: bool,
     webviews_supported: bool,
     script: Option<Box<dyn ScriptHost>>,
+    map: Atlas,
+    map_path: Option<PathBuf>,
+    current_room: Option<RoomId>,
+    /// The last movement command sent, for placing new rooms and live tracking.
+    last_move: Option<String>,
+    /// Follow room names in the output to track position (when there's no Room.Info).
+    map_tracking: bool,
+    /// The server sends Room.Info, so tracking by name isn't needed.
+    room_info_seen: bool,
     /// After an upload: which editor it came from, and until when to look for errors.
     compile_watch: Option<(String, Instant)>,
     /// How deeply script actions are nested (a script typing input that runs a script...).
@@ -173,6 +187,7 @@ const HELP: &str = "Client commands:
   /script load path    run a script file
   /script reload       restart scripting and reload the startup scripts
   /edit [language]     open a code editor whose text is sent line by line (moo, muf, lua)
+  /map ...             show the map, walk (/map go name), add rooms; /map help for more
   //text               send text that starts with a /";
 
 impl Engine {
@@ -195,11 +210,158 @@ impl Engine {
             gmcp_debug: false,
             webviews_supported: false,
             script: None,
+            map: Atlas::default(),
+            map_path: None,
+            current_room: None,
+            last_move: None,
+            map_tracking: true,
+            room_info_seen: false,
             compile_watch: None,
             script_depth: 0,
         };
-        let out = engine.reload(config);
+        let mut out = engine.reload(config);
+        let path = mu_config::map_path(&engine.world.name);
+        match Atlas::load(&path) {
+            Ok(map) => engine.map = map,
+            Err(e) => out.push(Output::Notice(format!("Couldn't load the map: {e}"))),
+        }
+        engine.map_path = Some(path);
         (engine, out)
+    }
+
+    /// Uses an in-memory map that's never saved (for tests and throwaway sessions).
+    pub fn detach_map(&mut self) {
+        self.map = Atlas::default();
+        self.map_path = None;
+    }
+
+    pub fn map(&self) -> &Atlas {
+        &self.map
+    }
+
+    pub fn current_room(&self) -> Option<RoomId> {
+        self.current_room
+    }
+
+    /// Saves the map if it changed. The UI calls this now and then, and when the tab closes.
+    pub fn save_map(&mut self) -> Result<(), String> {
+        match &self.map_path {
+            Some(path) => self.map.save(path),
+            None => Ok(()),
+        }
+    }
+
+    pub fn map_set_current(&mut self, room: Option<RoomId>) -> Vec<Output> {
+        self.current_room = room;
+        vec![Output::MapChanged]
+    }
+
+    /// Sends the commands to walk to `room` by the shortest known path.
+    pub fn map_walk_to(&mut self, room: RoomId) -> Vec<Output> {
+        let mut out = Vec::new();
+        let Some(from) = self.current_room else {
+            out.push(Output::Notice("Set your current room first: right-click it on the map, or use /map here name".into()));
+            return out;
+        };
+        let Some(path) = self.map.path(from, room) else {
+            out.push(Output::Notice("No known way there from here".into()));
+            return out;
+        };
+        for step in &path {
+            self.send_command(step, &mut out);
+        }
+        // Without Room.Info nothing will report each step, so assume the walk worked.
+        if !self.room_info_seen {
+            self.current_room = Some(room);
+        }
+        self.last_move = None;
+        out.push(Output::MapChanged);
+        out
+    }
+
+    pub fn map_move_room(&mut self, room: RoomId, x: f64, y: f64) -> Vec<Output> {
+        self.map.move_room(room, x, y);
+        vec![Output::MapChanged]
+    }
+
+    pub fn map_rename_room(&mut self, room: RoomId, name: &str) -> Vec<Output> {
+        self.map.rename_room(room, name);
+        vec![Output::MapChanged]
+    }
+
+    pub fn map_delete_room(&mut self, room: RoomId) -> Vec<Output> {
+        self.map.delete_room(room);
+        if self.current_room == Some(room) {
+            self.current_room = None;
+        }
+        vec![Output::MapChanged]
+    }
+
+    /// Adds an unconnected room at a position, e.g. from the map's right-click menu.
+    pub fn map_add_room_at(&mut self, name: &str, area: &str, x: f64, y: f64) -> (RoomId, Vec<Output>) {
+        let id = self.map.add_room(name, area, Some((x, y)));
+        (id, vec![Output::MapChanged])
+    }
+
+    /// Adds a room reached from the current one (or a first room when there's none).
+    pub fn map_add_room(&mut self, name: &str, there: Option<&str>, back: Option<&str>) -> Vec<Output> {
+        let id = match (self.current_room, there) {
+            (Some(from), Some(there)) => self.map.add_room_from(from, name, there, back),
+            _ => Some(self.map.add_room(name, "", None)),
+        };
+        self.current_room = id.or(self.current_room);
+        vec![Output::MapChanged]
+    }
+
+    fn map_command(&mut self, args: &str, out: &mut Vec<Output>) {
+        let (sub, rest) = args.split_once(char::is_whitespace).unwrap_or((args, ""));
+        let rest = rest.trim();
+        let find = |map: &Atlas, name: &str| map.search(name).first().copied();
+        match sub {
+            "" | "show" => out.push(Output::ShowMap),
+            "go" | "walk" if !rest.is_empty() => match find(&self.map, rest) {
+                Some(room) => out.extend(self.map_walk_to(room)),
+                None => out.push(Output::Notice(format!("No room on the map matches \"{rest}\""))),
+            },
+            "here" if !rest.is_empty() => match find(&self.map, rest) {
+                Some(room) => out.extend(self.map_set_current(Some(room))),
+                None => out.push(Output::Notice(format!("No room on the map matches \"{rest}\""))),
+            },
+            "addroom" if !rest.is_empty() => {
+                // /map addroom "Room name" there [back], as in BeipMU.
+                let (name, rest) = match rest.strip_prefix('"').and_then(|r| r.split_once('"')) {
+                    Some((name, rest)) => (name.to_string(), rest.trim()),
+                    None => {
+                        let (name, rest) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+                        (name.to_string(), rest.trim())
+                    }
+                };
+                let mut words = rest.split_whitespace();
+                out.extend(self.map_add_room(&name, words.next(), words.next()));
+            }
+            "rename" if !rest.is_empty() => match self.current_room {
+                Some(room) => out.extend(self.map_rename_room(room, rest)),
+                None => out.push(Output::Notice("There's no current room to rename".into())),
+            },
+            "delete" => match self.current_room {
+                Some(room) => out.extend(self.map_delete_room(room)),
+                None => out.push(Output::Notice("There's no current room to delete".into())),
+            },
+            "track" => {
+                self.map_tracking = rest != "off";
+                out.push(Output::Notice(format!("Tracking by room name is {}", if self.map_tracking { "on" } else { "off" })));
+            }
+            "clear" if rest == "yes" => {
+                self.map.clear();
+                self.current_room = None;
+                out.push(Output::MapChanged);
+                out.push(Output::Notice("Map cleared".into()));
+            }
+            "clear" => out.push(Output::Notice("This deletes every room on this world's map. Type /map clear yes to do it.".into())),
+            _ => out.push(Output::Notice(
+                "Map commands: /map, /map go name, /map here name, /map addroom \"name\" there [back], /map rename name, /map delete, /map track on|off, /map clear".into(),
+            )),
+        }
     }
 
     /// Picks up changed rules, variables and settings. Returns notices for rules that failed to
@@ -463,6 +625,9 @@ impl Engine {
                     out.push(Output::PasswordMode(false));
                 }
                 self.handle = None;
+                if let Err(e) = self.save_map() {
+                    out.push(Output::Notice(format!("Couldn't save the map: {e}")));
+                }
                 self.script_event("disconnect", &mut out);
             }
         }
@@ -483,6 +648,17 @@ impl Engine {
                     }
                 }
                 Err(e) => out.push(Output::Notice(e)),
+            },
+            "room.info" => match RoomInfo::parse(&data) {
+                Some(info) => {
+                    self.room_info_seen = true;
+                    let last = self.last_move.take();
+                    if let Some(room) = self.map.apply_room_info(&info, self.current_room, last.as_deref()) {
+                        self.current_room = Some(room);
+                    }
+                    out.push(Output::MapChanged);
+                }
+                None => out.push(Output::Notice("Room.Info: couldn't read it".into())),
             },
             "webview.open" => match parse_webview_open(&data) {
                 Ok(open) => out.push(Output::WebView(WebViewCommand::Open(open))),
@@ -617,6 +793,14 @@ impl Engine {
         };
         out.push(Output::Received(text.to_string()));
         self.check_compile_error(text, out);
+        if self.map_tracking && !self.room_info_seen
+            && let Some(current) = self.current_room
+            && let Some(next) = self.map.track(current, text, self.last_move.as_deref())
+        {
+            self.current_room = Some(next);
+            self.last_move = None;
+            out.push(Output::MapChanged);
+        }
         if let Some(script) = self.script.as_mut() {
             script.on_receive(text);
             self.drain_script(out);
@@ -798,6 +982,10 @@ impl Engine {
                 None => return, // A script dropped it.
             }
         }
+        // Remember movement, for the automapper and live tracking.
+        if mu_map::offset(command).is_some() || self.current_room.and_then(|r| self.map.room(r)).is_some_and(|r| r.exit(command).is_some()) {
+            self.last_move = Some(command.to_string());
+        }
         if self.send_raw(command) {
             out.push(Output::Sent(command.to_string()));
             if self.settings.local_echo {
@@ -885,6 +1073,7 @@ impl Engine {
             } else {
                 "MCP is off for this world".into()
             })),
+            "map" => self.map_command(args, out),
             "edit" => {
                 let language = if args.is_empty() { self.program_language() } else { args.to_lowercase() };
                 out.push(Output::Edit(EditRequest {

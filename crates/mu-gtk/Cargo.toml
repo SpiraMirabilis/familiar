@@ -11,8 +11,10 @@ mu-ansi = { version = "0.1.0", path = "../mu-ansi" }
 mu-code = { version = "0.1.0", path = "../mu-code" }
 mu-config = { version = "0.1.0", path = "../mu-config" }
 mu-engine = { version = "0.1.0", path = "../mu-engine" }
+mu-map = { version = "0.1.0", path = "../mu-map" }
 mu-net = { version = "0.1.0", path = "../mu-net" }
 mu-script = { version = "0.1.0", path = "../mu-script" }
+pangocairo = "0.22"
 serde_json = { version = "1.0.154", optional = true }
 sourceview5 = "0.11.3"
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "net", "time", "sync"] }

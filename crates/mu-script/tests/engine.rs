@@ -21,6 +21,7 @@ fn setup(rules: Rules) -> (Engine, UnboundedReceiver<SessionCommand>) {
     };
     let world = config.worlds[0].clone();
     let (mut engine, _) = Engine::new(&config, world.clone(), Some(world.characters[0].clone()));
+    engine.detach_map();
     let (handle, rx) = SessionHandle::channel();
     engine.attach(handle);
     let out = engine.set_script_host(Box::new(JsHost::new().unwrap()));

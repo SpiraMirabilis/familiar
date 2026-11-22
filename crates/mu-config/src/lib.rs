@@ -137,6 +137,12 @@ pub fn startup_script_path() -> PathBuf {
     config_dir().join("startup.js")
 }
 
+/// Where a world's map is saved.
+pub fn map_path(world: &str) -> PathBuf {
+    let name: String = world.chars().map(|c| if c.is_alphanumeric() || matches!(c, '-' | '_' | '.') { c } else { '_' }).collect();
+    data_dir().join("maps").join(format!("{}.json", if name.is_empty() { "map" } else { &name }))
+}
+
 pub fn log_dir() -> PathBuf {
     data_dir().join("logs")
 }

@@ -8,6 +8,7 @@ mod code_editor;
 mod connect_dialog;
 mod input;
 mod keys;
+mod map_view;
 mod media_player;
 mod output;
 mod rules_dialog;
