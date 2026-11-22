@@ -2,6 +2,7 @@ use familiar_config::{Alias, Character, Config, Highlight, Macro, Pattern, Puppe
 use familiar_net::{SessionCommand, SessionEvent, SessionHandle};
 use tokio::sync::mpsc::UnboundedReceiver;
 
+use super::scripting::parse_duration;
 use super::*;
 
 fn pattern(p: &str) -> Pattern {
