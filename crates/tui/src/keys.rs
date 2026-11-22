@@ -49,7 +49,10 @@ pub fn coalesce_paste(events: Vec<Event>) -> Vec<Event> {
             None => return events,
         }
     }
-    if text.chars().count() >= PASTE_MIN_KEYS && text.contains('\n') { vec![Event::Paste(text)] } else { events }
+    // An Enter with text after it. One line ending in Enter is left as typing: that's also what
+    // a macro tool or dictation software sending a command looks like, and it should be sent.
+    let multiline = text.trim_end_matches('\n').contains('\n');
+    if text.chars().count() >= PASTE_MIN_KEYS && multiline { vec![Event::Paste(text)] } else { events }
 }
 
 #[cfg(test)]
@@ -96,9 +99,12 @@ mod tests {
         // Fast typing: a few keys, even with Enter.
         let typing = keys("hi\n");
         assert_eq!(coalesce_paste(typing.clone()), typing);
-        // One long line needs no special handling.
-        let line = keys("a single pasted line");
-        assert_eq!(coalesce_paste(line.clone()), line);
+        // One long line needs no special handling, with or without Enter at the end (which is
+        // also how a macro tool sends a command).
+        for text in ["a single pasted line", "a command sent all at once\n"] {
+            let line = keys(text);
+            assert_eq!(coalesce_paste(line.clone()), line);
+        }
         // Anything that isn't text (a shortcut, the mouse) means it isn't a paste.
         let mut mixed = keys("line one\nline two");
         mixed.push(press(KeyCode::Char('c'), KeyModifiers::CONTROL));
