@@ -113,9 +113,11 @@ impl ConnectDialog {
         add.connect_clicked(move |button| {
             let Some(this) = weak.upgrade() else { return };
             let weak = Rc::downgrade(&this);
+            let default_font = this.state.config.borrow().settings.font.clone();
             world_dialog::show(
                 button,
                 None,
+                &default_font,
                 move |world| {
                     let Some(this) = weak.upgrade() else { return };
                     this.state.config.borrow_mut().worlds.push(world);
@@ -180,7 +182,8 @@ impl ConnectDialog {
                     this.rebuild_worlds();
                 })
             };
-            world_dialog::show(button, Some(&edited), on_save, Some(on_delete));
+            let default_font = this.state.config.borrow().settings.font.clone();
+            world_dialog::show(button, Some(&edited), &default_font, on_save, Some(on_delete));
         });
 
         if world.characters.is_empty() {

@@ -73,17 +73,22 @@ pub struct SessionView {
     timer: RefCell<Option<(glib::SourceId, Instant)>>,
     #[cfg(feature = "webview")]
     webviews: RefCell<Vec<crate::webview::WebPane>>,
+    /// The CSS class for this world's font (see `app::world_class`), for every view it opens.
+    font_class: String,
     on_open_uri: RefCell<Option<Box<dyn Fn(&str)>>>,
     on_logging_changed: RefCell<Option<Box<dyn Fn()>>>,
 }
 
 impl SessionView {
     pub fn new(state: Rc<AppState>, world: World, character: Option<Character>) -> Rc<Self> {
+        let font_class = crate::app::world_class(&world.name);
         let (mut engine, notices) = Engine::new(&state.config.borrow(), world, character);
         engine.set_webviews_supported(cfg!(feature = "webview"));
         let settings = state.config.borrow().settings.clone();
         let output = OutputView::new(Palette::default(), settings.scrollback_lines);
         let input = InputView::new(settings.input_history_size, settings.spellcheck);
+        output.view.add_css_class(&font_class);
+        input.view.add_css_class(&font_class);
 
         let status = gtk::Label::builder()
             .xalign(0.0)
@@ -137,6 +142,7 @@ impl SessionView {
             avatars: RefCell::default(),
             #[cfg(feature = "webview")]
             webviews: RefCell::default(),
+            font_class,
             on_open_uri: RefCell::default(),
             on_logging_changed: RefCell::default(),
         });
@@ -550,6 +556,7 @@ impl SessionView {
         }
         let settings = self.state.config.borrow().settings.clone();
         let view = OutputView::new(Palette::default(), settings.scrollback_lines);
+        view.view.add_css_class(&self.font_class);
         let weak = Rc::downgrade(self);
         view.connect_link(move |uri| {
             if let Some(this) = weak.upgrade() {
@@ -626,6 +633,8 @@ impl SessionView {
                     }
                 };
                 let view = crate::puppet_view::PuppetView::new(&settings, submit, link);
+                view.output.view.add_css_class(&self.font_class);
+                view.input.view.add_css_class(&self.font_class);
                 let title = format!("{name} ({})", self.title());
                 let Some(page) = self.on_open_tab.borrow().as_ref().map(|f| f(view.root.upcast_ref(), &title)) else { return };
                 page.set_icon(Some(&gtk::gio::ThemedIcon::new("avatar-default-symbolic")));

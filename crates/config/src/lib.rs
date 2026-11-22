@@ -132,6 +132,10 @@ pub struct World {
     /// A JavaScript file to run for this world, after the global startup.js.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub script: String,
+    /// This world's font, as a Pango font description. Empty means the default font from the
+    /// settings.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub font: String,
     /// Whether the server may open web views (GMCP webview.open). None means ask.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub allow_webviews: Option<bool>,
@@ -153,6 +157,7 @@ impl Default for World {
             mcp: true,
             program_language: String::new(),
             script: String::new(),
+            font: String::new(),
             allow_webviews: None,
             rules: Rules::default(),
             characters: Vec::new(),

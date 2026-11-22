@@ -46,6 +46,7 @@ impl MainWindow {
         log_section.append(Some("Open Log Folder"), Some("win.open-logs"));
         menu.append_section(None, &log_section);
         let app_section = gio::Menu::new();
+        app_section.append(Some("Preferences"), Some("win.preferences"));
         app_section.append(Some("Keyboard Shortcuts"), Some("win.shortcuts"));
         app_section.append(Some(&format!("About {}", crate::APP_NAME)), Some("win.about"));
         menu.append_section(None, &app_section);
@@ -318,6 +319,20 @@ impl MainWindow {
             }),
         );
         add(
+            "preferences",
+            &["<Control>comma"],
+            Box::new(|this| {
+                let weak = Rc::downgrade(this);
+                crate::preferences_dialog::show(&this.window, this.state.clone(), move || {
+                    if let Some(this) = weak.upgrade() {
+                        for (_, session) in this.sessions.borrow().iter() {
+                            session.reload();
+                        }
+                    }
+                });
+            }),
+        );
+        add(
             "import-beipmu",
             &[],
             Box::new(|this| {
@@ -372,6 +387,7 @@ impl MainWindow {
             ("Ctrl+Shift+L", "Clear output"),
             ("Ctrl+Shift+G", "Log to file"),
             ("Ctrl+T", "Triggers, aliases and macros"),
+            ("Ctrl+,", "Preferences"),
             ("Ctrl+.", "Stop speaking"),
             ("Enter", "Send"),
             ("Shift+Enter", "New line in input"),

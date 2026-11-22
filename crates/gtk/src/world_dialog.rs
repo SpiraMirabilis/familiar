@@ -101,6 +101,7 @@ pub struct WorldDialog {
     encoding: adw::ComboRow,
     script: adw::EntryRow,
     program_language: adw::ComboRow,
+    font: crate::font_row::FontRow,
     characters_group: adw::PreferencesGroup,
     characters: RefCell<Vec<CharacterRows>>,
     save: gtk::Button,
@@ -111,6 +112,7 @@ pub struct WorldDialog {
 pub fn show(
     parent: &impl IsA<gtk::Widget>,
     world: Option<&World>,
+    default_font: &str,
     on_save: impl Fn(World) + 'static,
     on_delete: Option<Box<dyn Fn()>>,
 ) {
@@ -174,6 +176,10 @@ pub fn show(
         });
     }
 
+    let font = crate::font_row::FontRow::new("Font", &world.font, default_font, true);
+    let appearance = adw::PreferencesGroup::builder().title("Appearance").build();
+    appearance.add(&font.row);
+
     let server = adw::PreferencesGroup::builder().title("Server").build();
     for row in [name.upcast_ref::<gtk::Widget>(), host.upcast_ref(), port.upcast_ref(), tls.upcast_ref(), verify.upcast_ref(), encoding.upcast_ref(), program_language.upcast_ref(), script.upcast_ref()] {
         server.add(row);
@@ -192,6 +198,7 @@ pub fn show(
 
     let page = adw::PreferencesPage::new();
     page.add(&server);
+    page.add(&appearance);
     page.add(&characters_group);
 
     let cancel = gtk::Button::with_label("Cancel");
@@ -221,6 +228,7 @@ pub fn show(
         encoding,
         script,
         program_language,
+        font,
         characters_group,
         characters: RefCell::default(),
         save,
@@ -334,6 +342,7 @@ impl WorldDialog {
             verify_certificate: self.verify.is_active(),
             encoding: ENCODINGS[(self.encoding.selected() as usize).min(ENCODINGS.len() - 1)].to_string(),
             script: self.script.text().trim().to_string(),
+            font: self.font.font(),
             program_language: PROGRAM_LANGUAGES[(self.program_language.selected() as usize).min(PROGRAM_LANGUAGES.len() - 1)].0.to_string(),
             characters: self
                 .characters

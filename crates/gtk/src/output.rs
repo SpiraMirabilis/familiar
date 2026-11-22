@@ -124,7 +124,14 @@ impl OutputView {
         let pointer_down = Rc::new(Cell::new(false));
 
         let at_bottom = |adj: &gtk::Adjustment| adj.value() >= adj.upper() - adj.page_size() - 4.0;
-        let to_bottom = |adj: &gtk::Adjustment| adj.set_value(adj.upper() - adj.page_size());
+        // Not before the view has a size: scrolling a view with no height makes GtkTextView put
+        // the line that's last at that moment at the top for good, hiding everything before it
+        // (the "Connecting" notices, and a fast server's first lines).
+        let to_bottom = |adj: &gtk::Adjustment| {
+            if adj.page_size() > 0.0 {
+                adj.set_value(adj.upper() - adj.page_size());
+            }
+        };
 
         {
             let follow = follow.clone();

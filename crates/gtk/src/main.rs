@@ -6,6 +6,7 @@
 mod app;
 mod code_editor;
 mod connect_dialog;
+mod font_row;
 mod images;
 mod import;
 mod input;
@@ -13,6 +14,7 @@ mod keys;
 mod map_view;
 mod media_player;
 mod output;
+mod preferences_dialog;
 mod puppet_view;
 mod rules_dialog;
 mod session;
@@ -69,7 +71,6 @@ fn main() -> glib::ExitCode {
             return;
         }
         let state = Rc::new(app::AppState::load());
-        app::install_css(&familiar_ansi::Palette::default(), &state.config.borrow().settings.font);
         let window = window::MainWindow::new(app, state);
         window.window.present();
         if let Some(world) = connect_to.first() {
