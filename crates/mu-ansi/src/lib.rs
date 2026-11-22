@@ -100,6 +100,31 @@ impl StyledLine {
         self.spans = spans;
     }
 
+    /// Deletes the text in the byte range `start..end` (on character boundaries), keeping the
+    /// styles of what remains.
+    pub fn remove_range(&mut self, start: usize, end: usize) {
+        let (start, end) = (start.min(self.text.len()), end.min(self.text.len()));
+        if start >= end {
+            return;
+        }
+        let removed = end - start;
+        self.text.replace_range(start..end, "");
+        let mut spans: Vec<Span> = Vec::with_capacity(self.spans.len());
+        for mut span in std::mem::take(&mut self.spans) {
+            let cut = |at: usize| if at <= start { at } else if at >= end { at - removed } else { start };
+            span.start = cut(span.start);
+            span.end = cut(span.end);
+            if span.start >= span.end {
+                continue;
+            }
+            match spans.last_mut() {
+                Some(last) if last.style == span.style && last.end == span.start => last.end = span.end,
+                _ => spans.push(span),
+            }
+        }
+        self.spans = spans;
+    }
+
     fn push(&mut self, c: char, style: &Style) {
         let start = self.text.len();
         self.text.push(c);
@@ -395,6 +420,19 @@ mod tests {
         assert_eq!(l.spans.len(), 1);
         l.restyle(5, 99, |s| s.italic = true);
         assert_eq!(l.spans.last().map(|s| l.span_text(s)), Some("fgh"));
+    }
+
+    #[test]
+    fn remove_range_keeps_styles() {
+        let mut l = parse("\x1b[32mZed> \x1b[0mhello \x1b[1mthere");
+        l.remove_range(0, 5);
+        assert_eq!(l.text, "hello there");
+        assert_eq!(l.spans.len(), 2);
+        assert!(l.spans[1].style.bold);
+        let mut l = parse("ab\x1b[31mcd\x1b[0mef");
+        l.remove_range(1, 5);
+        assert_eq!(l.text, "af");
+        assert_eq!(l.spans.len(), 1, "the plain pieces on each side merge");
     }
 
     #[test]

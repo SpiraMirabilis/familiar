@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use mu_ansi::{AnsiParser, Color, StyledLine};
-use mu_config::{Character, Config, Highlight, Scope, Settings, World};
+use mu_config::{Character, Config, Highlight, Puppet, Scope, Settings, World};
 use mu_net::{ConnectOptions, Encoding, SessionEvent, SessionHandle, SessionOptions, spawn_session};
 use tokio::sync::mpsc::UnboundedReceiver;
 
@@ -134,6 +134,17 @@ pub enum Output {
     InlineImage { url: String },
     /// Settings changed (e.g. /images); the UI should save them.
     SettingsChanged(Settings),
+    /// Open the tab for this puppet. `focus` switches to it (when the user asked for it, not
+    /// when a line arrived).
+    OpenPuppet { name: String, focus: bool },
+    /// A line for a puppet's tab.
+    PuppetLine { name: String, line: StyledLine },
+    /// A command typed in a puppet's tab, to show there.
+    PuppetEcho { name: String, text: String },
+    /// Speak this text aloud.
+    Speak(String),
+    /// Stop speaking.
+    SpeechStop,
     /// A Beip.Tilemap map was created or changed.
     Tilemap { name: String, map: Tilemap },
     /// The map or the current room changed; redraw it.
@@ -182,6 +193,9 @@ pub struct Engine {
     gmcp_debug: bool,
     webviews_supported: bool,
     script: Option<Box<dyn ScriptHost>>,
+    puppets: Vec<(Puppet, Option<fancy_regex::Regex>)>,
+    /// Puppets whose tabs are open.
+    open_puppets: std::collections::HashSet<String>,
     map: Atlas,
     map_path: Option<PathBuf>,
     current_room: Option<RoomId>,
@@ -217,6 +231,8 @@ const HELP: &str = "Client commands:
   /edit [language]     open a code editor whose text is sent line by line (moo, muf, lua)
   /map ...             show the map, walk (/map go name), add rooms; /map help for more
   /images on|off       show thumbnails under links to images
+  /puppet [name]       list this character's puppets, or open one's tab
+  /speech on|off|stop  speak incoming lines aloud; /speak text says something
   //text               send text that starts with a /";
 
 impl Engine {
@@ -243,6 +259,8 @@ impl Engine {
             gmcp_debug: false,
             webviews_supported: false,
             script: None,
+            puppets: Vec::new(),
+            open_puppets: Default::default(),
             map: Atlas::default(),
             map_path: None,
             current_room: None,
@@ -401,6 +419,31 @@ impl Engine {
     /// compile.
     pub fn reload(&mut self, config: &Config) -> Vec<Output> {
         self.settings = config.settings.clone();
+        // Pick up edits to the character (its puppets, login) from the config.
+        if let Some(name) = self.character.as_ref().map(|c| c.name.clone())
+            && let Some(saved) = config.world(&self.world.name).and_then(|w| w.characters.iter().find(|c| c.name == name))
+        {
+            self.character = Some(saved.clone());
+        }
+        let mut notices = Vec::new();
+        self.puppets = self
+            .character
+            .iter()
+            .flat_map(|c| c.puppets.iter())
+            .filter(|p| !p.name.is_empty() && !p.receive_prefix.is_empty())
+            .map(|p| {
+                let regex = p.regex.then(|| fancy_regex::Regex::new(&p.receive_prefix));
+                match regex {
+                    Some(Err(e)) => {
+                        notices.push(Output::Notice(format!("Puppet {}'s receive pattern is invalid: {e}", p.name)));
+                        (p.clone(), None)
+                    }
+                    Some(Ok(re)) => (p.clone(), Some(re)),
+                    None => (p.clone(), None),
+                }
+            })
+            .filter(|(p, re)| !p.regex || re.is_some())
+            .collect();
         let character = self.character.as_ref().map(|c| c.name.as_str());
         self.scopes = config.scopes_for(&self.world.name, character);
         let layers: Vec<_> = self.scopes.iter().filter_map(|s| config.rules(s)).collect();
@@ -411,7 +454,70 @@ impl Engine {
         if let Some(script) = self.script.as_mut() {
             script.set_variables(&merged);
         }
-        errors.into_iter().map(Output::Notice).collect()
+        notices.extend(errors.into_iter().map(Output::Notice));
+        notices
+    }
+
+    pub fn puppets(&self) -> impl Iterator<Item = &Puppet> {
+        self.puppets.iter().map(|(p, _)| p)
+    }
+
+    /// The UI opened or closed a puppet's tab.
+    pub fn set_puppet_open(&mut self, name: &str, open: bool) {
+        if open {
+            self.open_puppets.insert(name.to_string());
+        } else {
+            self.open_puppets.remove(name);
+        }
+    }
+
+    /// Which puppet a line belongs to, and the byte range of its prefix.
+    fn match_puppet(&self, plain: &str) -> Option<(usize, usize, usize)> {
+        self.puppets.iter().enumerate().find_map(|(i, (p, regex))| match regex {
+            Some(re) => {
+                let caps = re.captures(plain).ok().flatten()?;
+                // With a group, the group is the part to hide; otherwise the whole match.
+                let m = caps.get(1).or_else(|| caps.get(0))?;
+                Some((i, m.start(), m.end()))
+            }
+            None => {
+                let prefix = &p.receive_prefix;
+                (plain.len() >= prefix.len() && plain.is_char_boundary(prefix.len()) && plain[..prefix.len()].eq_ignore_ascii_case(prefix))
+                    .then_some((i, 0, prefix.len()))
+            }
+        })
+    }
+
+    /// Sends text typed in a puppet's tab, with the puppet's send prefix.
+    pub fn puppet_submit(&mut self, name: &str, text: &str) -> Vec<Output> {
+        let mut out = Vec::new();
+        let Some((puppet, _)) = self.puppets.iter().find(|(p, _)| p.name == name).cloned() else {
+            out.push(Output::Notice(format!("There's no puppet called {name}")));
+            return out;
+        };
+        let lines: Vec<&str> = if text.is_empty() { vec![""] } else { text.lines().collect() };
+        for line in lines {
+            let line = match line.strip_prefix(puppet.send_prefix.as_str()) {
+                Some(rest) if puppet.remove_accidental_prefix && !puppet.send_prefix.is_empty() => rest,
+                _ => line,
+            };
+            let command = format!("{}{line}", puppet.send_prefix);
+            if self.send_raw(&command) {
+                out.push(Output::Sent(command));
+                if self.settings.local_echo {
+                    out.push(Output::PuppetEcho { name: name.to_string(), text: line.to_string() });
+                }
+            } else {
+                out.push(Output::Notice("Not connected. Press Ctrl+R or type /reconnect to reconnect.".into()));
+                break;
+            }
+        }
+        out
+    }
+
+    fn open_puppet(&mut self, name: &str, focus: bool, out: &mut Vec<Output>) {
+        self.open_puppets.insert(name.to_string());
+        out.push(Output::OpenPuppet { name: name.to_string(), focus });
     }
 
     /// All variables visible to this session; more specific scopes win.
@@ -512,6 +618,7 @@ impl Engine {
                 }
                 ScriptAction::Gmcp { package, data } => out.extend(self.send_gmcp(&package, data.as_deref())),
                 ScriptAction::SetVariable { name, value } => self.set_variable(&name, value.as_deref(), true, out),
+                ScriptAction::Speak(text) => out.push(Output::Speak(text)),
                 ScriptAction::Error(e) => out.push(Output::Notice(format!("Script error: {e}"))),
             }
         }
@@ -626,6 +733,10 @@ impl Engine {
                 let login = self.character.as_ref().map(|c| c.login.clone()).unwrap_or_default();
                 for line in login.lines().filter(|l| !l.is_empty()) {
                     self.send_raw(line);
+                }
+                let on_connect: Vec<String> = self.puppets().filter(|p| p.open_on_connect).map(|p| p.name.clone()).collect();
+                for name in on_connect {
+                    self.open_puppet(&name, false, &mut out);
                 }
                 self.script_event("connect", &mut out);
             }
@@ -890,12 +1001,32 @@ impl Engine {
         line.linkify();
         let plain = line.text.clone();
 
+        // A puppet's line goes to its tab (and its own rules, not the main window's triggers).
+        if prompt.is_none()
+            && let Some((i, start, end)) = self.match_puppet(&plain)
+        {
+            let puppet = self.puppets[i].0.clone();
+            let open = self.open_puppets.contains(&puppet.name);
+            if open || puppet.auto_open {
+                if !open {
+                    self.open_puppet(&puppet.name, false, out);
+                }
+                if puppet.hide_prefix {
+                    line.remove_range(start, end);
+                }
+                self.log(&plain, out);
+                out.push(Output::PuppetLine { name: puppet.name, line });
+                return;
+            }
+        }
+
         let mut gag = false;
         let mut gag_log = false;
         let mut important = false;
         let mut spawns: Vec<String> = Vec::new();
         let mut sends: Vec<String> = Vec::new();
         let mut calls: Vec<(String, Vec<String>)> = Vec::new();
+        let mut speech: Vec<String> = Vec::new();
 
         for i in 0..self.rules.triggers.len() {
             let t = &self.rules.triggers[i];
@@ -926,6 +1057,10 @@ impl Engine {
                 out.push(Output::Notify { title: self.title(), body: plain.clone() });
             }
             let stop = trigger.stop;
+            if !trigger.speak.is_empty() {
+                let caps = Captures::from_regex(&t.regex, &caps);
+                speech.push(expand(&trigger.speak, &caps, |name| self.variable(name)));
+            }
             if !trigger.script.is_empty() {
                 let mut args = vec![plain.clone()];
                 args.extend((1..caps.len()).map(|i| caps.get(i).map_or(String::new(), |m| m.as_str().to_string())));
@@ -967,6 +1102,9 @@ impl Engine {
                         out.push(Output::LineAvatar(avatar));
                     }
                     out.push(Output::Line { line: line.clone(), target: Target::Main });
+                    if self.settings.speak_output && speech.is_empty() {
+                        speech.push(plain.clone());
+                    }
                     if self.settings.inline_images {
                         for url in image_links(&plain).into_iter().take(3) {
                             out.push(Output::InlineImage { url });
@@ -978,6 +1116,7 @@ impl Engine {
         for name in spawns {
             out.push(Output::Line { line: line.clone(), target: Target::Spawn(name) });
         }
+        out.extend(speech.into_iter().map(Output::Speak));
         out.push(Output::Activity { important });
         self.drain_script(out);
         for command in sends {
@@ -1166,6 +1305,31 @@ impl Engine {
                 "MCP is off for this world".into()
             })),
             "map" => self.map_command(args, out),
+            "puppet" | "puppets" if args.is_empty() => {
+                let names: Vec<String> = self.puppets().map(|p| p.name.clone()).collect();
+                out.push(Output::Notice(if names.is_empty() {
+                    "This character has no puppets. Add them in the Connect dialog (edit the world).".into()
+                } else {
+                    format!("Puppets: {}. /puppet name opens one.", names.join(", "))
+                }));
+            }
+            "puppet" => {
+                let found = self.puppets().find(|p| p.name.eq_ignore_ascii_case(args)).map(|p| p.name.clone());
+                match found {
+                    Some(name) => self.open_puppet(&name, true, out),
+                    None => out.push(Output::Notice(format!("There's no puppet called {args}"))),
+                }
+            }
+            "speak" if !args.is_empty() => out.push(Output::Speak(args.to_string())),
+            "speech" => match args {
+                "on" | "off" => {
+                    self.settings.speak_output = args == "on";
+                    out.push(Output::SettingsChanged(self.settings.clone()));
+                    out.push(Output::Notice(format!("Speaking incoming lines is {args}")));
+                }
+                "stop" => out.push(Output::SpeechStop),
+                _ => out.push(Output::Notice("/speech on|off speaks every incoming line; /speech stop stops; /speak text says something.".into())),
+            },
             "images" => {
                 match args {
                     "on" | "off" => {

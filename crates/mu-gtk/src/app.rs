@@ -9,6 +9,9 @@ use mu_config::Config;
 
 pub struct AppState {
     pub config: RefCell<Config>,
+    /// One speaker for the whole app, so sessions queue their speech rather than talk over
+    /// each other.
+    pub speaker: mu_speech::Speaker,
     path: PathBuf,
     /// Set if the config file exists but couldn't be read. We then refuse to save, so we don't
     /// overwrite the user's file with defaults.
@@ -19,8 +22,13 @@ impl AppState {
     pub fn load() -> Self {
         let path = mu_config::default_config_path();
         match Config::load(&path) {
-            Ok(config) => Self { config: RefCell::new(config), path, load_error: None },
-            Err(e) => Self { config: RefCell::default(), path, load_error: Some(e.to_string()) },
+            Ok(config) => Self { config: RefCell::new(config), speaker: mu_speech::Speaker::new(crate::APP_NAME), path, load_error: None },
+            Err(e) => Self {
+                config: RefCell::default(),
+                speaker: mu_speech::Speaker::new(crate::APP_NAME),
+                path,
+                load_error: Some(e.to_string()),
+            },
         }
     }
 

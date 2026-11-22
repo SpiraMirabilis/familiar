@@ -1,4 +1,4 @@
-use mu_config::{Alias, Character, Config, Highlight, Macro, Pattern, Rules, Scope, Trigger, World};
+use mu_config::{Alias, Character, Config, Highlight, Macro, Pattern, Puppet, Rules, Scope, Trigger, World};
 use mu_net::{SessionCommand, SessionEvent, SessionHandle};
 use tokio::sync::mpsc::UnboundedReceiver;
 
@@ -483,4 +483,82 @@ fn inline_images_are_opt_in() {
     let out = e.handle_event(SessionEvent::Line(line.into()));
     let images: Vec<_> = out.iter().filter_map(|o| match o { Output::InlineImage { url } => Some(url.as_str()), _ => None }).collect();
     assert_eq!(images, vec!["https://x.org/cat.JPG?size=2"]);
+}
+
+fn with_puppets(puppets: Vec<Puppet>) -> (Engine, UnboundedReceiver<SessionCommand>) {
+    let mut cfg = config(Rules::default(), Rules::default(), Rules::default());
+    cfg.worlds[0].characters[0].puppets = puppets;
+    engine(&cfg)
+}
+
+#[test]
+fn puppet_lines_go_to_their_tab() {
+    let zed = Puppet { name: "Zed".into(), receive_prefix: "Zed> ".into(), send_prefix: "z ".into(), ..Puppet::default() };
+    let (mut e, mut rx) = with_puppets(vec![zed]);
+    let out = e.handle_event(SessionEvent::Line("\x1b[32mzed> \x1b[0mA goblin is here.".into()));
+    assert_eq!(out.iter().filter(|o| matches!(o, Output::OpenPuppet { name, focus: false } if name == "Zed")).count(), 1, "auto-opened once");
+    let Some(Output::PuppetLine { line, .. }) = out.iter().find(|o| matches!(o, Output::PuppetLine { .. })) else { panic!("{out:?}") };
+    assert_eq!(line.text, "A goblin is here.", "the prefix is hidden (matched case-insensitively)");
+    assert!(main_lines(&out).is_empty());
+    // Already open: no second OpenPuppet.
+    let out = e.handle_event(SessionEvent::Line("Zed> More.".into()));
+    assert!(!out.iter().any(|o| matches!(o, Output::OpenPuppet { .. })));
+    // Typing in the puppet's tab sends with its prefix and echoes there.
+    let out = e.puppet_submit("Zed", "look");
+    assert_eq!(sent(&mut rx), vec!["z look"]);
+    assert!(out.contains(&Output::PuppetEcho { name: "Zed".into(), text: "look".into() }));
+}
+
+#[test]
+fn puppet_regex_closed_tabs_and_accidental_prefix() {
+    let quiet = Puppet {
+        name: "Quiet".into(),
+        receive_prefix: r"^(\[Q\] )".into(),
+        regex: true,
+        send_prefix: "@force quiet=".into(),
+        auto_open: false,
+        remove_accidental_prefix: true,
+        ..Puppet::default()
+    };
+    let (mut e, mut rx) = with_puppets(vec![quiet]);
+    // Not open and not auto-opening: the line stays in the main window.
+    let out = e.handle_event(SessionEvent::Line("[Q] hello".into()));
+    assert_eq!(main_lines(&out)[0].text, "[Q] hello");
+    let out = e.submit("/puppet quiet", false);
+    assert!(out.contains(&Output::OpenPuppet { name: "Quiet".into(), focus: true }));
+    let out = e.handle_event(SessionEvent::Line("[Q] hello".into()));
+    assert!(out.iter().any(|o| matches!(o, Output::PuppetLine { line, .. } if line.text == "hello")), "the regex group is hidden");
+    e.puppet_submit("Quiet", "@force quiet=sit");
+    assert_eq!(sent(&mut rx), vec!["@force quiet=sit"], "the accidental prefix isn't doubled");
+    e.set_puppet_open("Quiet", false);
+    assert_eq!(main_lines(&e.handle_event(SessionEvent::Line("[Q] bye".into()))).len(), 1);
+}
+
+#[test]
+fn puppets_can_open_on_connect() {
+    let p = Puppet { name: "Bot".into(), receive_prefix: "Bot>".into(), open_on_connect: true, ..Puppet::default() };
+    let (mut e, _rx) = with_puppets(vec![p]);
+    let out = e.handle_event(SessionEvent::Connected { addr: "127.0.0.1:1".parse().unwrap() });
+    assert!(out.contains(&Output::OpenPuppet { name: "Bot".into(), focus: false }));
+}
+
+#[test]
+fn speech_from_triggers_and_settings() {
+    let global = Rules {
+        triggers: vec![Trigger { matcher: regex(r"(\w+) pages you"), speak: "Page from $1".into(), ..Trigger::default() }],
+        ..Rules::default()
+    };
+    let (mut e, _rx) = engine(&config(global, Rules::default(), Rules::default()));
+    let out = e.handle_event(SessionEvent::Line("Bob pages you: hi".into()));
+    assert!(out.contains(&Output::Speak("Page from Bob".into())));
+    assert!(!e.handle_event(SessionEvent::Line("quiet line".into())).iter().any(|o| matches!(o, Output::Speak(_))));
+
+    let out = e.submit("/speech on", false);
+    assert!(out.iter().any(|o| matches!(o, Output::SettingsChanged(s) if s.speak_output)));
+    assert!(e.handle_event(SessionEvent::Line("now spoken".into())).contains(&Output::Speak("now spoken".into())));
+    // A trigger's own speech replaces speaking the whole line, rather than both.
+    let out = e.handle_event(SessionEvent::Line("Ann pages you: yo".into()));
+    assert_eq!(out.iter().filter(|o| matches!(o, Output::Speak(_))).count(), 1);
+    assert_eq!(e.submit("/speech stop", false), vec![Output::SpeechStop]);
+    assert_eq!(e.submit("/speak hello there", false), vec![Output::Speak("hello there".into())]);
 }

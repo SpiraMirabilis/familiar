@@ -4,7 +4,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use adw::prelude::*;
-use mu_config::{Character, World};
+use mu_config::{Character, Puppet, World};
 
 const ENCODINGS: [&str; 4] = ["Auto", "UTF-8", "Windows-1252", "CP437"];
 /// Language ids for the code editor, and their names.
@@ -16,6 +16,77 @@ struct CharacterRows {
     expander: adw::ExpanderRow,
     name: adw::EntryRow,
     login: adw::PasswordEntryRow,
+    puppets: Rc<RefCell<Vec<PuppetRows>>>,
+}
+
+struct PuppetRows {
+    expander: adw::ExpanderRow,
+    name: adw::EntryRow,
+    receive_prefix: adw::EntryRow,
+    regex: adw::SwitchRow,
+    hide_prefix: adw::SwitchRow,
+    send_prefix: adw::EntryRow,
+    auto_open: adw::SwitchRow,
+    open_on_connect: adw::SwitchRow,
+    remove_accidental_prefix: adw::SwitchRow,
+}
+
+impl PuppetRows {
+    fn puppet(&self) -> Puppet {
+        Puppet {
+            name: self.name.text().trim().to_string(),
+            receive_prefix: self.receive_prefix.text().to_string(),
+            regex: self.regex.is_active(),
+            hide_prefix: self.hide_prefix.is_active(),
+            send_prefix: self.send_prefix.text().to_string(),
+            auto_open: self.auto_open.is_active(),
+            open_on_connect: self.open_on_connect.is_active(),
+            remove_accidental_prefix: self.remove_accidental_prefix.is_active(),
+        }
+    }
+}
+
+/// Adds a puppet's rows under its character.
+fn add_puppet(parent: &adw::ExpanderRow, list: &Rc<RefCell<Vec<PuppetRows>>>, p: &Puppet) {
+    let entry = |title: &str, text: &str| adw::EntryRow::builder().title(title).text(text).build();
+    let switch = |title: &str, subtitle: &str, on: bool| adw::SwitchRow::builder().title(title).subtitle(subtitle).active(on).build();
+    let name = entry("Puppet name", &p.name);
+    let receive_prefix = entry("Receive prefix (lines starting with this are the puppet's)", &p.receive_prefix);
+    let regex = switch("Receive prefix is a regular expression", "With a group, the group is what's hidden", p.regex);
+    let hide_prefix = switch("Hide the prefix", "", p.hide_prefix);
+    let send_prefix = entry("Send prefix (put before what you type, e.g. \"z1 \")", &p.send_prefix);
+    let auto_open = switch("Open its tab when it hears something", "Otherwise its lines stay in the main window", p.auto_open);
+    let open_on_connect = switch("Open its tab when the character connects", "", p.open_on_connect);
+    let remove_accidental_prefix = switch("Don't double the send prefix", "If you type it anyway", p.remove_accidental_prefix);
+    let remove = gtk::Button::builder()
+        .icon_name("user-trash-symbolic")
+        .tooltip_text("Remove puppet")
+        .valign(gtk::Align::Center)
+        .css_classes(["flat"])
+        .build();
+    let expander = adw::ExpanderRow::builder()
+        .title(if p.name.is_empty() { "New puppet" } else { &p.name })
+        .subtitle("Puppet")
+        .expanded(p.name.is_empty())
+        .use_markup(false)
+        .build();
+    expander.add_suffix(&remove);
+    for row in [name.upcast_ref::<gtk::Widget>(), receive_prefix.upcast_ref(), regex.upcast_ref(), hide_prefix.upcast_ref(), send_prefix.upcast_ref(), auto_open.upcast_ref(), open_on_connect.upcast_ref(), remove_accidental_prefix.upcast_ref()] {
+        expander.add_row(row);
+    }
+    name.bind_property("text", &expander, "title")
+        .transform_to(|_, text: String| Some(if text.is_empty() { "New puppet".to_string() } else { text }))
+        .build();
+    parent.add_row(&expander);
+    let weak_list = Rc::downgrade(list);
+    let (parent_row, row) = (parent.clone(), expander.clone());
+    remove.connect_clicked(move |_| {
+        parent_row.remove(&row);
+        if let Some(list) = weak_list.upgrade() {
+            list.borrow_mut().retain(|p| p.expander != row);
+        }
+    });
+    list.borrow_mut().push(PuppetRows { expander, name, receive_prefix, regex, hide_prefix, send_prefix, auto_open, open_on_connect, remove_accidental_prefix });
 }
 
 pub struct WorldDialog {
@@ -213,15 +284,30 @@ impl WorldDialog {
     fn add_character(self: &Rc<Self>, character: &Character) {
         let name = adw::EntryRow::builder().title("Name").text(&character.name).build();
         let login = adw::PasswordEntryRow::builder().title("Login command").text(&character.login).build();
-        let remove = adw::ButtonRow::builder().title("Remove Character").css_classes(["destructive-action"]).build();
+        let remove = gtk::Button::builder()
+            .icon_name("user-trash-symbolic")
+            .tooltip_text("Remove character")
+            .valign(gtk::Align::Center)
+            .css_classes(["flat"])
+            .build();
         let expander = adw::ExpanderRow::builder()
             .title(if character.name.is_empty() { "New character" } else { &character.name })
             .expanded(character.name.is_empty())
             .use_markup(false)
             .build();
+        expander.add_suffix(&remove);
         expander.add_row(&name);
         expander.add_row(&login);
-        expander.add_row(&remove);
+        let add_puppet_row = adw::ButtonRow::builder().title("Add Puppet").start_icon_name("list-add-symbolic").build();
+        expander.add_row(&add_puppet_row);
+        let puppets: Rc<RefCell<Vec<PuppetRows>>> = Rc::default();
+        for p in &character.puppets {
+            add_puppet(&expander, &puppets, p);
+        }
+        {
+            let (expander, puppets) = (expander.clone(), puppets.clone());
+            add_puppet_row.connect_activated(move |_| add_puppet(&expander, &puppets, &Puppet::default()));
+        }
         name.bind_property("text", &expander, "title")
             .transform_to(|_, text: String| Some(if text.is_empty() { "New character".to_string() } else { text }))
             .build();
@@ -229,12 +315,12 @@ impl WorldDialog {
 
         let weak = Rc::downgrade(self);
         let row = expander.clone();
-        remove.connect_activated(move |_| {
+        remove.connect_clicked(move |_| {
             let Some(this) = weak.upgrade() else { return };
             this.characters_group.remove(&row);
             this.characters.borrow_mut().retain(|c| c.expander != row);
         });
-        self.characters.borrow_mut().push(CharacterRows { original: character.clone(), expander, name, login });
+        self.characters.borrow_mut().push(CharacterRows { original: character.clone(), expander, name, login, puppets });
     }
 
     fn world(&self) -> World {
@@ -256,6 +342,7 @@ impl WorldDialog {
                 .map(|c| Character {
                     name: c.name.text().trim().to_string(),
                     login: c.login.text().to_string(),
+                    puppets: c.puppets.borrow().iter().map(PuppetRows::puppet).filter(|p| !p.name.is_empty()).collect(),
                     ..c.original.clone()
                 })
                 .filter(|c| !c.name.is_empty() || !c.login.is_empty())

@@ -50,6 +50,10 @@
     notice(...parts) {
       post('notice', parts.map(show).join(' '));
     },
+    /** Speaks text aloud (speech-dispatcher). */
+    speak(...parts) {
+      post('speak', parts.map(show).join(' '));
+    },
     /** Shows a line in a spawn window, creating it if needed. */
     spawn(window, text) {
       post('spawn', String(window), String(text));

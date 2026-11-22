@@ -79,6 +79,9 @@ pub struct Trigger {
     /// Mark the tab as needing attention.
     #[serde(skip_serializing_if = "is_false")]
     pub important: bool,
+    /// Text to speak, with $1 and %var% expanded; "$0" speaks the whole line.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub speak: String,
     /// Name of a script function to call with the line and the regex groups.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub script: String,
@@ -99,6 +102,7 @@ impl Default for Trigger {
             sound: String::new(),
             notify: false,
             important: false,
+            speak: String::new(),
             script: String::new(),
         }
     }

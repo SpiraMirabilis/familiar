@@ -59,6 +59,10 @@ pub struct SessionView {
     sounds: RefCell<Vec<gtk::MediaFile>>,
     media: Rc<MediaPlayer>,
     map: RefCell<Option<Rc<crate::map_view::MapView>>>,
+    /// Open puppet tabs, by puppet name.
+    puppets: RefCell<HashMap<String, (Rc<crate::puppet_view::PuppetView>, adw::TabPage)>>,
+    /// Adds a tab to the window (set by the window): (content, title) -> page.
+    on_open_tab: RefCell<Option<Box<dyn Fn(&gtk::Widget, &str) -> adw::TabPage>>>,
     tilemaps: RefCell<HashMap<String, Rc<crate::tilemap_view::TilemapView>>>,
     images: Rc<crate::images::ImageCache>,
     /// Avatar pictures shown for each beip.line.id, with their click URLs, to update when
@@ -80,7 +84,7 @@ impl SessionView {
         engine.set_webviews_supported(cfg!(feature = "webview"));
         let settings = state.config.borrow().settings.clone();
         let output = OutputView::new(Palette::default(), settings.scrollback_lines);
-        let input = InputView::new(settings.input_history_size);
+        let input = InputView::new(settings.input_history_size, settings.spellcheck);
 
         let status = gtk::Label::builder()
             .xalign(0.0)
@@ -127,6 +131,8 @@ impl SessionView {
             timer: RefCell::default(),
             editors: RefCell::default(),
             map: RefCell::default(),
+            puppets: RefCell::default(),
+            on_open_tab: RefCell::default(),
             tilemaps: RefCell::default(),
             images: Rc::default(),
             avatars: RefCell::default(),
@@ -470,6 +476,26 @@ impl SessionView {
                     }
                 }
                 Output::ShowMap => self.show_map(true),
+                Output::OpenPuppet { name, focus } => self.open_puppet(&name, focus),
+                Output::PuppetLine { name, line } => {
+                    let open = self.puppets.borrow().get(&name).cloned();
+                    if let Some((view, page)) = open {
+                        view.output.append_line(&line);
+                        if !page.is_selected() {
+                            page.set_needs_attention(true);
+                        }
+                    }
+                }
+                Output::PuppetEcho { name, text } => {
+                    if let Some((view, _)) = self.puppets.borrow().get(&name) {
+                        view.output.echo(&text);
+                    }
+                }
+                Output::Speak(text) => {
+                    self.state.speaker.say(&text);
+                    self.report_speech_error();
+                }
+                Output::SpeechStop => self.state.speaker.stop(),
                 Output::LineAvatar(avatar) => {
                     let picture = self.avatar_picture(&avatar);
                     self.output.set_next_prefix(&picture);
@@ -586,6 +612,70 @@ impl SessionView {
         editor.window.connect_destroy(move |_| {
             keep.borrow_mut().take();
         });
+    }
+
+    pub fn connect_open_tab<F: Fn(&gtk::Widget, &str) -> adw::TabPage + 'static>(&self, f: F) {
+        *self.on_open_tab.borrow_mut() = Some(Box::new(f));
+    }
+
+    fn report_speech_error(&self) {
+        if let Some(e) = self.state.speaker.take_error() {
+            self.output.notice(&e);
+        }
+    }
+
+    fn open_puppet(self: &Rc<Self>, name: &str, focus: bool) {
+        let existing = self.puppets.borrow().get(name).map(|(_, page)| page.clone());
+        let page = match existing {
+            Some(page) => page,
+            None => {
+                let settings = self.state.config.borrow().settings.clone();
+                let submit = {
+                    let weak = Rc::downgrade(self);
+                    let name = name.to_string();
+                    move |text: String| {
+                        if let Some(this) = weak.upgrade() {
+                            let out = this.engine.borrow_mut().puppet_submit(&name, &text);
+                            this.apply(out);
+                        }
+                    }
+                };
+                let link = {
+                    let weak = Rc::downgrade(self);
+                    move |uri: &str| {
+                        if let Some(this) = weak.upgrade() {
+                            this.follow_link(uri);
+                        }
+                    }
+                };
+                let view = crate::puppet_view::PuppetView::new(&settings, submit, link);
+                let title = format!("{name} ({})", self.title());
+                let Some(page) = self.on_open_tab.borrow().as_ref().map(|f| f(view.root.upcast_ref(), &title)) else { return };
+                page.set_icon(Some(&gtk::gio::ThemedIcon::new("avatar-default-symbolic")));
+                self.puppets.borrow_mut().insert(name.to_string(), (view, page.clone()));
+                page
+            }
+        };
+        if focus && let Some(tabs) = page.child().ancestor(adw::TabView::static_type()).and_downcast::<adw::TabView>() {
+            tabs.set_selected_page(&page);
+            if let Some((view, _)) = self.puppets.borrow().get(name) {
+                view.input.grab_focus();
+            }
+        }
+    }
+
+    /// The window closed one of this session's puppet tabs. Returns true if it was ours.
+    pub fn puppet_tab_closed(&self, page: &adw::TabPage) -> bool {
+        let name = self.puppets.borrow().iter().find(|(_, (_, p))| p == page).map(|(n, _)| n.clone());
+        let Some(name) = name else { return false };
+        self.puppets.borrow_mut().remove(&name);
+        self.engine.borrow_mut().set_puppet_open(&name, false);
+        true
+    }
+
+    /// Pages of open puppet tabs, so the window can close them with the session.
+    pub fn puppet_pages(&self) -> Vec<adw::TabPage> {
+        self.puppets.borrow().values().map(|(_, page)| page.clone()).collect()
     }
 
     /// A small picture for the start of a line. Clicking it opens the avatar's link.

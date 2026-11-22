@@ -11,7 +11,10 @@ use mu_engine::History;
 
 pub struct InputView {
     pub root: gtk::Stack,
-    pub view: gtk::TextView,
+    /// A GtkSourceView (with no source features on) so libspelling can check it.
+    pub view: sourceview5::View,
+    /// Keeps spellchecking running for as long as the input exists.
+    _spelling: Option<libspelling::TextBufferAdapter>,
     password: gtk::PasswordEntry,
     history: RefCell<History>,
     on_submit: RefCell<Option<Box<dyn Fn(String, bool)>>>,
@@ -20,8 +23,17 @@ pub struct InputView {
 }
 
 impl InputView {
-    pub fn new(history_size: usize) -> Rc<Self> {
-        let view = gtk::TextView::builder()
+    pub fn new(history_size: usize, spellcheck: bool) -> Rc<Self> {
+        let buffer = sourceview5::Buffer::new(None);
+        crate::code_editor::follow_dark_mode(&buffer);
+        // Underline misspellings; right-click a word for suggestions.
+        let spelling = spellcheck.then(|| {
+            let adapter = libspelling::TextBufferAdapter::new(&buffer, &libspelling::Checker::default());
+            adapter.set_enabled(true);
+            adapter
+        });
+        let view = sourceview5::View::builder()
+            .buffer(&buffer)
             .wrap_mode(gtk::WrapMode::WordChar)
             .accepts_tab(false)
             .left_margin(8)
@@ -46,6 +58,10 @@ impl InputView {
             .margin_bottom(6)
             .build();
 
+        if let Some(adapter) = &spelling {
+            view.set_extra_menu(Some(&adapter.menu_model()));
+            view.insert_action_group("spelling", Some(adapter));
+        }
         let root = gtk::Stack::new();
         root.add_named(&scrolled, Some("text"));
         root.add_named(&password, Some("password"));
@@ -53,6 +69,7 @@ impl InputView {
         let this = Rc::new(Self {
             root,
             view,
+            _spelling: spelling,
             password,
             history: RefCell::new(History::new(history_size)),
             on_submit: RefCell::default(),

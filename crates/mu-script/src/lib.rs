@@ -48,6 +48,7 @@ fn parse_action(kind: &str, args_json: &str) -> ScriptAction {
         "spawn" => ScriptAction::Spawn { window: text(), text: s(1).unwrap_or_default() },
         "gmcp" => ScriptAction::Gmcp { package: text(), data: s(1) },
         "setvar" => ScriptAction::SetVariable { name: text(), value: s(1) },
+        "speak" => ScriptAction::Speak(text()),
         "error" => ScriptAction::Error(text()),
         other => ScriptAction::Error(format!("unknown action {other}")),
     }

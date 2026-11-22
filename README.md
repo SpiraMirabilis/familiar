@@ -3,7 +3,7 @@
 A native Linux MU* (MUD/MUCK/MOO/MUSH) client in Rust, inspired by [BeipMU](https://github.com/BeipDev/BeipMU).
 It is a new codebase, not a port. The BeipMU sources are used only as a reference for features and protocols.
 
-## Status: M6 (maps, tilemaps and images)
+## Status: M7 (puppets, speech, spellcheck)
 
 | Crate | What it does |
 |---|---|
@@ -14,12 +14,14 @@ It is a new codebase, not a port. The BeipMU sources are used only as a referenc
 | `mu-engine` | The UI-independent client: per-connection `Engine` that turns network events and input into render outputs. Triggers, aliases, keyboard macros, variables, `/` commands, input history, daily-rotating logs, GMCP (`Beip.Stats`, `Client.Media`, `WebView`), and MCP 2.1 (simpleedit, awns-status, awns-ping, vmoo-client). Shared by the GUI and the planned TUI. |
 | `mu-script` | JavaScript scripting with QuickJS: one isolated runtime per connection, a 2-second limit per call and a memory cap. Implements the engine's `ScriptHost` trait, so any frontend gets scripting. |
 | `mu-map` | World maps: rooms, exits and areas, an automapper for GMCP `Room.Info` (IRE, Aardwolf and BeipMU styles), shortest-path walking, and tracking by room name. |
+| `mu-speech` | Text to speech through speech-dispatcher, on a background thread. |
 | `mu-code` | Editing support shared by frontends: block-aware auto-indentation for MOO, MUF and Lua. |
 | `mu-gtk` | GTK4/libadwaita client: a tab per connection, ANSI and full Unicode output with clickable links, a side dock with spawn windows and GMCP stat panes, input with history, password mode, NAWS, logging, sounds (trigger and server-driven), notifications, an MCP status line and text editor, web views, and a rules editor. |
 | `mu-cli` | Terminal client for testing against real servers. |
 
 ```sh
 cargo run -p mu-gtk            # the GUI
+cargo run -p mu-gtk -- "World" "Character"   # connect to a saved world on startup
 cargo test --workspace
 cargo run -p mu-cli -- lambda.moo.mud.org 8888
 cargo run -p mu-cli -- --gmcp aardmud.org 4000
@@ -35,6 +37,7 @@ cargo run -p mu-cli -- --gmcp aardmud.org 4000
 | Ctrl+Shift+G | Toggle logging |
 | Ctrl+Shift+L | Clear output |
 | Ctrl+T | Triggers, aliases, macros and variables |
+| Ctrl+. | Stop speaking |
 | Enter / Shift+Enter | Send / new line |
 | Up, Down | History (Ctrl+Up/Down in multi-line input) |
 | Page Up / Page Down | Scroll output |
@@ -52,7 +55,7 @@ Links work in OSC 8 output and in plain URLs. `send:` links send a command and `
 
 JavaScript (QuickJS) runs per connection. `~/.config/mu-client/startup.js` runs for every session, and each world can name its own script file. `/@code` runs code right away (Shift+Enter for multiple lines), and `/script reload` restarts scripting after you edit a file. Scripts get `mu.send`, `mu.input`, `mu.echo`, `mu.notice`, `mu.spawn`, `mu.gmcp`, `mu.vars`, `mu.world`/`mu.character`/`mu.connected`, events through `mu.on` (`line` to hide lines, `receive`, `send` to rewrite or drop commands, `gmcp` and `gmcp:Package`, `connect`, `disconnect`), timers and `console.log`. Triggers can call a script function with the line and its regex groups. See [examples/startup.js](examples/startup.js).
 
-Client commands start with `/`: `/set`, `/unset`, `/echo`, `/log`, `/clear`, `/reconnect`, `/disconnect`, `/gmcp` (show GMCP traffic, or `/gmcp Package {json}` to send), `/mcp`, `/webview url`, `/images on|off`, `/map …`, `/edit [language]`, `/@code`, `/script load path`, `/script reload`, `/help`. Type `//` to send a line that starts with `/`.
+Client commands start with `/`: `/set`, `/unset`, `/echo`, `/log`, `/clear`, `/reconnect`, `/disconnect`, `/gmcp` (show GMCP traffic, or `/gmcp Package {json}` to send), `/mcp`, `/webview url`, `/images on|off`, `/puppet [name]`, `/speech on|off|stop`, `/speak text`, `/map …`, `/edit [language]`, `/@code`, `/script load path`, `/script reload`, `/help`. Type `//` to send a line that starts with `/`.
 
 ### Program editor
 
@@ -63,6 +66,14 @@ Languages: **MOO (Stunt)** built from the Stunt lexer (keywords, `/* */` and str
 ### Map
 
 The map tab appears in the side dock once a world has rooms. If the game sends GMCP `Room.Info`, the map fills in as you move: rooms are placed by the direction you walked when the server sends no coordinates, and exits link up as both ends are seen. Without `Room.Info`, add rooms with `/map addroom "Name" north south` and the map follows you by recognising neighbouring room names. Double-click a room (or `/map go name`) to walk there by the shortest known path. Drag rooms to move them (Ctrl to place freely), drag the background to pan, scroll to zoom, and right-click for Walk Here, I'm Here, Rename, Delete and Add Room Here. Maps are saved per world in `~/.local/share/mu-client/maps/`.
+
+### Puppets
+
+A puppet is a second character you control through your main connection, such as a MUCK zombie or a MUSH puppet, with its own tab (as in BeipMU). Add puppets to a character in the Connect dialog (edit the world). Lines starting with the puppet's receive prefix (plain text, or a regex whose group is the part to hide) go to its tab instead of the main window, and what you type there is sent with its send prefix, such as `z1 `. Tabs open when the puppet hears something, when the character connects, or with `/puppet name`, and they close with the character.
+
+### Speech and spellcheck
+
+`/speech on` speaks every incoming line through speech-dispatcher; `/speak text` says something; Ctrl+. or `/speech stop` stops. Triggers can speak (`$0` for the whole line, or a template like `Page from $1`), and scripts can call `mu.speak()`. Speech queues in order, and stopping cancels only this client's speech, not a screen reader's. The input underlines misspellings (libspelling with your Hunspell dictionaries); right-click a word for suggestions.
 
 ### Protocols
 
@@ -76,11 +87,12 @@ The map tab appears in the side dock once a world has rooms. If the game sends G
 ### Optional system packages
 
 - `gst-plugins-good`: WAV/MP3 decoding and the standard audio output for sounds. Without it, playback reports a missing plugin.
+- `speech-dispatcher` and a voice such as `espeak-ng`: speech.
+- `hunspell-en_us` (or another Hunspell dictionary): spellcheck.
 - `webkitgtk-6.0`: web views (on by default). Without it, build with `cargo run -p mu-gtk --no-default-features`.
 
 ## Roadmap
 
-M7 puppets, speech, spellcheck →
 M8 BeipMU Config.txt, `.atlas` and script compatibility → M9 a full terminal UI (`mu-tui`, ratatui) sharing the same engine.
 
 `assets/Worlds.xml` comes from BeipMU (MIT licence, © Bennet).

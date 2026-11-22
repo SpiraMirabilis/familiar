@@ -31,6 +31,25 @@ const LANGUAGES: [(&str, &str); 7] = [
 
 const INDENT: &str = "  ";
 
+/// Gives a GtkSourceView buffer the light or dark Adwaita scheme, following the app. Holds only
+/// a weak reference, so closed editors aren't kept alive.
+pub fn follow_dark_mode(buffer: &sourceview5::Buffer) {
+    let apply = |style: &adw::StyleManager, buffer: &sourceview5::Buffer| {
+        let id = if style.is_dark() { "Adwaita-dark" } else { "Adwaita" };
+        if let Some(scheme) = sourceview5::StyleSchemeManager::default().scheme(id) {
+            buffer.set_style_scheme(Some(&scheme));
+        }
+    };
+    let style = adw::StyleManager::default();
+    apply(&style, buffer);
+    let weak = buffer.downgrade();
+    style.connect_dark_notify(move |style| {
+        if let Some(buffer) = weak.upgrade() {
+            apply(style, &buffer);
+        }
+    });
+}
+
 /// Where users can add their own `.lang` files. Searched before ours, so they can override.
 pub fn user_language_dir() -> PathBuf {
     mu_config::data_dir().join("language-specs")
@@ -161,7 +180,7 @@ impl CodeEditor {
         let selected = LANGUAGES.iter().position(|(id, _)| Some(*id) == request.language.as_deref()).unwrap_or(0);
         picker.set_selected(selected as u32);
         this.load(&request.content);
-        this.follow_dark_mode();
+        follow_dark_mode(&this.buffer);
         this.setup_actions(&send, &close, &picker);
         this.setup_search(&search_entry);
         this.setup_keys();
@@ -213,21 +232,6 @@ impl CodeEditor {
         let dirty = if self.buffer.is_modified() { "• " } else { "" };
         self.title.set_title(&format!("{dirty}{}", self.name));
         self.window.set_title(Some(&format!("{dirty}{}", self.name)));
-    }
-
-    fn follow_dark_mode(self: &Rc<Self>) {
-        let style = adw::StyleManager::default();
-        let apply = {
-            let buffer = self.buffer.clone();
-            move |style: &adw::StyleManager| {
-                let id = if style.is_dark() { "Adwaita-dark" } else { "Adwaita" };
-                if let Some(scheme) = sourceview5::StyleSchemeManager::default().scheme(id) {
-                    buffer.set_style_scheme(Some(&scheme));
-                }
-            }
-        };
-        apply(&style);
-        style.connect_dark_notify(apply);
     }
 
     fn send(&self) {

@@ -153,6 +153,9 @@ fn summary(t: &Trigger) -> String {
     if !t.script.is_empty() {
         parts.push(format!("{}()", t.script));
     }
+    if !t.speak.is_empty() {
+        parts.push("speak".into());
+    }
     if t.stop {
         parts.push("stop".into());
     }
@@ -542,6 +545,7 @@ impl RulesDialog {
             });
         }
         let script = adw::EntryRow::builder().title("Call script function").text(&t.script).build();
+        let speak = adw::EntryRow::builder().title("Speak aloud ($0 is the whole line)").text(&t.speak).build();
         let notify = adw::SwitchRow::builder().title("Desktop notification").active(t.notify).build();
         let important = adw::SwitchRow::builder()
             .title("Mark the tab as important")
@@ -549,7 +553,7 @@ impl RulesDialog {
             .active(t.important)
             .build();
         let actions = adw::PreferencesGroup::builder().title("Also").build();
-        for row in [spawn.upcast_ref::<gtk::Widget>(), sound.upcast_ref(), script.upcast_ref(), notify.upcast_ref(), important.upcast_ref()] {
+        for row in [spawn.upcast_ref::<gtk::Widget>(), sound.upcast_ref(), speak.upcast_ref(), script.upcast_ref(), notify.upcast_ref(), important.upcast_ref()] {
             actions.add(row);
         }
 
@@ -589,6 +593,7 @@ impl RulesDialog {
             notify: notify.is_active(),
             important: important.is_active(),
             script: script.text().trim().to_string(),
+            speak: speak.text().trim().to_string(),
         });
 
         // Update the test result whenever the line or the pattern changes.

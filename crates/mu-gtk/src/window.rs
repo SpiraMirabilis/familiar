@@ -125,13 +125,28 @@ impl MainWindow {
         let weak = Rc::downgrade(self);
         self.tab_view.connect_close_page(move |view, page| {
             if let Some(this) = weak.upgrade() {
-                let mut sessions = this.sessions.borrow_mut();
-                if let Some(pos) = sessions.iter().position(|(p, _)| p == page) {
-                    let (_, session) = sessions.remove(pos);
-                    session.save_map();
-                    session.disconnect();
-                    if session.is_logging() {
-                        session.toggle_log();
+                let removed = {
+                    let mut sessions = this.sessions.borrow_mut();
+                    sessions.iter().position(|(p, _)| p == page).map(|pos| sessions.remove(pos).1)
+                };
+                match removed {
+                    Some(session) => {
+                        session.save_map();
+                        session.disconnect();
+                        if session.is_logging() {
+                            session.toggle_log();
+                        }
+                        // A character's puppets close with it.
+                        for puppet in session.puppet_pages() {
+                            view.close_page(&puppet);
+                        }
+                    }
+                    None => {
+                        for (_, session) in this.sessions.borrow().iter() {
+                            if session.puppet_tab_closed(page) {
+                                break;
+                            }
+                        }
                     }
                 }
             }
@@ -157,6 +172,22 @@ impl MainWindow {
         });
     }
 
+    /// Connects to a saved world by name (ignoring case), as a named character or the first.
+    pub fn open_world(self: &Rc<Self>, world: &str, character: Option<&str>) {
+        let found = self.state.config.borrow().worlds.iter().find(|w| w.name.eq_ignore_ascii_case(world)).cloned();
+        let Some(found) = found else {
+            return self.toast(&format!("No saved world called {world}"));
+        };
+        let chosen = match character {
+            Some(name) => match found.characters.iter().find(|c| c.name.eq_ignore_ascii_case(name)) {
+                Some(c) => Some(c.clone()),
+                None => return self.toast(&format!("{} has no character called {name}", found.name)),
+            },
+            None => found.characters.first().cloned(),
+        };
+        self.open_session(found, chosen);
+    }
+
     pub fn open_session(self: &Rc<Self>, world: World, character: Option<Character>) {
         let session = SessionView::new(self.state.clone(), world, character);
         let page = self.tab_view.append(&session.root);
@@ -165,6 +196,12 @@ impl MainWindow {
         let window = self.window.clone();
         session.connect_open_uri(move |uri| {
             gtk::UriLauncher::new(uri).launch(Some(&window), None::<&gio::Cancellable>, |_| {});
+        });
+        let tabs = self.tab_view.clone();
+        session.connect_open_tab(move |widget, title| {
+            let page = tabs.append(widget);
+            page.set_title(title);
+            page
         });
         let weak = Rc::downgrade(self);
         session.connect_logging_changed(move || {
@@ -279,6 +316,11 @@ impl MainWindow {
                 });
             }),
         );
+        add(
+            "stop-speech",
+            &["<Control>period"],
+            Box::new(|this| this.state.speaker.stop()),
+        );
         add("about", &[], Box::new(|this| this.show_about()));
         add("shortcuts", &["<Control>question"], Box::new(|this| this.show_shortcuts()));
 
@@ -315,6 +357,7 @@ impl MainWindow {
             ("Ctrl+Shift+L", "Clear output"),
             ("Ctrl+Shift+G", "Log to file"),
             ("Ctrl+T", "Triggers, aliases and macros"),
+            ("Ctrl+.", "Stop speaking"),
             ("Enter", "Send"),
             ("Shift+Enter", "New line in input"),
             ("Up / Down", "Input history (Ctrl+Up/Down in multi-line input)"),

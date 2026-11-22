@@ -12,6 +12,7 @@ mod keys;
 mod map_view;
 mod media_player;
 mod output;
+mod puppet_view;
 mod rules_dialog;
 mod session;
 mod stats_pane;
@@ -53,6 +54,10 @@ fn main() -> glib::ExitCode {
     }
     let app = adw::Application::builder().application_id(APP_ID).flags(flags).build();
     let windows: Rc<RefCell<Vec<Rc<window::MainWindow>>>> = Rc::default();
+    // mu-gtk [WORLD [CHARACTER]] connects to a saved world on startup.
+    let mut args = std::env::args();
+    let program = args.next().unwrap_or_else(|| "mu-gtk".into());
+    let connect_to: Vec<String> = args.collect();
 
     app.connect_activate(move |app| {
         if let Some(window) = windows.borrow().first() {
@@ -63,8 +68,12 @@ fn main() -> glib::ExitCode {
         app::install_css(&mu_ansi::Palette::default(), &state.config.borrow().settings.font);
         let window = window::MainWindow::new(app, state);
         window.window.present();
+        if let Some(world) = connect_to.first() {
+            window.open_world(world, connect_to.get(1).map(String::as_str));
+        }
         windows.borrow_mut().push(window);
     });
 
-    app.run()
+    // GTK doesn't need to see our arguments.
+    app.run_with_args(&[program])
 }

@@ -29,7 +29,9 @@ pub struct Config {
     /// Rules that apply to every world.
     #[serde(skip_serializing_if = "Rules::is_empty")]
     pub rules: Rules,
-    #[serde(rename = "world")]
+    // Leave the key out when empty: `world = []` would clash with [[world]] tables added by
+    // hand later.
+    #[serde(rename = "world", skip_serializing_if = "Vec::is_empty")]
     pub worlds: Vec<World>,
 }
 
@@ -49,6 +51,10 @@ pub struct Settings {
     /// Show a thumbnail under lines that link to images. Off by default: fetching an image
     /// someone posted tells that site your IP address.
     pub inline_images: bool,
+    /// Speak every line that arrives (for screen-reader and text-to-speech users).
+    pub speak_output: bool,
+    /// Underline misspellings in the input.
+    pub spellcheck: bool,
 }
 
 impl Default for Settings {
@@ -61,6 +67,8 @@ impl Default for Settings {
             log_timestamps: true,
             prompt_timeout_ms: 250,
             inline_images: false,
+            speak_output: false,
+            spellcheck: true,
         }
     }
 }
@@ -122,6 +130,44 @@ pub struct Character {
     pub login: String,
     #[serde(skip_serializing_if = "Rules::is_empty")]
     pub rules: Rules,
+    #[serde(rename = "puppet", skip_serializing_if = "Vec::is_empty")]
+    pub puppets: Vec<Puppet>,
+}
+
+/// A second character controlled through this one's connection (e.g. a MUCK zombie or a MUSH
+/// puppet), with its own tab. As in BeipMU.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Puppet {
+    pub name: String,
+    /// Lines starting with this (or matching it, as a regex) belong to the puppet.
+    pub receive_prefix: String,
+    pub regex: bool,
+    /// Remove the prefix from lines shown in the puppet's tab.
+    pub hide_prefix: bool,
+    /// Put in front of everything typed in the puppet's tab, e.g. "z1 " or "@force puppet=".
+    pub send_prefix: String,
+    /// Open the puppet's tab when one of its lines arrives.
+    pub auto_open: bool,
+    /// Open the puppet's tab when the character connects.
+    pub open_on_connect: bool,
+    /// If something typed already starts with the send prefix, don't add it twice.
+    pub remove_accidental_prefix: bool,
+}
+
+impl Default for Puppet {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            receive_prefix: String::new(),
+            regex: false,
+            hide_prefix: true,
+            send_prefix: String::new(),
+            auto_open: true,
+            open_on_connect: false,
+            remove_accidental_prefix: false,
+        }
+    }
 }
 
 pub fn config_dir() -> PathBuf {
@@ -242,6 +288,7 @@ mod tests {
                         aliases: vec![Alias { replacement: "kill $1".into(), ..Alias::default() }],
                         ..Rules::default()
                     },
+                    puppets: vec![Puppet { name: "Zed".into(), receive_prefix: "Zed>".into(), send_prefix: "z ".into(), ..Puppet::default() }],
                 }],
                 ..World::default()
             }],
@@ -266,6 +313,14 @@ mod tests {
         assert_eq!(config.scopes_for("adhoc", Some("C")), vec![Scope::Global]);
         config.rules_mut(&char_scope).unwrap().variables.insert("x".into(), "1".into());
         assert_eq!(config.worlds[0].characters[0].rules.variables["x"], "1");
+    }
+
+    #[test]
+    fn worlds_can_be_added_by_hand_after_saving() {
+        let mut text = toml::to_string_pretty(&Config::default()).unwrap();
+        assert!(!text.contains("world"), "{text}");
+        text.push_str("\n[[world]]\nname = \"Hand\"\nhost = \"h\"\n");
+        assert_eq!(toml::from_str::<Config>(&text).unwrap().worlds[0].name, "Hand");
     }
 
     #[test]

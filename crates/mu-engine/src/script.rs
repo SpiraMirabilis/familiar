@@ -21,6 +21,8 @@ pub enum ScriptAction {
     Gmcp { package: String, data: Option<String> },
     /// Set (Some) or remove (None) a variable.
     SetVariable { name: String, value: Option<String> },
+    /// Speak text aloud.
+    Speak(String),
     /// A script error, already formatted with its stack.
     Error(String),
 }
