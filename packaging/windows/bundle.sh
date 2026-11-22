@@ -29,11 +29,13 @@ copy() { # copy <path under $PREFIX>...
     done
 }
 copy lib/gdk-pixbuf-2.0
-copy lib/enchant-2
+# Spelling: just the Hunspell provider and English. Other dictionaries can be dropped into
+# share/hunspell by anyone who wants them.
+copy lib/enchant-2/enchant_hunspell.dll
 copy share/glib-2.0/schemas/gschemas.compiled
 copy share/gtksourceview-5
 copy share/icons/Adwaita share/icons/hicolor/index.theme
-copy share/hunspell
+for dictionary in en_US en_GB; do copy "share/hunspell/$dictionary.aff" "share/hunspell/$dictionary.dic"; done
 # For GApplication (one running copy, opening a second window in it).
 cp "$PREFIX/bin/gdbus.exe" "$OUT/"
 find "$OUT/lib" -name '*.a' -delete
