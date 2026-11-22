@@ -8,7 +8,7 @@
 sessions = this:_sessions();
 sessions[player] = ["key" -> "", "pending" -> []];
 this.sessions = sessions;
-player:tell("#$#mcp version: 2.1 to: 2.1");
+notify(player, "#$#mcp version: 2.1 to: 2.1");
 .
 @verb mcpedit:disfunc this none this rxd
 @program mcpedit:disfunc
@@ -217,9 +217,9 @@ for k in (mapkeys(multi))
   endfor
   tail = {@tail, "#$#: " + tag};
 endfor
-player:tell(line);
+notify(player, line);
 for item in (tail)
-  player:tell(item);
+  notify(player, item);
 endfor
 .
 @verb mcpedit:quote this none this rxd

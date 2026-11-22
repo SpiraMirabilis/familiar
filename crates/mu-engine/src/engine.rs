@@ -911,7 +911,7 @@ impl Engine {
             SessionEvent::Line(text) => self.incoming(&text, None, &mut out),
             SessionEvent::Prompt(text) => self.incoming(&text, Some(true), &mut out),
             // MCP lines are never prompts; the whole line is handled when it arrives.
-            SessionEvent::PartialLine(text) if self.world.mcp && text.starts_with("#$") => {}
+            SessionEvent::PartialLine(text) if self.world.mcp && mu_ansi::AnsiParser::new().parse_line(&text).text.starts_with("#$") => {}
             SessionEvent::PartialLine(text) => {
                 // Parse with a copy of the ANSI state: the full line will be parsed again later.
                 let line = self.ansi.clone().parse_line(&text);
@@ -1131,7 +1131,17 @@ impl Engine {
     /// Handles a line (prompt = None) or prompt (prompt = Some(terminated)) from the server.
     fn incoming(&mut self, text: &str, prompt: Option<bool>, out: &mut Vec<Output>) {
         let quoted;
+        // Some cores' :tell wraps every line in colour codes, which would hide the #$# that
+        // marks an MCP line; look past them.
+        let uncoloured;
+        let mcp_text = if self.world.mcp && text.contains('\x1b') {
+            uncoloured = mu_ansi::AnsiParser::new().parse_line(text).text;
+            if uncoloured.starts_with("#$") { uncoloured.as_str() } else { text }
+        } else {
+            text
+        };
         let text = if self.world.mcp {
+            let text = mcp_text;
             if self.mcp_debug && text.starts_with("#$") {
                 out.push(Output::Notice(format!("MCP ← {text}")));
             }

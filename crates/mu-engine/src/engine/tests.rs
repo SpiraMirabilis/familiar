@@ -697,3 +697,18 @@ fn mcp_restarts_and_partial_lines_and_debug() {
     e.handle_event(SessionEvent::Line(format!("#$#mcp-negotiate-can {key} package: mcp-negotiate min-version: 2.0 max-version: 2.0")));
     assert_eq!(notices(&e.submit("/mcp", false)), ["MCP 2.1 is active"]);
 }
+
+#[test]
+fn mcp_lines_wrapped_in_colour_codes() {
+    // Some cores' :tell wraps every line in ANSI codes.
+    let (mut e, mut rx) = engine(&config(Rules::default(), Rules::default(), Rules::default()));
+    e.handle_event(SessionEvent::Line("[lognet] someone has reconnected.".into()));
+    let out = e.handle_event(SessionEvent::Line("\x1b[0m#$#mcp version: 2.1 to: 2.1\x1b[0m".into()));
+    assert!(main_lines(&out).is_empty(), "{out:?}");
+    let key = sent(&mut rx)[0].split_whitespace().nth(2).unwrap().to_string();
+    e.handle_event(SessionEvent::Line(format!("\x1b[0m#$#mcp-negotiate-can {key} package: \"mcp-negotiate\" min-version: \"2.0\" max-version: \"2.0\"\x1b[0m")));
+    assert_eq!(notices(&e.submit("/mcp", false)), ["MCP 2.1 is active"]);
+    // Ordinary coloured text is untouched.
+    let out = e.handle_event(SessionEvent::Line("\x1b[31mred\x1b[0m".into()));
+    assert_eq!(main_lines(&out)[0].text, "red");
+}
