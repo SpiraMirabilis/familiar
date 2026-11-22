@@ -50,10 +50,9 @@ pub fn open_uri(uri: &str) -> Result<(), String> {
 pub fn notify(app: &str, title: &str, body: &str) {
     #[cfg(windows)]
     {
-        // Toasts need an app id Windows knows. Ours is registered by the installer (on the
-        // Start menu shortcut); without it, fall back to one every Windows has.
-        let _ = app;
+        register_app_id(app);
         let show = |id: &str| tauri_winrt_notification::Toast::new(id).title(title).text1(body).show();
+        // If ours is refused, use an id every Windows has rather than show nothing.
         if show(APP_USER_MODEL_ID).is_err() {
             let _ = show(tauri_winrt_notification::Toast::POWERSHELL_APP_ID);
         }
@@ -62,6 +61,22 @@ pub fn notify(app: &str, title: &str, body: &str) {
     {
         let _ = quiet(Command::new("notify-send").args(["-a", app, title, body])).spawn();
     }
+}
+
+/// Windows only shows toasts from an app id it knows. Registering it under the user's own
+/// registry key (once per run) makes that true for the portable build as well as the installed
+/// one, and gives the toast its "Familiar" heading.
+#[cfg(windows)]
+fn register_app_id(app: &str) {
+    use std::os::windows::process::CommandExt;
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let key = format!(r"HKCU\Software\Classes\AppUserModelId\{APP_USER_MODEL_ID}");
+        let _ = quiet(Command::new("reg").args(["add", &key, "/v", "DisplayName", "/t", "REG_SZ", "/d", app, "/f"]))
+            .creation_flags(CREATE_NO_WINDOW)
+            .status();
+    });
 }
 
 /// How Windows identifies the app for notifications and taskbar grouping.
