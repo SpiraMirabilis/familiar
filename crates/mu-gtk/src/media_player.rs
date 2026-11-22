@@ -18,7 +18,7 @@ pub fn describe_error(name: &str, error: &glib::Error) -> String {
              (WAV, MP3 and audio output) usually fixes this."
         )
     } else {
-        format!("Couldn't play {name}: {}", message.lines().next().unwrap_or(&message))
+        format!("Couldn't play {name}: {}", message.lines().next().unwrap_or(message))
     }
 }
 
