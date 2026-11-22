@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Familiar (Terminal)
+GenericName=MU* Client
+Comment=Play MUDs, MUSHes, MUCKs and MOOs in a terminal
+Exec=familiar-tui
+Icon=io.github.SpiraMirabilis.Familiar
+Terminal=true
+Categories=Game;RolePlaying;ConsoleOnly;
+Keywords=MUD;MUSH;MUCK;MOO;MU*;telnet;roleplay;text;adventure;TUI;

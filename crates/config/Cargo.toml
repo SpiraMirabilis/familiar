@@ -1,0 +1,19 @@
+[package]
+name = "familiar-config"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Configuration model for the Familiar MU* client: worlds, characters, triggers, aliases and macros"
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+keywords = ["mud", "mush", "moo", "config", "client"]
+categories = ["games", "config"]
+
+[dependencies]
+dirs = "7.0.0"
+quick-xml = "0.37"
+serde = { version = "1.0.229", features = ["derive"] }
+thiserror = "2.0.21"
+toml = "1.2.2"

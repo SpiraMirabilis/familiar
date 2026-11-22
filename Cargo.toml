@@ -6,3 +6,12 @@ members = ["crates/*"]
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
+authors = ["Michael Munson <michael.d.munson@gmail.com>"]
+repository = "https://github.com/SpiraMirabilis/familiar"
+homepage = "https://github.com/SpiraMirabilis/familiar"
+rust-version = "1.92"
+
+[profile.release]
+lto = "thin"
+codegen-units = 4
+strip = "debuginfo"

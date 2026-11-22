@@ -1,0 +1,14 @@
+[package]
+name = "familiar-ansi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "ANSI and OSC escape parser that turns MU* output into styled lines, with OSC 8 links"
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+keywords = ["ansi", "terminal", "mud", "escape-codes", "parser"]
+categories = ["parser-implementations", "command-line-interface"]
+
+[dependencies]

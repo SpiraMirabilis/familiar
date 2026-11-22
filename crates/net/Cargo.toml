@@ -1,0 +1,25 @@
+[package]
+name = "familiar-net"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Async TCP/TLS connections for MU* clients, with telnet, MCCP2 and character encodings"
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+keywords = ["mud", "telnet", "tls", "tokio", "client"]
+categories = ["network-programming", "games"]
+
+[dependencies]
+encoding_rs = "0.8.44"
+familiar-telnet = { version = "0.1.0", path = "../telnet" }
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+rustls-platform-verifier = "0.7.1"
+thiserror = "2.0.21"
+tokio = { version = "1.54.1", features = ["net", "io-util", "time", "sync", "macros", "rt"] }
+tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring", "logging", "tls12"] }
+
+[dev-dependencies]
+flate2 = "1.1.11"
+tokio = { version = "1.54.1", features = ["rt", "macros", "net", "io-util", "time"] }

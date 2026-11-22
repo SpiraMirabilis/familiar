@@ -1,0 +1,16 @@
+[package]
+name = "familiar-telnet"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Telnet state machine for MU* clients: option negotiation, GMCP, MSSP, MCCP2, NAWS, MTTS and CHARSET"
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+keywords = ["telnet", "mud", "gmcp", "mccp", "protocol"]
+categories = ["network-programming", "parser-implementations", "games"]
+
+[dependencies]
+flate2 = "1.1.11"
+serde_json = "1.0.154"

@@ -1,0 +1,15 @@
+[package]
+name = "familiar-speech"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Text to speech through speech-dispatcher, on a background thread"
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+keywords = ["speech", "tts", "accessibility", "speech-dispatcher", "linux"]
+categories = ["accessibility", "multimedia::audio"]
+
+[dependencies]
+ssip-client = "0.10.2"

@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Familiar
+GenericName=MU* Client
+Comment=Play MUDs, MUSHes, MUCKs and MOOs
+Exec=familiar
+Icon=io.github.SpiraMirabilis.Familiar
+Terminal=false
+Categories=Game;RolePlaying;
+Keywords=MUD;MUSH;MUCK;MOO;MU*;telnet;roleplay;text;adventure;
+StartupNotify=true

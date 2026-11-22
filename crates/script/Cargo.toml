@@ -1,0 +1,22 @@
+[package]
+name = "familiar-script"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "QuickJS scripting host for the Familiar MU* client, including a BeipMU-compatible API"
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+keywords = ["mud", "javascript", "quickjs", "scripting", "client"]
+categories = ["games"]
+
+[dependencies]
+familiar-engine = { version = "0.1.0", path = "../engine" }
+rquickjs = "0.14.0"
+serde_json = "1.0.154"
+
+[dev-dependencies]
+familiar-config = { path = "../config" }
+familiar-net = { path = "../net" }
+tokio = { version = "1.54.1", features = ["sync"] }

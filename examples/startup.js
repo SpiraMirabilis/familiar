@@ -1,4 +1,4 @@
-// Example startup script. Copy it to ~/.config/mu-client/startup.js (it runs for every
+// Example startup script. Copy it to ~/.config/familiar/startup.js (it runs for every
 // connection), or set it as a world's script file in the Connect dialog.
 //
 // The API, all on the global `mu` object:

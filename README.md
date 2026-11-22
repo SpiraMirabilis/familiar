@@ -1,34 +1,65 @@
-# beipmu-linux (working name)
+<p align="center"><img src="data/io.github.SpiraMirabilis.Familiar.svg" width="96" alt=""></p>
 
-A native Linux MU* (MUD/MUCK/MOO/MUSH) client in Rust, inspired by [BeipMU](https://github.com/BeipDev/BeipMU).
-It is a new codebase, not a port. The BeipMU sources are used only as a reference for features and protocols.
+# Familiar
 
-## Status: M9 (terminal client)
+A client for MUDs, MUSHes, MUCKs and MOOs, for Linux: a GTK 4 app and a full-screen terminal app
+that share one engine, settings, scripts and maps.
 
-| Crate | What it does |
+Familiar is inspired by [BeipMU](https://github.com/BeipDev/BeipMU), the Windows client, and can
+import its settings, maps and scripts. It is a separate project, written from scratch in Rust, and
+isn't affiliated with BeipMU or its developers.
+
+| GTK | Terminal |
 |---|---|
-| `mu-telnet` | Telnet state machine. Handles BINARY, ECHO, SGA, EOR/GA prompts, NAWS, TTYPE/MTTS, CHARSET, GMCP, MSSP, and MCCP2 (including compression that starts partway through a read). Also the line splitter. |
-| `mu-ansi` | ANSI parser. Supports SGR 16/256/truecolor in both `;` and `:` forms, OSC 8 hyperlinks, and swallows every other CSI/OSC/DCS sequence. Includes plain-URL detection and a palette resolver. |
-| `mu-net` | Async TCP/TLS (rustls, verified against system certs, with an option to skip verification). Encodings: Auto (UTF-8 with a per-line Windows-1252 fallback, the default), UTF-8, Windows-1252, CP437. A session task turns raw bytes into line, prompt and GMCP events. |
-| `mu-config` | Worlds, characters, settings and rules (triggers, aliases, macros, variables at global, world and character scope) in `~/.config/mu-client/config.toml`, plus a built-in directory of 40 public worlds. |
-| `mu-engine` | The UI-independent client: per-connection `Engine` that turns network events and input into render outputs. Triggers, aliases, keyboard macros, variables, `/` commands, input history, daily-rotating logs, GMCP (`Beip.Stats`, `Client.Media`, `WebView`), and MCP 2.1 (simpleedit, awns-status, awns-ping, vmoo-client). Shared by the GUI and the planned TUI. |
-| `mu-script` | JavaScript scripting with QuickJS: one isolated runtime per connection, a 2-second limit per call and a memory cap. Implements the engine's `ScriptHost` trait, so any frontend gets scripting. |
-| `mu-map` | World maps: rooms, exits and areas, an automapper for GMCP `Room.Info` (IRE, Aardwolf and BeipMU styles), shortest-path walking, and tracking by room name. |
-| `mu-import` | Reads BeipMU's `Config.txt` (worlds, characters, puppets, triggers, aliases, macros, variables) and `.atlas` maps (plain or zipped XML), reporting anything that can't be carried over. |
-| `mu-speech` | Text to speech through speech-dispatcher, on a background thread. |
-| `mu-code` | Editing support shared by frontends: block-aware auto-indentation for MOO, MUF and Lua. |
-| `mu-gtk` | GTK4/libadwaita client: a tab per connection, ANSI and full Unicode output with clickable links, a side dock with spawn windows and GMCP stat panes, input with history, password mode, NAWS, logging, sounds (trigger and server-driven), notifications, an MCP status line and text editor, web views, and a rules editor. |
-| `mu-tui` | Full-screen terminal client (ratatui) on the same engine: tabs, a sidebar with the map, stat bars and spawn windows, a command palette and fuzzy pickers, `/` completion, and `$EDITOR` for MCP editing. |
-| `mu-cli` | Terminal client for testing against real servers. |
+| ![The GTK client with stat bars](docs/screenshots/gui.png) | ![The terminal client with the map and command completion](docs/screenshots/tui.png) |
+
+## Highlights
+
+- Tabs for each world; colour (16, 256 and truecolor) and full Unicode output; clickable links; logging.
+- Triggers, aliases, keyboard macros and variables, with an editor; JavaScript scripting (QuickJS).
+- GMCP: stat bars (`Beip.Stats`), server sounds (`Client.Media`), web views, and a map that draws
+  itself from `Room.Info` and walks you to any room. Tilemaps, avatars and inline images.
+- MCP 2.1, with a program editor that highlights and auto-indents MOO (Stunt) and MUF.
+- Puppets in their own tabs, text to speech, spell checking.
+- Imports BeipMU's `Config.txt`, `.atlas` maps and scripts.
+- A terminal client in the style of modern coding assistants: command palette, fuzzy world picker,
+  `/` completion, split scrollback, a sidebar with the map and stats, and `$EDITOR` for programs.
+
+## Installing
+
+**Arch Linux (AUR):** `familiar` (releases) or `familiar-git` (latest code), for example
+`paru -S familiar`. The PKGBUILDs are in [`packaging/aur`](packaging/aur).
+
+**Flatpak:** each release has a `.flatpak` bundle (`flatpak install familiar-*.flatpak`); the
+manifest is in [`packaging/flatpak`](packaging/flatpak).
+
+**Release tarball:** unpack it and run `sudo make install` (or `make install PREFIX=~/.local`). The
+binaries are built on Arch, so they need a recent glibc, GTK 4 and libadwaita.
+
+**Cargo:** `cargo install familiar-tui` for the terminal client; `cargo install familiar-gtk`
+installs the GTK client as `familiar` (it needs the libraries below).
+
+**From source:**
 
 ```sh
-cargo run -p mu-gtk            # the GUI
-cargo run -p mu-tui            # the terminal client (mu-tui "World" "Character" connects straight away)
-cargo run -p mu-gtk -- "World" "Character"   # connect to a saved world on startup
-cargo test --workspace
-cargo run -p mu-cli -- lambda.moo.mud.org 8888
-cargo run -p mu-cli -- --gmcp aardmud.org 4000
+make                      # builds familiar and familiar-tui
+sudo make install         # PREFIX=/usr/local by default; DESTDIR is honoured
 ```
+
+Building the GTK client needs Rust 1.92 or newer and the development files for GTK 4 (4.14+),
+libadwaita (1.6+), GtkSourceView 5, libspelling, WebKitGTK 6.0 and GStreamer. On Arch:
+`pacman -S gtk4 libadwaita gtksourceview5 libspelling webkitgtk-6.0 gstreamer gst-plugins-base`.
+The terminal client needs only Rust. `cargo build --no-default-features -p familiar-gtk` leaves out
+WebKitGTK (and web views).
+
+At runtime, speech needs `speech-dispatcher` with a voice such as `espeak-ng`, spell checking needs a
+Hunspell dictionary (`hunspell-en_us`), and sounds need `gst-plugins-good` (GTK) or `pw-play`,
+`paplay` or `aplay` (terminal).
+
+Settings live in `~/.config/familiar/` (`config.toml`, `startup.js`) and maps and logs in
+`~/.local/share/familiar/`. Both clients use them.
+
+## Using Familiar
 
 ### GUI keys
 
@@ -58,7 +89,7 @@ Links work in OSC 8 output and in plain URLs. `send:` links send a command and `
 
 ### Scripting
 
-JavaScript (QuickJS) runs per connection. `~/.config/mu-client/startup.js` runs for every session, and each world can name its own script file. `/@code` runs code right away (Shift+Enter for multiple lines), and `/script reload` restarts scripting after you edit a file. Scripts get `mu.send`, `mu.input`, `mu.echo`, `mu.notice`, `mu.spawn`, `mu.gmcp`, `mu.vars`, `mu.world`/`mu.character`/`mu.connected`, events through `mu.on` (`line` to hide lines, `receive`, `send` to rewrite or drop commands, `gmcp` and `gmcp:Package`, `connect`, `disconnect`), timers and `console.log`. Triggers can call a script function with the line and its regex groups. See [examples/startup.js](examples/startup.js).
+JavaScript (QuickJS) runs per connection. `~/.config/familiar/startup.js` runs for every session, and each world can name its own script file. `/@code` runs code right away (Shift+Enter for multiple lines), and `/script reload` restarts scripting after you edit a file. Scripts get `mu.send`, `mu.input`, `mu.echo`, `mu.notice`, `mu.spawn`, `mu.gmcp`, `mu.vars`, `mu.world`/`mu.character`/`mu.connected`, events through `mu.on` (`line` to hide lines, `receive`, `send` to rewrite or drop commands, `gmcp` and `gmcp:Package`, `connect`, `disconnect`), timers and `console.log`. Triggers can call a script function with the line and its regex groups. See [examples/startup.js](examples/startup.js).
 
 BeipMU scripts work too: the `app` and `window` objects are there (member names ignore case, as in BeipMU), including `window.connection.SetOnReceive`/`SetOnSend`/`SetOnGMCP`/`SetOnConnect` hooks, `Display`/`Send`/`Receive`, `window.output.Write`, `window.Run`, variables, `app.CreateInterval`/`CreateTimeout`, `app.PlaySound`, and `app.NewWindow_Text()` (which becomes a spawn window). Hook functions get plain text without ANSI codes. A trigger whose script is `beipmu:Name` calls `Name(ranges, line, window)` the way BeipMU did. ActiveX, sockets and drawing windows aren't available and say so.
 
@@ -68,11 +99,11 @@ Client commands start with `/`: `/set`, `/unset`, `/echo`, `/log`, `/clear`, `/r
 
 When a MOO sends code with MCP simpleedit (`type: moo-code`), it opens in a small code editor (GtkSourceView): syntax highlighting, line numbers, bracket matching, search (Ctrl+F), and auto-indent that re-indents each line as you press Enter (Ctrl+Shift+I re-indents everything). Ctrl+S sends it back without closing; compile errors in the reply (`Line 3: …`, or FuzzBall's `Error in line 3: …`) are marked on their lines. `/edit [language]` opens a scratch editor whose text is sent line by line, for `@program`-style uploads. Plain text (descriptions) opens without highlighting.
 
-Languages: **MOO (Stunt)** built from the Stunt lexer (keywords, `/* */` and string-statement comments, `$#colour` and `b"bytes"` literals, string escapes, maps and bitwise operators, built-in variables and all 209 built-in functions), **MUF**, and GtkSourceView's built-in languages such as Lua. Each world has a program language. Add your own GtkSourceView `.lang` files to `~/.local/share/mu-client/language-specs/`.
+Languages: **MOO (Stunt)** built from the Stunt lexer (keywords, `/* */` and string-statement comments, `$#colour` and `b"bytes"` literals, string escapes, maps and bitwise operators, built-in variables and all 209 built-in functions), **MUF**, and GtkSourceView's built-in languages such as Lua. Each world has a program language. Add your own GtkSourceView `.lang` files to `~/.local/share/familiar/language-specs/`.
 
 ### Map
 
-The map tab appears in the side dock once a world has rooms. If the game sends GMCP `Room.Info`, the map fills in as you move: rooms are placed by the direction you walked when the server sends no coordinates, and exits link up as both ends are seen. Without `Room.Info`, add rooms with `/map addroom "Name" north south` and the map follows you by recognising neighbouring room names. Double-click a room (or `/map go name`) to walk there by the shortest known path. Drag rooms to move them (Ctrl to place freely), drag the background to pan, scroll to zoom, and right-click for Walk Here, I'm Here, Rename, Delete and Add Room Here. Maps are saved per world in `~/.local/share/mu-client/maps/`. The folder button in the map (or `/map import file.atlas`) adds a BeipMU map: each of its maps becomes an area, with the room shapes, colours and exits. Background rectangles, labels and exit line shapes aren't drawn.
+The map tab appears in the side dock once a world has rooms. If the game sends GMCP `Room.Info`, the map fills in as you move: rooms are placed by the direction you walked when the server sends no coordinates, and exits link up as both ends are seen. Without `Room.Info`, add rooms with `/map addroom "Name" north south` and the map follows you by recognising neighbouring room names. Double-click a room (or `/map go name`) to walk there by the shortest known path. Drag rooms to move them (Ctrl to place freely), drag the background to pan, scroll to zoom, and right-click for Walk Here, I'm Here, Rename, Delete and Add Room Here. Maps are saved per world in `~/.local/share/familiar/maps/`. The folder button in the map (or `/map import file.atlas`) adds a BeipMU map: each of its maps becomes an area, with the room shapes, colours and exits. Background rectangles, labels and exit line shapes aren't drawn.
 
 ### Importing from BeipMU
 
@@ -88,21 +119,21 @@ A puppet is a second character you control through your main connection, such as
 
 ### Protocols
 
-- **GMCP:** the client announces `Beip.Stats 1` and `Client.Media 1`. `Beip.Stats` panes appear as tabs in the side dock, using BeipMU's format (int, string, range and progress values, colours, partial updates, null deletes). `Client.Media` sounds are downloaded to `~/.cache/mu-client/media` and played.
+- **GMCP:** the client announces `Beip.Stats 1` and `Client.Media 1`. `Beip.Stats` panes appear as tabs in the side dock, using BeipMU's format (int, string, range and progress values, colours, partial updates, null deletes). `Client.Media` sounds are downloaded to `~/.cache/familiar/media` and played.
 - **Avatars** (`beip.line.image-url`, `beip.line.id`, `beip.ids`): a small picture before a line, with hover text and a click link. Unknown ids are requested once with `beip.id.request`, and pictures already shown update when the server describes them.
 - **Inline images:** `/images on` shows a thumbnail under lines that link to images (off by default, since fetching an image tells its site your IP address).
 - **Beip.Tilemap** (`beip.tilemap.info` / `.data`): tile grids drawn from a tile image, in all four encodings (`hex_4`, `hex_8`, `base64_8`, `zbase64_8`), each in its own side-dock tab.
 - **MCP 2.1** (MOOs and MUCKs, on by default per world): the status line appears under the output, and simpleedit opens an editor window that sends your changes back.
 - **Web views:** opened with `/webview url` or by the server (GMCP `webview.open`/`webview.close`, with `dock`, `width`/`height`, `source` and `http-request-headers`). The client asks before a server opens one (Block, Allow Once, Always Allow per world). Docked views go in the side dock; others get their own window. Pages reach the client as `window.mu.client`, or as `window.chrome.webview.hostObjects.client` for pages written for BeipMU, with the same case-insensitive methods: `Send`, `SendGMCP`, `Receive`, `Display`, `CloseWindow`, `SetOnSend`, `SetOnReceive`, `SetOnGMCP`, `SetOnDisplay`, `ClearOnDisplay`. Calls are asynchronous, and `SetOnDisplay` can't gag lines.
 
-### Terminal client
+### The terminal client
 
-`mu-tui` shares the config, rules, scripts, maps and logs with the GUI (don't edit settings in both at once). It opens on a world picker: type to filter saved worlds and the built-in directory, or type `host:port` (add `tls`) for a new one.
+`familiar-tui` shares the config, rules, scripts, maps and logs with the GUI (don't edit settings in both at once). It opens on a world picker: type to filter saved worlds and the built-in directory, or type `host:port` (add `tls`) to connect somewhere new. Ctrl+N in the picker adds a world (address, TLS, character and login), Ctrl+E edits the selected one and Ctrl+D twice deletes it; `/world` saves or edits the world of the tab you're in.
 
 - **Layout:** tabs across the top, with unread counts, ★ for trigger-marked activity and puppets as `↳ Name` tabs. Below them the output, and a sidebar (Ctrl+B) with the map, Beip.Stats bars and spawn windows (Alt+[ and Alt+] switch). Then the input box, which carries the server's prompt on its border, and a status line.
 - **Reading back:** PgUp, Shift+↑ or the mouse wheel scrolls; once scrolled, the view splits so the live tail stays visible underneath. Esc jumps back. Links, tabs and map rooms are clickable (a room walks you there). Most terminals select text with Shift+drag.
 - **Typing:** Enter sends; an empty Enter reconnects a dropped connection. Shift+Enter, Alt+Enter or Ctrl+J add a line. ↑↓ and Ctrl+R are history and history search, Tab completes names seen in the output, readline keys work, and Ctrl+C or Esc Esc clears the line. Typing `/` lists client commands with descriptions, and completes world names, puppets and map rooms as arguments.
-- **Everything else:** Ctrl+K opens the command palette and Ctrl+O the world picker; Alt+1…9 switches tabs; F1 shows the shortcuts. `/connect`, `/close`, `/sidebar`, `/config` and `/quit` are terminal-only commands.
+- **Everything else:** Ctrl+K opens the command palette and Ctrl+O the world picker; Alt+1…9 switches tabs; F1 shows the shortcuts. `/connect`, `/world`, `/close`, `/sidebar`, `/config` and `/quit` are terminal-only commands.
 - **Editors:** MCP simpleedit opens in `$VISUAL`/`$EDITOR` with the right file extension (`.moo`, `.muf`) so your editor highlights it, and saving and quitting sends it back. If the server reports compile errors, Alt+E reopens it at the first one. Ctrl+G edits the input line in `$EDITOR`.
 - **Sound and alerts:** sounds play through `pw-play`, `paplay` or `aplay`. Trigger notifications use `notify-send`, and only while the terminal isn't focused. Speech works as in the GUI.
 - **Not available in a terminal:** images, avatars, web views and tilemaps. A web view's URL is shown so you can open it.
@@ -113,10 +144,38 @@ A puppet is a second character you control through your main connection, such as
 - `gst-plugins-good`: WAV/MP3 decoding and the standard audio output for sounds. Without it, playback reports a missing plugin.
 - `speech-dispatcher` and a voice such as `espeak-ng`: speech.
 - `hunspell-en_us` (or another Hunspell dictionary): spellcheck.
-- `webkitgtk-6.0`: web views (on by default). Without it, build with `cargo run -p mu-gtk --no-default-features`.
+- `webkitgtk-6.0`: web views (on by default). Without it, build with `cargo run -p familiar-gtk --no-default-features`.
 
-## Roadmap
+## Development
 
-M0–M9 are done.
+| Crate | What it does |
+|---|---|
+| `familiar-telnet` | Telnet state machine. Handles BINARY, ECHO, SGA, EOR/GA prompts, NAWS, TTYPE/MTTS, CHARSET, GMCP, MSSP, and MCCP2 (including compression that starts partway through a read). Also the line splitter. |
+| `familiar-ansi` | ANSI parser. Supports SGR 16/256/truecolor in both `;` and `:` forms, OSC 8 hyperlinks, and swallows every other CSI/OSC/DCS sequence. Includes plain-URL detection and a palette resolver. |
+| `familiar-net` | Async TCP/TLS (rustls, verified against system certs, with an option to skip verification). Encodings: Auto (UTF-8 with a per-line Windows-1252 fallback, the default), UTF-8, Windows-1252, CP437. A session task turns raw bytes into line, prompt and GMCP events. |
+| `familiar-config` | Worlds, characters, settings and rules (triggers, aliases, macros, variables at global, world and character scope) in `~/.config/familiar/config.toml`, plus a built-in directory of 40 public worlds. |
+| `familiar-engine` | The UI-independent client: per-connection `Engine` that turns network events and input into render outputs. Triggers, aliases, keyboard macros, variables, `/` commands, input history, daily-rotating logs, GMCP (`Beip.Stats`, `Client.Media`, `WebView`), and MCP 2.1 (simpleedit, awns-status, awns-ping, vmoo-client). Shared by both frontends. |
+| `familiar-script` | JavaScript scripting with QuickJS: one isolated runtime per connection, a 2-second limit per call and a memory cap. Implements the engine's `ScriptHost` trait, so any frontend gets scripting. |
+| `familiar-map` | World maps: rooms, exits and areas, an automapper for GMCP `Room.Info` (IRE, Aardwolf and BeipMU styles), shortest-path walking, and tracking by room name. |
+| `familiar-import` | Reads BeipMU's `Config.txt` (worlds, characters, puppets, triggers, aliases, macros, variables) and `.atlas` maps (plain or zipped XML), reporting anything that can't be carried over. |
+| `familiar-speech` | Text to speech through speech-dispatcher, on a background thread. |
+| `familiar-code` | Editing support shared by frontends: block-aware auto-indentation for MOO, MUF and Lua. |
+| `familiar-gtk` | GTK4/libadwaita client: a tab per connection, ANSI and full Unicode output with clickable links, a side dock with spawn windows and GMCP stat panes, input with history, password mode, NAWS, logging, sounds (trigger and server-driven), notifications, an MCP status line and text editor, web views, and a rules editor. |
+| `familiar-tui` | Full-screen terminal client (ratatui) on the same engine: tabs, a sidebar with the map, stat bars and spawn windows, a command palette and fuzzy pickers, `/` completion, and `$EDITOR` for MCP editing. |
+| `familiar-cli` | Terminal client for testing against real servers. |
 
-`assets/Worlds.xml` and the test files in `crates/mu-import/tests/data/` (sample config and maps) come from BeipMU (MIT licence, © Bennet).
+```sh
+cargo run -p familiar-gtk            # the GUI
+cargo run -p familiar-tui            # the terminal client (familiar-tui "World" "Character" connects straight away)
+cargo run -p familiar-gtk -- "World" "Character"   # connect to a saved world on startup
+cargo test --workspace
+cargo run -p familiar-cli -- lambda.moo.mud.org 8888
+cargo run -p familiar-cli -- --gmcp aardmud.org 4000
+```
+
+See [CHANGELOG.md](CHANGELOG.md) for what changed between releases.
+
+## Credits and licence
+
+Familiar is MIT-licensed; see [LICENSE](LICENSE). It owes its feature set and several file formats
+to BeipMU (MIT, © Bennet); the files taken from BeipMU are listed in [THIRD-PARTY.md](THIRD-PARTY.md).

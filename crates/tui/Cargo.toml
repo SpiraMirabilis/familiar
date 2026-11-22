@@ -1,0 +1,27 @@
+[package]
+name = "familiar-tui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Familiar: a terminal client for MUDs, MUSHes, MUCKs and MOOs"
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+keywords = ["mud", "mush", "moo", "muck", "tui"]
+categories = ["games", "command-line-utilities"]
+readme = "../../README.md"
+
+[dependencies]
+clap = { version = "4.6.9", features = ["derive"] }
+familiar-ansi = { version = "0.1.0", path = "../ansi" }
+familiar-config = { version = "0.1.0", path = "../config" }
+familiar-engine = { version = "0.1.0", path = "../engine" }
+familiar-map = { version = "0.1.0", path = "../map" }
+familiar-net = { version = "0.1.0", path = "../net" }
+familiar-script = { version = "0.1.0", path = "../script" }
+familiar-speech = { version = "0.1.0", path = "../speech" }
+ratatui = "0.30.2"
+tokio = { version = "1.54.1", features = ["full"] }
+unicode-segmentation = "1.13.3"
+unicode-width = "0.2.3"

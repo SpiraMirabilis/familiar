@@ -236,7 +236,7 @@ SEDIT = r'''
 spec = argstr;
 sessions = this:_sessions();
 if (!(player in mapkeys(sessions)) || !sessions[player]["key"])
-  player:tell("@sedit needs an MCP client. Connect with one (MU Client, for example) and try again.");
+  player:tell("@sedit needs an MCP client. Connect with one (Familiar, for example) and try again.");
   return;
 endif
 colon = index(spec, ":");

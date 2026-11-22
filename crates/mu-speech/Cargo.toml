@@ -1,8 +1,0 @@
-[package]
-name = "mu-speech"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
-
-[dependencies]
-ssip-client = "0.10.2"

@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.SpiraMirabilis.Familiar</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <name>Familiar</name>
+  <summary>Play MUDs, MUSHes, MUCKs and MOOs</summary>
+  <developer id="io.github.spiramirabilis">
+    <name>Michael Munson</name>
+  </developer>
+  <description>
+    <p>
+      Familiar is a client for text-based multiplayer worlds: MUDs, MUSHes, MUCKs and MOOs.
+      It is inspired by BeipMU and can import BeipMU's settings, maps and scripts.
+    </p>
+    <ul>
+      <li>Tabs for each world, colour and Unicode output, clickable links and logging</li>
+      <li>Triggers, aliases, keyboard macros, variables and JavaScript scripting</li>
+      <li>A map that draws itself from GMCP Room.Info, and walks you to any room</li>
+      <li>GMCP stat bars, server sounds, web views and inline images</li>
+      <li>MCP 2.1 with a program editor that highlights and indents MOO and MUF code</li>
+      <li>Puppets in their own tabs, text to speech and spell checking</li>
+      <li>A terminal version with the same features, for SSH and tiling setups</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">io.github.SpiraMirabilis.Familiar.desktop</launchable>
+  <url type="homepage">https://github.com/SpiraMirabilis/familiar</url>
+  <url type="bugtracker">https://github.com/SpiraMirabilis/familiar/issues</url>
+  <url type="vcs-browser">https://github.com/SpiraMirabilis/familiar</url>
+  <categories>
+    <category>Game</category>
+    <category>RolePlaying</category>
+  </categories>
+  <keywords>
+    <keyword>MUD</keyword>
+    <keyword>MUSH</keyword>
+    <keyword>MUCK</keyword>
+    <keyword>MOO</keyword>
+    <keyword>telnet</keyword>
+  </keywords>
+  <provides>
+    <binary>familiar</binary>
+    <binary>familiar-tui</binary>
+  </provides>
+  <requires>
+    <display_length compare="ge">768</display_length>
+  </requires>
+  <supports>
+    <control>keyboard</control>
+    <control>pointing</control>
+  </supports>
+  <content_rating type="oars-1.1">
+    <content_attribute id="social-chat">intense</content_attribute>
+    <content_attribute id="social-info">mild</content_attribute>
+  </content_rating>
+  <releases>
+    <release version="0.1.0" date="2026-11-22">
+      <description>
+        <p>First release.</p>
+      </description>
+    </release>
+  </releases>
+</component>

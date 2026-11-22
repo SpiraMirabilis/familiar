@@ -641,6 +641,158 @@ dependencies = [
 ]
 
 [[package]]
+name = "familiar-ansi"
+version = "0.1.0"
+
+[[package]]
+name = "familiar-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "familiar-ansi",
+ "familiar-net",
+ "familiar-telnet",
+ "terminal_size",
+ "tokio",
+]
+
+[[package]]
+name = "familiar-code"
+version = "0.1.0"
+
+[[package]]
+name = "familiar-config"
+version = "0.1.0"
+dependencies = [
+ "dirs 7.0.0",
+ "quick-xml",
+ "serde",
+ "thiserror 2.0.21",
+ "toml",
+]
+
+[[package]]
+name = "familiar-engine"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "chrono",
+ "familiar-ansi",
+ "familiar-config",
+ "familiar-import",
+ "familiar-map",
+ "familiar-net",
+ "fancy-regex 0.20.2",
+ "flate2",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "ureq",
+]
+
+[[package]]
+name = "familiar-gtk"
+version = "0.1.0"
+dependencies = [
+ "familiar-ansi",
+ "familiar-code",
+ "familiar-config",
+ "familiar-engine",
+ "familiar-import",
+ "familiar-map",
+ "familiar-net",
+ "familiar-script",
+ "familiar-speech",
+ "gtk4",
+ "libadwaita",
+ "libspelling",
+ "pangocairo",
+ "serde_json",
+ "sourceview5",
+ "tokio",
+ "webkit6",
+]
+
+[[package]]
+name = "familiar-import"
+version = "0.1.0"
+dependencies = [
+ "familiar-config",
+ "familiar-map",
+ "fancy-regex 0.20.2",
+ "quick-xml",
+ "zip",
+]
+
+[[package]]
+name = "familiar-map"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "familiar-net"
+version = "0.1.0"
+dependencies = [
+ "encoding_rs",
+ "familiar-telnet",
+ "flate2",
+ "rustls",
+ "rustls-platform-verifier",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-rustls",
+]
+
+[[package]]
+name = "familiar-script"
+version = "0.1.0"
+dependencies = [
+ "familiar-config",
+ "familiar-engine",
+ "familiar-net",
+ "rquickjs",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "familiar-speech"
+version = "0.1.0"
+dependencies = [
+ "ssip-client",
+]
+
+[[package]]
+name = "familiar-telnet"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+ "serde_json",
+]
+
+[[package]]
+name = "familiar-tui"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "familiar-ansi",
+ "familiar-config",
+ "familiar-engine",
+ "familiar-map",
+ "familiar-net",
+ "familiar-script",
+ "familiar-speech",
+ "ratatui",
+ "tokio",
+ "unicode-segmentation",
+ "unicode-width",
+]
+
+[[package]]
 name = "fancy-regex"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1490,158 +1642,6 @@ dependencies = [
  "log",
  "wasi",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "mu-ansi"
-version = "0.1.0"
-
-[[package]]
-name = "mu-cli"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "mu-ansi",
- "mu-net",
- "mu-telnet",
- "terminal_size",
- "tokio",
-]
-
-[[package]]
-name = "mu-code"
-version = "0.1.0"
-
-[[package]]
-name = "mu-config"
-version = "0.1.0"
-dependencies = [
- "dirs 7.0.0",
- "quick-xml",
- "serde",
- "thiserror 2.0.21",
- "toml",
-]
-
-[[package]]
-name = "mu-engine"
-version = "0.1.0"
-dependencies = [
- "base64 0.23.1",
- "chrono",
- "fancy-regex 0.20.2",
- "flate2",
- "mu-ansi",
- "mu-config",
- "mu-import",
- "mu-map",
- "mu-net",
- "serde_json",
- "tempfile",
- "tokio",
- "ureq",
-]
-
-[[package]]
-name = "mu-gtk"
-version = "0.1.0"
-dependencies = [
- "gtk4",
- "libadwaita",
- "libspelling",
- "mu-ansi",
- "mu-code",
- "mu-config",
- "mu-engine",
- "mu-import",
- "mu-map",
- "mu-net",
- "mu-script",
- "mu-speech",
- "pangocairo",
- "serde_json",
- "sourceview5",
- "tokio",
- "webkit6",
-]
-
-[[package]]
-name = "mu-import"
-version = "0.1.0"
-dependencies = [
- "fancy-regex 0.20.2",
- "mu-config",
- "mu-map",
- "quick-xml",
- "zip",
-]
-
-[[package]]
-name = "mu-map"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "mu-net"
-version = "0.1.0"
-dependencies = [
- "encoding_rs",
- "flate2",
- "mu-telnet",
- "rustls",
- "rustls-platform-verifier",
- "thiserror 2.0.21",
- "tokio",
- "tokio-rustls",
-]
-
-[[package]]
-name = "mu-script"
-version = "0.1.0"
-dependencies = [
- "mu-config",
- "mu-engine",
- "mu-net",
- "rquickjs",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "mu-speech"
-version = "0.1.0"
-dependencies = [
- "ssip-client",
-]
-
-[[package]]
-name = "mu-telnet"
-version = "0.1.0"
-dependencies = [
- "flate2",
- "serde_json",
-]
-
-[[package]]
-name = "mu-tui"
-version = "0.1.0"
-dependencies = [
- "clap",
- "mu-ansi",
- "mu-config",
- "mu-engine",
- "mu-map",
- "mu-net",
- "mu-script",
- "mu-speech",
- "ratatui",
- "tokio",
- "unicode-segmentation",
- "unicode-width",
 ]
 
 [[package]]

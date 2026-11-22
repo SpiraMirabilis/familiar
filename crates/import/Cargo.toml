@@ -1,0 +1,21 @@
+[package]
+name = "familiar-import"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Imports BeipMU's Config.txt and .atlas maps for the Familiar MU* client"
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+keywords = ["beipmu", "mud", "import", "atlas", "config"]
+categories = ["games", "parser-implementations"]
+
+[dependencies]
+familiar-config = { path = "../config" }
+familiar-map = { path = "../map" }
+quick-xml = "0.37"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
+[dev-dependencies]
+fancy-regex = "0.20.2"

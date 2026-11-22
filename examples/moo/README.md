@@ -3,7 +3,7 @@
 A feature object that gives a MOO MCP 2.1 and the `dns-org-mud-moo-simpleedit` package with no
 other MCP support needed. With it, `@sedit #123:verb` (or `@sedit obj.property`) opens the verb
 or text in the client's editor, and sending it from the editor saves it. Compile errors come
-back as `Line N:  message`, which MU Client marks on the right lines.
+back as `Line N:  message`, which Familiar marks on the right lines.
 
 It is written for Stunt (it uses maps) on a LambdaCore-style core whose generic feature calls
 `:confunc()` when a player with the feature connects. All 12 verbs were compiled and exercised
@@ -28,7 +28,7 @@ on a Stunt server built from `~/stunt`, in emergency mode against `Minimal.db`.
 
 ## Troubleshooting
 
-- In MU Client, `/mcp` says whether MCP is running. "The client answered with its key, but the
+- In Familiar, `/mcp` says whether MCP is running. "The client answered with its key, but the
   server hasn't replied" means the client's answer isn't reaching the feature: usually step 2.
   `/mcp debug` shows every MCP line in both directions.
 - On the MOO, `;FEATURE.sessions` shows each player's key. An empty key (`"key" -> ""`) means
