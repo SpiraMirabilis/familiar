@@ -27,10 +27,21 @@ impl SoundPlayer {
 
     /// Starts a sound. `name` is what [`SoundPlayer::stop`] knows it by; `volume` is 0 to 1.
     pub fn play(&self, name: &str, path: &Path, volume: f64) -> Result<(), String> {
+        self.play_loops(name, path, volume, 1)
+    }
+
+    /// Like [`SoundPlayer::play`], repeating `loops` times, or until stopped if that's negative.
+    /// (On Linux the command-line players can't repeat, so the sound plays once.)
+    pub fn play_loops(&self, name: &str, path: &Path, volume: f64, loops: i32) -> Result<(), String> {
         if !path.is_file() {
             return Err(format!("Sound file not found: {}", path.display()));
         }
-        self.backend.lock().unwrap().play(name, path, volume.clamp(0.0, 1.0))
+        self.backend.lock().unwrap().play(name, path, volume.clamp(0.0, 1.0), loops)
+    }
+
+    /// Whether a sound with this name is still playing.
+    pub fn is_playing(&self, name: &str) -> bool {
+        self.backend.lock().unwrap().is_playing(name)
     }
 
     /// Stops the sounds with this name, or every sound.
@@ -64,7 +75,7 @@ mod imp {
     }
 
     impl Backend {
-        pub fn play(&mut self, name: &str, path: &Path, volume: f64) -> Result<(), String> {
+        pub fn play(&mut self, name: &str, path: &Path, volume: f64, _loops: i32) -> Result<(), String> {
             self.tidy();
             let player = *self.player.get_or_insert_with(|| ["pw-play", "paplay", "aplay"].into_iter().find(|p| crate::which(p).is_some()));
             let Some(player) = player else {
@@ -84,6 +95,11 @@ mod imp {
             let child = cmd.spawn().map_err(|e| format!("Couldn't play {}: {e}", path.display()))?;
             self.sounds.push((name.to_string(), child));
             Ok(())
+        }
+
+        pub fn is_playing(&mut self, name: &str) -> bool {
+            self.tidy();
+            self.sounds.iter().any(|(n, _)| n == name)
         }
 
         /// Forgets the ones that have finished (which also reaps the processes).
@@ -116,8 +132,9 @@ mod imp {
     use std::sync::mpsc;
 
     enum Command {
-        Play { name: String, path: PathBuf, volume: f64, reply: mpsc::Sender<Result<(), String>> },
+        Play { name: String, path: PathBuf, volume: f64, loops: i32, reply: mpsc::Sender<Result<(), String>> },
         Stop(Option<String>),
+        IsPlaying { name: String, reply: mpsc::Sender<bool> },
     }
 
     /// The audio device handle can't move between threads, so it lives on its own thread and
@@ -133,15 +150,22 @@ mod imp {
         for command in commands {
             sounds.retain(|(_, player)| !player.empty());
             match command {
-                Command::Play { name, path, volume, reply } => {
+                Command::Play { name, path, volume, loops, reply } => {
                     let result = (|| {
                         if device.is_none() {
                             device = Some(rodio::DeviceSinkBuilder::open_default_sink().map_err(|e| format!("No sound device: {e}"))?);
                         }
-                        let file = std::fs::File::open(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-                        let player = rodio::play(device.as_ref().unwrap().mixer(), std::io::BufReader::new(file))
-                            .map_err(|e| format!("Couldn't play {}: {e}", path.display()))?;
+                        let open = || std::fs::File::open(&path).map(std::io::BufReader::new).map_err(|e| format!("{}: {e}", path.display()));
+                        let bad = |e: rodio::decoder::DecoderError| format!("Couldn't play {}: {e}", path.display());
+                        let player = rodio::Player::connect_new(device.as_ref().unwrap().mixer());
                         player.set_volume(volume as _);
+                        if loops < 0 {
+                            player.append(rodio::Decoder::new_looped(open()?).map_err(bad)?);
+                        } else {
+                            for _ in 0..loops.max(1) {
+                                player.append(rodio::Decoder::new(open()?).map_err(bad)?);
+                            }
+                        }
                         sounds.push((name, player));
                         Ok(())
                     })();
@@ -150,6 +174,9 @@ mod imp {
                         device = None;
                     }
                     let _ = reply.send(result);
+                }
+                Command::IsPlaying { name, reply } => {
+                    let _ = reply.send(sounds.iter().any(|(n, _)| *n == name));
                 }
                 Command::Stop(name) => sounds.retain(|(n, player)| {
                     let stop = name.as_ref().is_none_or(|wanted| wanted == n);
@@ -171,9 +198,15 @@ mod imp {
             })
         }
 
-        pub fn play(&mut self, name: &str, path: &Path, volume: f64) -> Result<(), String> {
+        pub fn is_playing(&mut self, name: &str) -> bool {
+            let Some(commands) = &self.commands else { return false };
             let (reply, result) = mpsc::channel();
-            let command = Command::Play { name: name.into(), path: path.into(), volume, reply };
+            commands.send(Command::IsPlaying { name: name.into(), reply }).is_ok() && result.recv().unwrap_or(false)
+        }
+
+        pub fn play(&mut self, name: &str, path: &Path, volume: f64, loops: i32) -> Result<(), String> {
+            let (reply, result) = mpsc::channel();
+            let command = Command::Play { name: name.into(), path: path.into(), volume, loops, reply };
             self.sender().send(command).map_err(|_| "The sound thread has stopped".to_string())?;
             result.recv().map_err(|_| "The sound thread has stopped".to_string())?
         }

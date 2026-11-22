@@ -55,7 +55,7 @@ pub struct SessionView {
     stats: RefCell<HashMap<String, StatsPane>>,
     /// MCP status text, shown under the output.
     status: gtk::Label,
-    sounds: RefCell<Vec<gtk::MediaFile>>,
+    sounds: RefCell<Vec<crate::media_player::Clip>>,
     media: Rc<MediaPlayer>,
     map: RefCell<Option<Rc<crate::map_view::MapView>>>,
     /// Open puppet tabs, by puppet name.
@@ -951,17 +951,17 @@ impl SessionView {
             return;
         }
         let mut sounds = self.sounds.borrow_mut();
-        sounds.retain(|m| !m.is_ended() && m.error().is_none());
-        let media = gtk::MediaFile::for_filename(&path);
+        sounds.retain(|clip| !clip.is_finished());
         let output = Rc::downgrade(&self.output);
-        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        media.connect_error_notify(move |media| {
-            if let (Some(output), Some(e)) = (output.upgrade(), media.error()) {
-                output.notice(&crate::media_player::describe_error(&name, &e));
+        let notice: Rc<dyn Fn(String)> = Rc::new(move |text| {
+            if let Some(output) = output.upgrade() {
+                output.notice(&text);
             }
         });
-        media.play();
-        sounds.push(media);
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        if let Some(clip) = crate::media_player::Clip::play(&name, &path, 1.0, 1, notice) {
+            sounds.push(clip);
+        }
     }
 
     /// Shows connection state on the tab: a spinner while connecting, an icon once disconnected.
