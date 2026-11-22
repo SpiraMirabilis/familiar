@@ -63,6 +63,17 @@ impl EditRequest {
 /// How long after an upload to watch the server's replies for compile errors.
 const COMPILE_WATCH: Duration = Duration::from_secs(10);
 
+/// An image shown to the left of a line (BeipMU avatars).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Avatar {
+    /// The beip.line.id this came from, so later beip.ids updates can find it.
+    pub id: Option<String>,
+    /// None until the server says (beip.ids), for an id we've asked about.
+    pub url: Option<String>,
+    pub hover: Option<String>,
+    pub click_url: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct WebViewOpen {
     /// Opening another web view with the same id replaces it.
@@ -115,6 +126,14 @@ pub enum Output {
     /// The server reported a compile error in a program that was just sent from an editor.
     /// `line` counts from 1.
     CompileError { reference: String, line: u32, message: String },
+    /// Put this avatar at the start of the next main-window line.
+    LineAvatar(Avatar),
+    /// beip.ids changed an avatar; update images already shown with this id.
+    AvatarUpdated(Avatar),
+    /// Show this image under the line just added (a link to an image, with inline images on).
+    InlineImage { url: String },
+    /// Settings changed (e.g. /images); the UI should save them.
+    SettingsChanged(Settings),
     /// A Beip.Tilemap map was created or changed.
     Tilemap { name: String, map: Tilemap },
     /// The map or the current room changed; redraw it.
@@ -152,6 +171,11 @@ pub struct Engine {
     server_echo: bool,
     stats: Stats,
     tilemaps: Tilemaps,
+    avatars: std::collections::HashMap<String, Avatar>,
+    /// Ids we've sent beip.id.request for.
+    avatars_requested: std::collections::HashSet<String>,
+    /// From beip.line.*, for the next line.
+    next_avatar: Option<Avatar>,
     media: Media,
     mcp: Mcp,
     /// Show GMCP traffic as notices.
@@ -192,6 +216,7 @@ const HELP: &str = "Client commands:
   /script reload       restart scripting and reload the startup scripts
   /edit [language]     open a code editor whose text is sent line by line (moo, muf, lua)
   /map ...             show the map, walk (/map go name), add rooms; /map help for more
+  /images on|off       show thumbnails under links to images
   //text               send text that starts with a /";
 
 impl Engine {
@@ -210,6 +235,9 @@ impl Engine {
             server_echo: false,
             stats: Stats::default(),
             tilemaps: Tilemaps::default(),
+            avatars: Default::default(),
+            avatars_requested: Default::default(),
+            next_avatar: None,
             media: Media::default(),
             mcp: Mcp::default(),
             gmcp_debug: false,
@@ -654,6 +682,41 @@ impl Engine {
                 }
                 Err(e) => out.push(Output::Notice(e)),
             },
+            "beip.line.image-url" => {
+                let url: Option<String> = serde_json::from_str(&data).ok();
+                self.next_avatar = url.map(|url| Avatar { url: Some(url), ..Avatar::default() });
+            }
+            "beip.line.id" => {
+                if let Ok(id) = serde_json::from_str::<String>(&data) {
+                    let known = self.avatars.get(&id).cloned();
+                    if known.is_none() && self.avatars_requested.insert(id.clone()) {
+                        let request = serde_json::to_string(&id).unwrap_or_default();
+                        if let Some(handle) = &self.handle {
+                            handle.send_gmcp("beip.id.request", Some(request));
+                        }
+                    }
+                    self.next_avatar = Some(known.unwrap_or(Avatar { id: Some(id), ..Avatar::default() }));
+                }
+            }
+            "beip.ids" => {
+                if let Ok(serde_json::Value::Object(ids)) = serde_json::from_str::<serde_json::Value>(&data) {
+                    for (id, fields) in ids {
+                        let avatar = self.avatars.entry(id.clone()).or_insert_with(|| Avatar { id: Some(id.clone()), ..Avatar::default() });
+                        let s = |k: &str| fields.get(k).and_then(|v| v.as_str()).map(str::to_string);
+                        // Only the fields sent change.
+                        if let Some(url) = s("url") {
+                            avatar.url = Some(url);
+                        }
+                        if let Some(text) = s("hover-text") {
+                            avatar.hover = Some(text);
+                        }
+                        if let Some(url) = s("click-url") {
+                            avatar.click_url = Some(url);
+                        }
+                        out.push(Output::AvatarUpdated(avatar.clone()));
+                    }
+                }
+            }
             "beip.tilemap.info" | "beip.tilemap.data" => {
                 let result = if lower.ends_with("info") { self.tilemaps.info(&data) } else { self.tilemaps.data(&data) };
                 match result {
@@ -895,10 +958,21 @@ impl Engine {
         if line.bell {
             out.push(Output::Bell);
         }
+        let avatar = self.next_avatar.take();
         if !gag {
             match prompt {
                 Some(terminated) => out.push(Output::Prompt { line: line.clone(), terminated }),
-                None => out.push(Output::Line { line: line.clone(), target: Target::Main }),
+                None => {
+                    if let Some(avatar) = avatar {
+                        out.push(Output::LineAvatar(avatar));
+                    }
+                    out.push(Output::Line { line: line.clone(), target: Target::Main });
+                    if self.settings.inline_images {
+                        for url in image_links(&plain).into_iter().take(3) {
+                            out.push(Output::InlineImage { url });
+                        }
+                    }
+                }
             }
         }
         for name in spawns {
@@ -1092,6 +1166,20 @@ impl Engine {
                 "MCP is off for this world".into()
             })),
             "map" => self.map_command(args, out),
+            "images" => {
+                match args {
+                    "on" | "off" => {
+                        self.settings.inline_images = args == "on";
+                        out.push(Output::SettingsChanged(self.settings.clone()));
+                    }
+                    _ => {}
+                }
+                out.push(Output::Notice(if self.settings.inline_images {
+                    "Inline images are on: links to images show a thumbnail. Fetching an image tells its site your IP address. /images off turns them off.".into()
+                } else {
+                    "Inline images are off. /images on shows thumbnails under links to images.".into()
+                }));
+            }
             "edit" => {
                 let language = if args.is_empty() { self.program_language() } else { args.to_lowercase() };
                 out.push(Output::Edit(EditRequest {
@@ -1194,6 +1282,18 @@ impl Engine {
             Err(e) => vec![Output::Notice(format!("Couldn't start logging: {e}"))],
         }
     }
+}
+
+/// Links in `text` that point at images, by file extension.
+fn image_links(text: &str) -> Vec<String> {
+    mu_ansi::find_urls(text)
+        .into_iter()
+        .map(|(a, b)| text[a..b].to_string())
+        .filter(|url| {
+            let path = url.split(['?', '#']).next().unwrap_or("").to_ascii_lowercase();
+            [".png", ".jpg", ".jpeg", ".gif", ".webp"].iter().any(|ext| path.ends_with(ext))
+        })
+        .collect()
 }
 
 fn parse_webview_open(json: &str) -> Result<WebViewOpen, String> {

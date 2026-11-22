@@ -14,7 +14,7 @@ pub mod script;
 pub mod stats;
 pub mod tilemap;
 
-pub use engine::{EditRequest, Engine, Output, Status, Target, WebViewCommand, WebViewOpen};
+pub use engine::{Avatar, EditRequest, Engine, Output, Status, Target, WebViewCommand, WebViewOpen};
 pub use history::History;
 pub use keys::KeyChord;
 pub use log::Logger;

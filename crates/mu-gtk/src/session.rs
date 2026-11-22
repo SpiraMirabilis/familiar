@@ -31,6 +31,9 @@ enum PageEvent<'a> {
     Display(&'a str),
 }
 
+/// Where clicking an avatar goes; shared with its click handler so beip.ids can change it.
+type AvatarLink = Rc<RefCell<Option<String>>>;
+
 /// The most events handled in one go before letting GTK redraw.
 const BATCH_LIMIT: usize = 500;
 
@@ -57,6 +60,10 @@ pub struct SessionView {
     media: Rc<MediaPlayer>,
     map: RefCell<Option<Rc<crate::map_view::MapView>>>,
     tilemaps: RefCell<HashMap<String, Rc<crate::tilemap_view::TilemapView>>>,
+    images: Rc<crate::images::ImageCache>,
+    /// Avatar pictures shown for each beip.line.id, with their click URLs, to update when
+    /// beip.ids changes them.
+    avatars: RefCell<HashMap<String, Vec<(glib::WeakRef<gtk::Picture>, AvatarLink)>>>,
     /// Open code editors by reference ("" for the latest scratch editor), for compile errors.
     editors: RefCell<HashMap<String, Weak<crate::code_editor::CodeEditor>>>,
     /// The pending script timer and when it fires.
@@ -121,6 +128,8 @@ impl SessionView {
             editors: RefCell::default(),
             map: RefCell::default(),
             tilemaps: RefCell::default(),
+            images: Rc::default(),
+            avatars: RefCell::default(),
             #[cfg(feature = "webview")]
             webviews: RefCell::default(),
             on_open_uri: RefCell::default(),
@@ -461,6 +470,29 @@ impl SessionView {
                     }
                 }
                 Output::ShowMap => self.show_map(true),
+                Output::LineAvatar(avatar) => {
+                    let picture = self.avatar_picture(&avatar);
+                    self.output.set_next_prefix(&picture);
+                }
+                Output::AvatarUpdated(avatar) => {
+                    let id = avatar.id.clone().unwrap_or_default();
+                    let shown: Vec<(gtk::Picture, AvatarLink)> = self
+                        .avatars
+                        .borrow()
+                        .get(&id)
+                        .map(|list| list.iter().filter_map(|(w, link)| w.upgrade().map(|p| (p, link.clone()))).collect())
+                        .unwrap_or_default();
+                    for (picture, link) in shown {
+                        self.show_avatar(&picture, &link, &avatar);
+                    }
+                }
+                Output::InlineImage { url } => self.inline_image(&url),
+                Output::SettingsChanged(settings) => {
+                    self.state.config.borrow_mut().settings = settings;
+                    if let Err(e) = self.state.save() {
+                        self.output.notice(&e);
+                    }
+                }
                 Output::Tilemap { name, map } => {
                     let existing = self.tilemaps.borrow().get(&name).cloned();
                     let view = existing.unwrap_or_else(|| {
@@ -553,6 +585,76 @@ impl SessionView {
         let keep = RefCell::new(Some(editor.clone()));
         editor.window.connect_destroy(move |_| {
             keep.borrow_mut().take();
+        });
+    }
+
+    /// A small picture for the start of a line. Clicking it opens the avatar's link.
+    fn avatar_picture(self: &Rc<Self>, avatar: &mu_engine::Avatar) -> gtk::Picture {
+        let picture = gtk::Picture::builder()
+            .content_fit(gtk::ContentFit::Cover)
+            .can_shrink(true)
+            .width_request(22)
+            .height_request(22)
+            .valign(gtk::Align::Center)
+            .build();
+        let link: AvatarLink = Rc::default();
+        let click = gtk::GestureClick::new();
+        let weak = Rc::downgrade(self);
+        {
+            let link = link.clone();
+            click.connect_released(move |_, _, _, _| {
+                if let (Some(this), Some(url)) = (weak.upgrade(), link.borrow().clone()) {
+                    this.follow_link(&url);
+                }
+            });
+        }
+        picture.add_controller(click);
+        if let Some(id) = &avatar.id {
+            let mut avatars = self.avatars.borrow_mut();
+            let list = avatars.entry(id.clone()).or_default();
+            list.retain(|(w, _)| w.upgrade().is_some());
+            list.push((picture.downgrade(), link.clone()));
+        }
+        self.show_avatar(&picture, &link, avatar);
+        picture
+    }
+
+    fn show_avatar(&self, picture: &gtk::Picture, link: &AvatarLink, avatar: &mu_engine::Avatar) {
+        picture.set_tooltip_text(avatar.hover.as_deref());
+        *link.borrow_mut() = avatar.click_url.clone().or(avatar.url.clone());
+        if let Some(url) = &avatar.url {
+            let picture = picture.downgrade();
+            self.images.get(url, move |texture| {
+                if let Some(picture) = picture.upgrade() {
+                    picture.set_paintable(Some(texture));
+                }
+            });
+        }
+    }
+
+    /// A thumbnail under the line, at most 320 by 200, that opens the image when clicked.
+    fn inline_image(self: &Rc<Self>, url: &str) {
+        let picture = gtk::Picture::builder().content_fit(gtk::ContentFit::Contain).can_shrink(true).tooltip_text(url).build();
+        let click = gtk::GestureClick::new();
+        let weak = Rc::downgrade(self);
+        let target = url.to_string();
+        click.connect_released(move |_, _, _, _| {
+            if let Some(this) = weak.upgrade() {
+                this.follow_link(&target);
+            }
+        });
+        picture.add_controller(click);
+        // Reserve its place under the line now; the download may finish after more output.
+        picture.set_visible(false);
+        self.output.append_widget(&picture);
+        let shown = picture.downgrade();
+        self.images.get(url, move |texture| {
+            let Some(picture) = shown.upgrade() else { return };
+            let (w, h) = (texture.width() as f64, texture.height() as f64);
+            let scale = (320.0 / w).min(200.0 / h).min(1.0);
+            picture.set_size_request((w * scale) as i32, (h * scale) as i32);
+            picture.set_paintable(Some(texture));
+            picture.set_visible(true);
         });
     }
 

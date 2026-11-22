@@ -3,7 +3,7 @@
 A native Linux MU* (MUD/MUCK/MOO/MUSH) client in Rust, inspired by [BeipMU](https://github.com/BeipDev/BeipMU).
 It is a new codebase, not a port. The BeipMU sources are used only as a reference for features and protocols.
 
-## Status: M6 (maps and images), in progress
+## Status: M6 (maps, tilemaps and images)
 
 | Crate | What it does |
 |---|---|
@@ -52,7 +52,7 @@ Links work in OSC 8 output and in plain URLs. `send:` links send a command and `
 
 JavaScript (QuickJS) runs per connection. `~/.config/mu-client/startup.js` runs for every session, and each world can name its own script file. `/@code` runs code right away (Shift+Enter for multiple lines), and `/script reload` restarts scripting after you edit a file. Scripts get `mu.send`, `mu.input`, `mu.echo`, `mu.notice`, `mu.spawn`, `mu.gmcp`, `mu.vars`, `mu.world`/`mu.character`/`mu.connected`, events through `mu.on` (`line` to hide lines, `receive`, `send` to rewrite or drop commands, `gmcp` and `gmcp:Package`, `connect`, `disconnect`), timers and `console.log`. Triggers can call a script function with the line and its regex groups. See [examples/startup.js](examples/startup.js).
 
-Client commands start with `/`: `/set`, `/unset`, `/echo`, `/log`, `/clear`, `/reconnect`, `/disconnect`, `/gmcp` (show GMCP traffic, or `/gmcp Package {json}` to send), `/mcp`, `/webview url`, `/@code`, `/script load path`, `/script reload`, `/help`. Type `//` to send a line that starts with `/`.
+Client commands start with `/`: `/set`, `/unset`, `/echo`, `/log`, `/clear`, `/reconnect`, `/disconnect`, `/gmcp` (show GMCP traffic, or `/gmcp Package {json}` to send), `/mcp`, `/webview url`, `/images on|off`, `/map …`, `/edit [language]`, `/@code`, `/script load path`, `/script reload`, `/help`. Type `//` to send a line that starts with `/`.
 
 ### Program editor
 
@@ -67,6 +67,8 @@ The map tab appears in the side dock once a world has rooms. If the game sends G
 ### Protocols
 
 - **GMCP:** the client announces `Beip.Stats 1` and `Client.Media 1`. `Beip.Stats` panes appear as tabs in the side dock, using BeipMU's format (int, string, range and progress values, colours, partial updates, null deletes). `Client.Media` sounds are downloaded to `~/.cache/mu-client/media` and played.
+- **Avatars** (`beip.line.image-url`, `beip.line.id`, `beip.ids`): a small picture before a line, with hover text and a click link. Unknown ids are requested once with `beip.id.request`, and pictures already shown update when the server describes them.
+- **Inline images:** `/images on` shows a thumbnail under lines that link to images (off by default, since fetching an image tells its site your IP address).
 - **Beip.Tilemap** (`beip.tilemap.info` / `.data`): tile grids drawn from a tile image, in all four encodings (`hex_4`, `hex_8`, `base64_8`, `zbase64_8`), each in its own side-dock tab.
 - **MCP 2.1** (MOOs and MUCKs, on by default per world): the status line appears under the output, and simpleedit opens an editor window that sends your changes back.
 - **Web views:** opened with `/webview url` or by the server (GMCP `webview.open`/`webview.close`, with `dock`, `width`/`height`, `source` and `http-request-headers`). The client asks before a server opens one (Block, Allow Once, Always Allow per world). Docked views go in the side dock; others get their own window. Pages reach the client as `window.mu.client`, or as `window.chrome.webview.hostObjects.client` for pages written for BeipMU, with the same case-insensitive methods: `Send`, `SendGMCP`, `Receive`, `Display`, `CloseWindow`, `SetOnSend`, `SetOnReceive`, `SetOnGMCP`, `SetOnDisplay`, `ClearOnDisplay`. Calls are asynchronous, and `SetOnDisplay` can't gag lines.
@@ -78,7 +80,7 @@ The map tab appears in the side dock once a world has rooms. If the game sends G
 
 ## Roadmap
 
-M6 maps (with Room.Info), tilemap, avatars and inline images → M7 puppets, speech, spellcheck →
+M7 puppets, speech, spellcheck →
 M8 BeipMU Config.txt, `.atlas` and script compatibility → M9 a full terminal UI (`mu-tui`, ratatui) sharing the same engine.
 
 `assets/Worlds.xml` comes from BeipMU (MIT licence, © Bennet).

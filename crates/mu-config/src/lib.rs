@@ -46,6 +46,9 @@ pub struct Settings {
     pub log_timestamps: bool,
     /// Milliseconds of silence before an unterminated line is shown as a prompt.
     pub prompt_timeout_ms: u64,
+    /// Show a thumbnail under lines that link to images. Off by default: fetching an image
+    /// someone posted tells that site your IP address.
+    pub inline_images: bool,
 }
 
 impl Default for Settings {
@@ -57,6 +60,7 @@ impl Default for Settings {
             input_history_size: 500,
             log_timestamps: true,
             prompt_timeout_ms: 250,
+            inline_images: false,
         }
     }
 }

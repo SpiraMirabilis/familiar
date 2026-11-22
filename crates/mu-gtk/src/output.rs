@@ -50,6 +50,8 @@ pub struct OutputView {
     /// Keep the view scrolled to the bottom as text arrives.
     follow: Rc<Cell<bool>>,
     on_link: RefCell<Option<Box<dyn Fn(&str)>>>,
+    /// A widget (an avatar) to put at the start of the next line.
+    next_prefix: RefCell<Option<gtk::Widget>>,
 }
 
 impl OutputView {
@@ -96,6 +98,7 @@ impl OutputView {
             prompt: Cell::new(Prompt::None),
             follow: Rc::new(Cell::new(true)),
             on_link: RefCell::default(),
+            next_prefix: RefCell::default(),
         });
         this.setup_scrolling();
         this.setup_links();
@@ -297,7 +300,29 @@ impl OutputView {
     pub fn append_line(&self, line: &StyledLine) {
         self.clear_partial();
         let mut iter = self.start_line();
+        if let Some(widget) = self.next_prefix.borrow_mut().take() {
+            self.insert_widget(&mut iter, &widget);
+            self.buffer.insert(&mut iter, " ");
+        }
         self.insert_styled(&mut iter, line);
+        self.trim();
+    }
+
+    fn insert_widget(&self, iter: &mut gtk::TextIter, widget: &impl IsA<gtk::Widget>) {
+        let anchor = self.buffer.create_child_anchor(iter);
+        self.view.add_child_at_anchor(widget, &anchor);
+    }
+
+    /// Puts `widget` (an avatar) at the start of the next line.
+    pub fn set_next_prefix(&self, widget: &impl IsA<gtk::Widget>) {
+        *self.next_prefix.borrow_mut() = Some(widget.clone().upcast());
+    }
+
+    /// Adds a line holding just `widget` (an inline image).
+    pub fn append_widget(&self, widget: &impl IsA<gtk::Widget>) {
+        self.clear_partial();
+        let mut iter = self.start_line();
+        self.insert_widget(&mut iter, widget);
         self.trim();
     }
 

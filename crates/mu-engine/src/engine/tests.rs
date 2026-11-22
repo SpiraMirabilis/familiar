@@ -445,3 +445,42 @@ fn map_commands_and_tracking_by_name() {
     assert!(e.map().is_empty());
     assert_eq!(e.submit("/map", false), vec![Output::ShowMap]);
 }
+
+#[test]
+fn avatars_by_url_and_id() {
+    let (mut e, mut rx) = engine(&config(Rules::default(), Rules::default(), Rules::default()));
+    e.handle_event(gmcp("beip.line.image-url", r#""https://x.org/a.png""#));
+    let out = e.handle_event(SessionEvent::Line("Bob says hi".into()));
+    let i = out.iter().position(|o| matches!(o, Output::LineAvatar(a) if a.url.as_deref() == Some("https://x.org/a.png"))).unwrap();
+    assert!(matches!(out[i + 1], Output::Line { .. }), "the avatar comes right before its line");
+    // It applies to one line only.
+    assert!(!e.handle_event(SessionEvent::Line("next".into())).iter().any(|o| matches!(o, Output::LineAvatar(_))));
+
+    // An unknown id is requested once, and shown without a picture until the server answers.
+    e.handle_event(gmcp("beip.line.id", r#""42""#));
+    let out = e.handle_event(SessionEvent::Line("Alice waves".into()));
+    assert!(out.iter().any(|o| matches!(o, Output::LineAvatar(a) if a.id.as_deref() == Some("42") && a.url.is_none())));
+    e.handle_event(gmcp("beip.line.id", r#""42""#));
+    let requests: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok())
+        .filter(|c| matches!(c, SessionCommand::SendGmcp { package, .. } if package == "beip.id.request"))
+        .collect();
+    assert_eq!(requests.len(), 1);
+
+    let out = e.handle_event(gmcp("beip.ids", r#"{"42": {"url": "https://x.org/alice.png", "hover-text": "Alice\nA cat"}}"#));
+    assert!(out.iter().any(|o| matches!(o, Output::AvatarUpdated(a) if a.id.as_deref() == Some("42") && a.hover.as_deref() == Some("Alice\nA cat"))));
+    e.handle_event(gmcp("beip.line.id", r#""42""#));
+    let out = e.handle_event(SessionEvent::Line("Alice purrs".into()));
+    assert!(out.iter().any(|o| matches!(o, Output::LineAvatar(a) if a.url.as_deref() == Some("https://x.org/alice.png"))));
+}
+
+#[test]
+fn inline_images_are_opt_in() {
+    let (mut e, _rx) = engine(&config(Rules::default(), Rules::default(), Rules::default()));
+    let line = "Look: https://x.org/cat.JPG?size=2 and https://x.org/page.html";
+    assert!(!e.handle_event(SessionEvent::Line(line.into())).iter().any(|o| matches!(o, Output::InlineImage { .. })));
+    let out = e.submit("/images on", false);
+    assert!(out.iter().any(|o| matches!(o, Output::SettingsChanged(s) if s.inline_images)));
+    let out = e.handle_event(SessionEvent::Line(line.into()));
+    let images: Vec<_> = out.iter().filter_map(|o| match o { Output::InlineImage { url } => Some(url.as_str()), _ => None }).collect();
+    assert_eq!(images, vec!["https://x.org/cat.JPG?size=2"]);
+}
