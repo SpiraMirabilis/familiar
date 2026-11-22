@@ -342,9 +342,8 @@ impl SessionView {
 
     fn run_macro(self: &Rc<Self>, key: gtk::gdk::Key, state: gtk::gdk::ModifierType) -> bool {
         let Some(chord) = crate::keys::chord(key, state) else { return false };
-        let Some(command) = self.engine.borrow().macro_for(&chord) else { return false };
+        let Some(out) = self.engine.borrow_mut().run_macro(&chord) else { return false };
         self.output.scroll_to_end();
-        let out = self.engine.borrow_mut().submit(&command, false);
         self.apply(out);
         true
     }

@@ -224,10 +224,11 @@ fn not_connected() {
 
 #[test]
 fn macros_and_links() {
-    let global = Rules { macros: vec![Macro { key: "KP_8".into(), command: "north".into() }], ..Rules::default() };
+    let global = Rules { macros: vec![Macro { key: "KP_8".into(), command: "north".into(), insert: false }], ..Rules::default() };
     let (mut e, mut rx) = engine(&config(global, Rules::default(), Rules::default()));
-    assert_eq!(e.macro_for(&KeyChord::new("kp_8", false, false, false)).as_deref(), Some("north"));
-    assert_eq!(e.macro_for(&KeyChord::new("KP_8", true, false, false)), None);
+    assert!(e.run_macro(&KeyChord::new("kp_8", false, false, false)).is_some());
+    assert_eq!(sent(&mut rx), vec!["north"]);
+    assert!(e.run_macro(&KeyChord::new("KP_8", true, false, false)).is_none());
 
     e.follow_link("send:look%20at%20me");
     assert_eq!(sent(&mut rx), vec!["look at me"]);
@@ -561,4 +562,115 @@ fn speech_from_triggers_and_settings() {
     assert_eq!(out.iter().filter(|o| matches!(o, Output::Speak(_))).count(), 1);
     assert_eq!(e.submit("/speech stop", false), vec![Output::SpeechStop]);
     assert_eq!(e.submit("/speak hello there", false), vec![Output::Speak("hello there".into())]);
+}
+
+#[test]
+fn substituting_aliases_edit_the_line_and_chain() {
+    let global = Rules {
+        aliases: vec![
+            Alias { matcher: pattern("Mag"), replacement: "Magdalena".into(), substitute: true, ..Alias::default() },
+            Alias { matcher: regex("“|”"), replacement: "\"".into(), substitute: true, ..Alias::default() },
+            Alias { matcher: regex(r"^bt (\d+)$"), replacement: "buy torch $1".into(), ..Alias::default() },
+        ],
+        ..Rules::default()
+    };
+    let (e, _rx) = engine(&config(global, Rules::default(), Rules::default()));
+    assert_eq!(e.expand_aliases("page Mag=“hi” mag"), ["page Magdalena=\"hi\" Magdalena"]);
+    assert_eq!(e.expand_aliases("bt 3"), ["buy torch 3"], "whole-line aliases still apply after substitutions");
+    assert_eq!(e.expand_aliases(""), [""]);
+}
+
+#[test]
+fn trigger_replace_and_group_highlight() {
+    let global = Rules {
+        triggers: vec![
+            Trigger { matcher: regex(r"\b(naughty|words)\b"), replace: Some("****".into()), ..Trigger::default() },
+            Trigger {
+                matcher: regex(r"\*+ (\w+)"),
+                highlight: Some(Highlight { bold: true, groups: true, ..Highlight::default() }),
+                ..Trigger::default()
+            },
+        ],
+        ..Rules::default()
+    };
+    let (mut e, _rx) = engine(&config(global, Rules::default(), Rules::default()));
+    let out = e.handle_event(SessionEvent::Line("a naughty sentence".into()));
+    let line = main_lines(&out)[0];
+    assert_eq!(line.text, "a **** sentence");
+    let bold: Vec<&str> = line.spans.iter().filter(|s| s.style.bold).map(|s| line.span_text(s)).collect();
+    assert_eq!(bold, ["sentence"], "the later trigger saw the replaced text and styled only its group");
+}
+
+#[test]
+fn macros_can_fill_the_input() {
+    let global = Rules {
+        macros: vec![
+            Macro { key: "F2".into(), command: "say ".into(), insert: true },
+            Macro { key: "F3".into(), command: "look".into(), insert: false },
+        ],
+        ..Rules::default()
+    };
+    let (mut e, mut rx) = engine(&config(global, Rules::default(), Rules::default()));
+    let out = e.run_macro(&KeyChord::parse("F2").unwrap()).unwrap();
+    assert!(matches!(out.as_slice(), [Output::SetInput(t)] if t == "say "));
+    e.run_macro(&KeyChord::parse("F3").unwrap()).unwrap();
+    assert_eq!(sent(&mut rx), ["look"]);
+    assert!(e.run_macro(&KeyChord::parse("F4").unwrap()).is_none());
+}
+
+#[test]
+fn delayed_commands() {
+    let (mut e, mut rx) = engine(&config(Rules::default(), Rules::default(), Rules::default()));
+    e.submit("/delay 2s \"connect bob pw\"", false);
+    e.submit("/delay id ping every 1s idle", false);
+    let start = Instant::now();
+    assert!(e.next_deadline().unwrap() <= start + std::time::Duration::from_secs(1));
+    e.tick(start + std::time::Duration::from_millis(1500));
+    assert_eq!(sent(&mut rx), ["idle"]);
+    e.tick(start + std::time::Duration::from_millis(2500));
+    assert_eq!(sent(&mut rx), ["connect bob pw", "idle"]);
+    e.submit("/delay kill ping", false);
+    assert!(e.next_deadline().is_none());
+    assert_eq!(parse_duration("1m30s"), Some(std::time::Duration::from_secs(90)));
+    assert_eq!(parse_duration("500ms"), Some(std::time::Duration::from_millis(500)));
+    assert_eq!(parse_duration("soon"), None);
+}
+
+#[test]
+fn login_runs_client_commands() {
+    let mut cfg = config(Rules::default(), Rules::default(), Rules::default());
+    cfg.worlds[0].characters[0].login = "/delay 1s connect bob pw\n//slash".into();
+    let (mut e, mut rx) = engine(&cfg);
+    e.handle_event(SessionEvent::Connected { addr: "127.0.0.1:4000".parse().unwrap() });
+    assert_eq!(sent(&mut rx), ["/slash"]);
+    e.tick(Instant::now() + std::time::Duration::from_secs(2));
+    assert_eq!(sent(&mut rx), ["connect bob pw"]);
+}
+
+#[test]
+fn aliases_can_expand_to_client_commands() {
+    let global = Rules {
+        aliases: vec![
+            Alias { matcher: regex(r"^note (.*)$"), replacement: "/echo $1".into(), ..Alias::default() },
+            Alias { matcher: regex(r"^slash$"), replacement: "//who".into(), ..Alias::default() },
+        ],
+        ..Rules::default()
+    };
+    let (mut e, mut rx) = engine(&config(global, Rules::default(), Rules::default()));
+    let out = e.submit("note hello", false);
+    assert_eq!(notices(&out), ["hello"]);
+    e.submit("slash", false);
+    assert_eq!(sent(&mut rx), ["/who"]);
+}
+
+#[test]
+fn map_import_from_a_beipmu_atlas() {
+    let (mut e, _rx) = engine(&config(Rules::default(), Rules::default(), Rules::default()));
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../mu-import/tests/data/Fluff.atlas");
+    let out = e.submit(&format!("/map import {}", path.display()), false);
+    assert!(notices(&out)[0].starts_with("Imported 96 rooms"), "{:?}", notices(&out));
+    assert!(out.iter().any(|o| matches!(o, Output::ShowMap)));
+    assert_eq!(e.map().len(), 96);
+    let out = e.submit("/map import /nonexistent.atlas", false);
+    assert!(notices(&out)[0].starts_with("Couldn't import"));
 }

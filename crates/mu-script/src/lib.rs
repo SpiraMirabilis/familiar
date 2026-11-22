@@ -12,6 +12,8 @@ use rquickjs::context::EvalOptions;
 use rquickjs::{Context, Ctx, Function, Object, Runtime, Value};
 
 const PRELUDE: &str = include_str!("prelude.js");
+/// BeipMU's `app` and `window` objects, so its scripts run here.
+const BEIPMU: &str = include_str!("beipmu.js");
 
 /// A single hook or eval may run this long before it's stopped.
 const TIME_LIMIT: Duration = Duration::from_secs(2);
@@ -49,6 +51,9 @@ fn parse_action(kind: &str, args_json: &str) -> ScriptAction {
         "gmcp" => ScriptAction::Gmcp { package: text(), data: s(1) },
         "setvar" => ScriptAction::SetVariable { name: text(), value: s(1) },
         "speak" => ScriptAction::Speak(text()),
+        "receive" => ScriptAction::Receive(text()),
+        "setinput" => ScriptAction::SetInput(text()),
+        "sound" => ScriptAction::PlaySound(text()),
         "error" => ScriptAction::Error(text()),
         other => ScriptAction::Error(format!("unknown action {other}")),
     }
@@ -104,7 +109,8 @@ impl JsHost {
                 })?,
             )?;
             globals.set("__mu_now", Function::new(ctx.clone(), move || start.elapsed().as_secs_f64() * 1000.0)?)?;
-            ctx.eval_with_options::<(), _>(PRELUDE, options("prelude.js"))
+            ctx.eval_with_options::<(), _>(PRELUDE, options("prelude.js"))?;
+            ctx.eval_with_options::<(), _>(BEIPMU, options("beipmu.js"))
         })?;
         Ok(host)
     }

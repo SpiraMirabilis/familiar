@@ -11,6 +11,7 @@ fancy-regex = "0.20.2"
 flate2 = "1.1.11"
 mu-ansi = { version = "0.1.0", path = "../mu-ansi" }
 mu-config = { version = "0.1.0", path = "../mu-config" }
+mu-import = { version = "0.1.0", path = "../mu-import" }
 mu-map = { version = "0.1.0", path = "../mu-map" }
 mu-net = { version = "0.1.0", path = "../mu-net" }
 serde_json = { version = "1.0.154", features = ["preserve_order"] }

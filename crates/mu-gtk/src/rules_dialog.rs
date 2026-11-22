@@ -507,13 +507,28 @@ impl RulesDialog {
             .subtitle("Otherwise only the matching text")
             .active(h.whole_line)
             .build();
-        for row in [&bold, &italic, &underline, &whole_line] {
+        let groups = adw::SwitchRow::builder()
+            .title("Only the groups")
+            .subtitle("With a regular expression that has groups, style just those")
+            .active(h.groups)
+            .build();
+        for row in [&bold, &italic, &underline, &whole_line, &groups] {
             highlight.add_row(row);
         }
+        let replace = adw::ExpanderRow::builder()
+            .title("Replace the matching text")
+            .subtitle("For example to censor words; $1 and %name% work")
+            .show_enable_switch(true)
+            .enable_expansion(t.replace.is_some())
+            .expanded(t.replace.is_some())
+            .build();
+        let replace_with = adw::EntryRow::builder().title("With (empty removes it)").text(t.replace.as_deref().unwrap_or("")).build();
+        replace.add_row(&replace_with);
         let display = adw::PreferencesGroup::builder().title("Display").build();
         display.add(&gag);
         display.add(&gag_log);
         display.add(&highlight);
+        display.add(&replace);
 
         let (send_box, send) = text_area(&t.send);
         let send_group = adw::PreferencesGroup::builder()
@@ -586,7 +601,9 @@ impl RulesDialog {
                 italic: italic.is_active(),
                 underline: underline.is_active(),
                 whole_line: whole_line.is_active(),
+                groups: groups.is_active(),
             }),
+            replace: replace.enables_expansion().then(|| replace_with.text().to_string()),
             send: text_of(&send),
             spawn: spawn.text().trim().to_string(),
             sound: sound.text().trim().to_string(),
@@ -656,6 +673,13 @@ impl RulesDialog {
         let regex = adw::SwitchRow::builder().title("Regular expression").active(a.matcher.regex).build();
         let case = adw::SwitchRow::builder().title("Match case").active(a.matcher.case_sensitive).build();
         let enabled = adw::SwitchRow::builder().title("Enabled").active(a.enabled).build();
+        let substitute = adw::SwitchRow::builder()
+            .title("Replace just the matching text")
+            .subtitle("Everywhere it appears, then carry on with later aliases (as BeipMU does)")
+            .active(a.substitute)
+            .build();
+        let stop = adw::SwitchRow::builder().title("Then stop").subtitle("Skip later aliases when this one matches").active(a.stop).build();
+        substitute.bind_property("active", &stop, "sensitive").sync_create().build();
         let matching = adw::PreferencesGroup::builder()
             .title("Match")
             .description(
@@ -663,7 +687,7 @@ impl RulesDialog {
                  A regular expression can match anywhere (anchor with ^ and $); $1… are its groups.",
             )
             .build();
-        for row in [pattern.upcast_ref::<gtk::Widget>(), regex.upcast_ref(), case.upcast_ref(), enabled.upcast_ref()] {
+        for row in [pattern.upcast_ref::<gtk::Widget>(), regex.upcast_ref(), case.upcast_ref(), substitute.upcast_ref(), stop.upcast_ref(), enabled.upcast_ref()] {
             matching.add(row);
         }
         let (replacement_box, replacement) = text_area(&a.replacement);
@@ -694,6 +718,8 @@ impl RulesDialog {
                 whole_word: false,
             },
             replacement: text_of(&replacement),
+            substitute: substitute.is_active(),
+            stop: stop.is_active(),
         });
         {
             let build = build.clone();
@@ -759,8 +785,14 @@ impl RulesDialog {
             .title("Macro")
             .description("Press Record, then the key or combination you want, e.g. F5, Ctrl+K or a number-pad key.")
             .build();
+        let insert = adw::SwitchRow::builder()
+            .title("Put it in the input box")
+            .subtitle("Instead of sending it")
+            .active(m.insert)
+            .build();
         group.add(&key_row);
         group.add(&command);
+        group.add(&insert);
         let content = adw::PreferencesPage::new();
         content.add(&group);
 
@@ -805,7 +837,7 @@ impl RulesDialog {
             &content,
             move |this| {
                 let Some(key) = chord.borrow().clone() else { return Err("Record a key first".into()) };
-                let new = Macro { key: key.to_string(), command: command.text().to_string() };
+                let new = Macro { key: key.to_string(), command: command.text().to_string(), insert: insert.is_active() };
                 this.update(|r| match index {
                     Some(i) if i < r.macros.len() => r.macros[i] = new,
                     _ => {

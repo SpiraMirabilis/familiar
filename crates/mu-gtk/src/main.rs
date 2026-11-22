@@ -7,6 +7,7 @@ mod app;
 mod code_editor;
 mod connect_dialog;
 mod images;
+mod import;
 mod input;
 mod keys;
 mod map_view;

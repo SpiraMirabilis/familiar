@@ -187,3 +187,71 @@ fn script_files() {
     assert!(err.contains("bad.js"), "the file name is in the error: {err}");
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn beipmu_hooks_and_objects() {
+    let mut js = host();
+    // From BeipMU's scripting examples: OnReceive returns true when it has handled the line.
+    js.eval(
+        r#"
+        var count = 0;
+        function Toggle(string, window) {
+            if (string.search("trigger") > -1) count++;
+            if (count == 2) { window.connection.display("<Triggered>" + string); count = 0; return true; }
+            return false;
+        }
+        window.connection.SetOnReceive(Toggle, window);
+        function Who(string, window) { if (string == "@@practice") { window.output.write("handled"); return true; } return false; }
+        window.Connection.setOnSend(Who, window);
+        "#,
+    )
+    .unwrap();
+    assert!(js.on_line("a trigger here"));
+    assert!(!js.on_line("trigger again"), "handled lines are hidden");
+    assert_eq!(js.on_send("@@practice"), None, "handled commands aren't sent");
+    assert_eq!(js.on_send("look").as_deref(), Some("look"));
+    assert_eq!(js.take_actions(), [ScriptAction::Display("<Triggered>trigger again".into()), ScriptAction::Display("handled".into())]);
+
+    js.eval(r#"window.run("buy torch"); window.SetVariable("hp", 5); window.input.Set("say "); app.PlaySound("/tmp/x.wav"); window.connection.Receive("fake line")"#)
+        .unwrap();
+    assert_eq!(
+        js.take_actions(),
+        [
+            ScriptAction::Input("buy torch".into()),
+            ScriptAction::SetVariable { name: "hp".into(), value: Some("5".into()) },
+            ScriptAction::SetInput("say ".into()),
+            ScriptAction::PlaySound("/tmp/x.wav".into()),
+            ScriptAction::Receive("fake line".into()),
+        ]
+    );
+    let err = js.eval("app.ActiveXObject('WScript.Shell')").unwrap_err();
+    assert!(err.contains("isn't available"), "{err}");
+}
+
+#[test]
+fn beipmu_text_windows_timers_and_trigger_scripts() {
+    let mut js = host();
+    js.eval(
+        r#"
+        var wndText = app.NewWindow_Text();
+        window.MakeDocking(wndText.properties.hwnd).Dock(2);
+        function ShowText(ranges, line, window) {
+            wndText.Add(line.String.substring(ranges.Item(2), ranges.Item(3)) + " " + ranges.Count + " " + window.Title);
+        }
+        var fired = 0;
+        var t = app.CreateInterval(100, function (data) { fired += data; return fired >= 2; }, 1);
+        "#,
+    )
+    .unwrap();
+    js.set_context(&ScriptContext { world: "W".into(), character: Some("Bob".into()), ..ScriptContext::default() });
+    // Engine-style arguments for a "beipmu:" trigger: the line, then start/end pairs.
+    js.call("beipmu:ShowText", &["Bob pages: hi".into(), "0".into(), "13".into(), "0".into(), "3".into()]);
+    assert_eq!(js.take_actions(), [ScriptAction::Spawn { window: "Script 1".into(), text: "Bob 4 Bob @ W".into() }]);
+
+    let start = Instant::now();
+    for step in 1..=4 {
+        js.tick(start + Duration::from_millis(150 * step));
+    }
+    assert_eq!(js.eval("fired + ' ' + t.Active").unwrap().as_deref(), Some("2 false"), "returning true stops the timer");
+    assert!(errors(&js.take_actions()).is_empty());
+}

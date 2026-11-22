@@ -209,6 +209,9 @@ pub struct Engine {
     compile_watch: Option<(String, Instant)>,
     /// How deeply script actions are nested (a script typing input that runs a script...).
     script_depth: u32,
+    /// Commands waiting to run (/delay).
+    delays: Vec<Delay>,
+    next_delay_id: u32,
 }
 
 /// Deeper nesting than this is assumed to be a loop.
@@ -216,6 +219,7 @@ const MAX_SCRIPT_DEPTH: u32 = 8;
 
 const HELP: &str = "Client commands:
   /set [name [value]]  show variables, or set one (use as %name% in triggers and aliases)
+  /delay [every] 5s command   run a command later (or repeatedly); /delay list, kill ID, killall
   /unset name          remove a variable
   /echo text           show text locally
   /log                 start or stop logging to a file
@@ -228,6 +232,7 @@ const HELP: &str = "Client commands:
   /@code               run JavaScript (multi-line with Shift+Enter)
   /script load path    run a script file
   /script reload       restart scripting and reload the startup scripts
+  /script code         run JavaScript (like /@)
   /edit [language]     open a code editor whose text is sent line by line (moo, muf, lua)
   /map ...             show the map, walk (/map go name), add rooms; /map help for more
   /images on|off       show thumbnails under links to images
@@ -269,6 +274,8 @@ impl Engine {
             room_info_seen: false,
             compile_watch: None,
             script_depth: 0,
+            delays: Vec::new(),
+            next_delay_id: 1,
         };
         let mut out = engine.reload(config);
         let path = mu_config::map_path(&engine.world.name);
@@ -364,6 +371,23 @@ impl Engine {
         vec![Output::MapChanged]
     }
 
+    /// Adds the rooms in a BeipMU `.atlas` file to this world's map.
+    pub fn map_import(&mut self, path: &std::path::Path) -> Vec<Output> {
+        let result = std::fs::read(path)
+            .map_err(|e| e.to_string())
+            .and_then(|bytes| mu_import::atlas::import_atlas(&bytes, &mut self.map));
+        match result {
+            Ok(report) => {
+                let mut out = vec![Output::Notice(report.describe()), Output::MapChanged, Output::ShowMap];
+                if let Err(e) = self.save_map() {
+                    out.push(Output::Notice(format!("Couldn't save the map: {e}")));
+                }
+                out
+            }
+            Err(e) => vec![Output::Notice(format!("Couldn't import {}: {e}", path.display()))],
+        }
+    }
+
     fn map_command(&mut self, args: &str, out: &mut Vec<Output>) {
         let (sub, rest) = args.split_once(char::is_whitespace).unwrap_or((args, ""));
         let rest = rest.trim();
@@ -409,8 +433,16 @@ impl Engine {
                 out.push(Output::Notice("Map cleared".into()));
             }
             "clear" => out.push(Output::Notice("This deletes every room on this world's map. Type /map clear yes to do it.".into())),
+            "import" if !rest.is_empty() => {
+                let path = rest.trim_matches('"');
+                let path = match path.strip_prefix("~/") {
+                    Some(rel) => std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(rel)).unwrap_or_else(|| path.into()),
+                    None => path.into(),
+                };
+                out.extend(self.map_import(&path));
+            }
             _ => out.push(Output::Notice(
-                "Map commands: /map, /map go name, /map here name, /map addroom \"name\" there [back], /map rename name, /map delete, /map track on|off, /map clear".into(),
+                "Map commands: /map, /map go name, /map here name, /map addroom \"name\" there [back], /map rename name, /map delete, /map track on|off, /map import file.atlas, /map clear".into(),
             )),
         }
     }
@@ -574,11 +606,101 @@ impl Engine {
             script.tick(now);
             self.drain_script(&mut out);
         }
+        let mut due = Vec::new();
+        self.delays.retain_mut(|d| {
+            if d.due > now {
+                return true;
+            }
+            due.push(d.command.clone());
+            match d.every {
+                Some(every) => {
+                    d.due = now + every;
+                    true
+                }
+                None => false,
+            }
+        });
+        for command in due {
+            out.extend(self.submit(&command, false));
+        }
         out
     }
 
     pub fn next_deadline(&mut self) -> Option<Instant> {
-        self.script.as_mut().and_then(|s| s.next_deadline())
+        let script = self.script.as_mut().and_then(|s| s.next_deadline());
+        let delay = self.delays.iter().map(|d| d.due).min();
+        script.into_iter().chain(delay).min()
+    }
+
+    /// `/delay [id NAME] [every] TIME COMMAND`, `/delay list`, `/delay kill NAME`,
+    /// `/delay killall`. TIME is like 5s, 1.5m, 2h, 500ms or 1m30s.
+    fn delay_command(&mut self, args: &str, out: &mut Vec<Output>) {
+        let mut words = args.split_whitespace();
+        match words.next().map(str::to_ascii_lowercase).as_deref() {
+            None | Some("list") => {
+                if self.delays.is_empty() {
+                    out.push(Output::Notice("No delayed commands. Add one with /delay 5s command".into()));
+                }
+                let now = Instant::now();
+                for d in &self.delays {
+                    let left = d.due.saturating_duration_since(now).as_secs_f64();
+                    let every = d.every.map(|e| format!(", every {}s", e.as_secs_f64())).unwrap_or_default();
+                    out.push(Output::Notice(format!("[{}] in {left:.1}s{every}: {}", d.id, d.command)));
+                }
+                return;
+            }
+            Some("killall") => {
+                self.delays.clear();
+                out.push(Output::Notice("All delayed commands cancelled".into()));
+                return;
+            }
+            Some("kill") => {
+                let id = words.next().unwrap_or("");
+                let before = self.delays.len();
+                self.delays.retain(|d| !d.id.eq_ignore_ascii_case(id));
+                let message = if self.delays.len() < before { format!("Cancelled {id}") } else { format!("No delayed command called {id}") };
+                out.push(Output::Notice(message));
+                return;
+            }
+            _ => {}
+        }
+        let mut rest = args.trim_start();
+        let mut word = || {
+            let (w, r) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+            rest = r.trim_start();
+            w.to_string()
+        };
+        let mut id = None;
+        let mut every = false;
+        let mut time = word();
+        if time.eq_ignore_ascii_case("id") {
+            id = Some(word());
+            time = word();
+        }
+        if time.eq_ignore_ascii_case("every") {
+            every = true;
+            time = word();
+        }
+        let command = rest.trim();
+        // BeipMU quotes the command: /delay 3s "connect bob pw".
+        let command = command.strip_prefix('"').and_then(|c| c.strip_suffix('"')).unwrap_or(command).replace("\\\"", "\"");
+        let Some(wait) = parse_duration(&time) else {
+            out.push(Output::Notice("Usage: /delay [id NAME] [every] TIME COMMAND, with TIME like 5s, 2m or 500ms. Also /delay list, /delay kill NAME, /delay killall".into()));
+            return;
+        };
+        if command.is_empty() {
+            out.push(Output::Notice("/delay needs a command to run".into()));
+            return;
+        }
+        // A repeating delay of less than 100 ms would flood the server.
+        let every = every.then(|| wait.max(std::time::Duration::from_millis(100)));
+        let id = id.unwrap_or_else(|| {
+            let id = self.next_delay_id.to_string();
+            self.next_delay_id += 1;
+            id
+        });
+        self.delays.retain(|d| d.id != id);
+        self.delays.push(Delay { id, due: Instant::now() + wait, every, command });
     }
 
     /// Applies what scripts asked for since the last hook.
@@ -619,6 +741,13 @@ impl Engine {
                 ScriptAction::Gmcp { package, data } => out.extend(self.send_gmcp(&package, data.as_deref())),
                 ScriptAction::SetVariable { name, value } => self.set_variable(&name, value.as_deref(), true, out),
                 ScriptAction::Speak(text) => out.push(Output::Speak(text)),
+                ScriptAction::Receive(text) => {
+                    for line in text.lines() {
+                        self.incoming(line, None, out);
+                    }
+                }
+                ScriptAction::SetInput(text) => out.push(Output::SetInput(text)),
+                ScriptAction::PlaySound(path) => out.push(Output::PlaySound(path)),
                 ScriptAction::Error(e) => out.push(Output::Notice(format!("Script error: {e}"))),
             }
         }
@@ -732,7 +861,14 @@ impl Engine {
                 out.push(Output::Notice(format!("Connected to {addr}")));
                 let login = self.character.as_ref().map(|c| c.login.clone()).unwrap_or_default();
                 for line in login.lines().filter(|l| !l.is_empty()) {
-                    self.send_raw(line);
+                    // Client commands work in logins (e.g. /delay 2s connect bob pw); "//"
+                    // sends a line that starts with "/".
+                    match line.strip_prefix('/') {
+                        Some(rest) if !rest.starts_with('/') => self.client_command(rest, &mut out),
+                        _ => {
+                            self.send_raw(line.strip_prefix('/').unwrap_or(line));
+                        }
+                    }
                 }
                 let on_connect: Vec<String> = self.puppets().filter(|p| p.open_on_connect).map(|p| p.name.clone()).collect();
                 for name in on_connect {
@@ -999,7 +1135,7 @@ impl Engine {
         }
         let mut line = self.ansi.parse_line(text);
         line.linkify();
-        let plain = line.text.clone();
+        let mut plain = line.text.clone();
 
         // A puppet's line goes to its tab (and its own rules, not the main window's triggers).
         if prompt.is_none()
@@ -1038,6 +1174,12 @@ impl Engine {
             if let Some(h) = &trigger.highlight {
                 if h.whole_line {
                     line.restyle(0, plain.len(), |s| apply_highlight(s, h));
+                } else if h.groups && t.regex.captures_len() > 1 {
+                    for c in t.regex.captures_iter(plain.as_str()).flatten() {
+                        for m in (1..c.len()).filter_map(|g| c.get(g)) {
+                            line.restyle(m.start(), m.end(), |s| apply_highlight(s, h));
+                        }
+                    }
                 } else {
                     for m in t.regex.find_iter(plain.as_str()).flatten() {
                         line.restyle(m.start(), m.end(), |s| apply_highlight(s, h));
@@ -1063,8 +1205,31 @@ impl Engine {
             }
             if !trigger.script.is_empty() {
                 let mut args = vec![plain.clone()];
-                args.extend((1..caps.len()).map(|i| caps.get(i).map_or(String::new(), |m| m.as_str().to_string())));
+                if trigger.script.starts_with("beipmu:") {
+                    // BeipMU passes match ranges (in UTF-16 units, as JavaScript counts).
+                    let utf16 = |byte: usize| plain[..byte].encode_utf16().count().to_string();
+                    for g in 0..caps.len() {
+                        match caps.get(g) {
+                            Some(m) => args.extend([utf16(m.start()), utf16(m.end())]),
+                            None => args.extend(["-1".to_string(), "-1".to_string()]),
+                        }
+                    }
+                } else {
+                    args.extend((1..caps.len()).map(|i| caps.get(i).map_or(String::new(), |m| m.as_str().to_string())));
+                }
                 calls.push((trigger.script.clone(), args));
+            }
+            let mut edits: Vec<(usize, usize, String)> = Vec::new();
+            if let Some(replacement) = &trigger.replace {
+                edits = t
+                    .regex
+                    .captures_iter(plain.as_str())
+                    .flatten()
+                    .filter_map(|c| {
+                        let m = c.get(0).filter(|m| m.start() < m.end())?;
+                        Some((m.start(), m.end(), expand(replacement, &Captures::from_regex(&t.regex, &c), |name| self.variable(name))))
+                    })
+                    .collect();
             }
             if !trigger.send.is_empty() {
                 let caps = Captures::from_regex(&t.regex, &caps);
@@ -1073,6 +1238,13 @@ impl Engine {
                     let text = expand(&template, &caps, |name| self.variable(name));
                     sends.extend(text.lines().map(str::to_string));
                 }
+            }
+            if !edits.is_empty() {
+                for (start, end, text) in edits.into_iter().rev() {
+                    line.replace_range(start, end, &text);
+                }
+                // Later triggers see the changed line.
+                plain = line.text.clone();
             }
             if stop {
                 break;
@@ -1178,7 +1350,12 @@ impl Engine {
                 self.client_command(command, &mut out);
             } else {
                 for command in self.expand_aliases(line) {
-                    self.send_command(&command, &mut out);
+                    // An alias can expand to client commands (BeipMU aliases often run /script).
+                    match command.strip_prefix('/') {
+                        Some(client) if !client.starts_with('/') => self.client_command(client, &mut out),
+                        Some(literal) => self.send_command(literal, &mut out),
+                        None => self.send_command(&command, &mut out),
+                    }
                 }
             }
         }
@@ -1227,20 +1404,34 @@ impl Engine {
         }
     }
 
-    /// Applies the first matching alias. Results aren't expanded again, so aliases can't loop.
+    /// Applies aliases. Substituting aliases edit the line in place and processing carries on;
+    /// the first other alias that matches replaces the whole line and ends it. Results aren't
+    /// expanded again, so aliases can't loop.
     pub fn expand_aliases(&self, line: &str) -> Vec<String> {
+        let mut text = line.to_string();
         for alias in &self.rules.aliases {
-            if let Some(caps) = alias.matches(line) {
-                let text = expand(&alias.alias.replacement, &caps, |name| self.variable(name));
-                return text.lines().map(str::to_string).collect();
+            if alias.alias.substitute {
+                if let Some(changed) = alias.substitute(&text, |name| self.variable(name)) {
+                    text = changed;
+                    if alias.alias.stop {
+                        break;
+                    }
+                }
+            } else if let Some(caps) = alias.matches(&text) {
+                text = expand(&alias.alias.replacement, &caps, |name| self.variable(name));
+                break;
             }
         }
-        vec![line.to_string()]
+        if text.is_empty() {
+            return vec![text];
+        }
+        text.lines().map(str::to_string).collect()
     }
 
-    /// The command bound to a key, if any. The UI should pass it to [`Engine::submit`].
-    pub fn macro_for(&self, chord: &KeyChord) -> Option<String> {
-        self.rules.macro_for(chord).map(|m| m.command.clone())
+    /// Runs the macro bound to a key. None if there isn't one.
+    pub fn run_macro(&mut self, chord: &KeyChord) -> Option<Vec<Output>> {
+        let m = self.rules.macro_for(chord)?.clone();
+        Some(if m.insert { vec![Output::SetInput(m.command)] } else { self.submit(&m.command, false) })
     }
 
     fn client_command(&mut self, command: &str, out: &mut Vec<Output>) {
@@ -1271,6 +1462,8 @@ impl Engine {
                 match sub {
                     "load" if !rest.trim().is_empty() => out.extend(self.load_script(std::path::Path::new(rest.trim()))),
                     "reload" => out.push(Output::ReloadScripts),
+                    // BeipMU's form of /@: /script code.
+                    _ if !args.is_empty() => self.eval_script(args, out),
                     _ => out.push(Output::Notice(format!(
                         "Scripting is {}. Use /@code, /script load path or /script reload.",
                         if self.script.is_some() { "on" } else { "off" }
@@ -1278,6 +1471,7 @@ impl Engine {
                 }
             }
             "echo" => out.push(Output::Notice(args.to_string())),
+            "delay" => self.delay_command(args, out),
             "clear" => out.push(Output::ClearOutput),
             "log" => out.extend(self.toggle_log()),
             "reconnect" | "connect" => {
@@ -1493,6 +1687,42 @@ fn parse_hex(color: &str) -> Option<Color> {
     }
     let v = u32::from_str_radix(hex, 16).ok()?;
     Some(Color::Rgb((v >> 16) as u8, (v >> 8) as u8, v as u8))
+}
+
+struct Delay {
+    id: String,
+    due: Instant,
+    every: Option<std::time::Duration>,
+    command: String,
+}
+
+/// Parses "5", "5s", "1.5m", "2h", "500ms" or "1m30s".
+fn parse_duration(text: &str) -> Option<std::time::Duration> {
+    let text = text.trim().to_ascii_lowercase();
+    if text.is_empty() {
+        return None;
+    }
+    if let Ok(seconds) = text.parse::<f64>() {
+        return (seconds >= 0.0).then(|| std::time::Duration::from_secs_f64(seconds));
+    }
+    let mut total = 0.0;
+    let mut rest = text.as_str();
+    while !rest.is_empty() {
+        let digits = rest.find(|c: char| !(c.is_ascii_digit() || c == '.')).unwrap_or(rest.len());
+        let value: f64 = rest[..digits].parse().ok()?;
+        rest = &rest[digits..];
+        let unit = rest.find(|c: char| c.is_ascii_digit() || c == '.').unwrap_or(rest.len());
+        total += value
+            * match &rest[..unit] {
+                "ms" => 0.001,
+                "s" | "sec" | "secs" | "" => 1.0,
+                "m" | "min" | "mins" => 60.0,
+                "h" | "hr" | "hrs" => 3600.0,
+                _ => return None,
+            };
+        rest = &rest[unit..];
+    }
+    Some(std::time::Duration::from_secs_f64(total))
 }
 
 fn apply_highlight(style: &mut mu_ansi::Style, h: &Highlight) {

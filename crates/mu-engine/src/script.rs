@@ -23,6 +23,11 @@ pub enum ScriptAction {
     SetVariable { name: String, value: Option<String> },
     /// Speak text aloud.
     Speak(String),
+    /// Handle a line as if the server sent it (triggers and all).
+    Receive(String),
+    /// Replace what's in the input box.
+    SetInput(String),
+    PlaySound(String),
     /// A script error, already formatted with its stack.
     Error(String),
 }

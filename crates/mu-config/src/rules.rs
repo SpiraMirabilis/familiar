@@ -82,9 +82,13 @@ pub struct Trigger {
     /// Text to speak, with $1 and %var% expanded; "$0" speaks the whole line.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub speak: String,
-    /// Name of a script function to call with the line and the regex groups.
+    /// Name of a script function to call with the line and the regex groups. A `beipmu:` prefix
+    /// calls it the way BeipMU did: `(ranges, line, window)`.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub script: String,
+    /// Replace each match with this (`$1` and `%var%` expanded); an empty string deletes it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub replace: Option<String>,
 }
 
 impl Default for Trigger {
@@ -104,6 +108,7 @@ impl Default for Trigger {
             important: false,
             speak: String::new(),
             script: String::new(),
+            replace: None,
         }
     }
 }
@@ -125,6 +130,9 @@ pub struct Highlight {
     /// Style the whole line rather than just the matched text.
     #[serde(skip_serializing_if = "is_false")]
     pub whole_line: bool,
+    /// Style only the regex's groups (when it has any), as BeipMU does.
+    #[serde(skip_serializing_if = "is_false")]
+    pub groups: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -138,11 +146,19 @@ pub struct Alias {
     /// What to send instead, one command per line. `$1`..`$9` are the arguments (plain) or
     /// captures (regex), `$*` is everything after the first word, and `%var%` is a variable.
     pub replacement: String,
+    /// Replace only the matched text, everywhere it appears in the input, then carry on with
+    /// later aliases (BeipMU's behaviour). Plain patterns then match anywhere, not just the first
+    /// word.
+    #[serde(skip_serializing_if = "is_false")]
+    pub substitute: bool,
+    /// With `substitute`: don't apply any later aliases after this one matches.
+    #[serde(skip_serializing_if = "is_false")]
+    pub stop: bool,
 }
 
 impl Default for Alias {
     fn default() -> Self {
-        Self { enabled: true, matcher: Pattern::default(), replacement: String::new() }
+        Self { enabled: true, matcher: Pattern::default(), replacement: String::new(), substitute: false, stop: false }
     }
 }
 
@@ -153,6 +169,9 @@ pub struct Macro {
     pub key: String,
     /// Sent as if typed, so aliases apply.
     pub command: String,
+    /// Put the command in the input box instead of sending it.
+    #[serde(skip_serializing_if = "is_false")]
+    pub insert: bool,
 }
 
 /// Where a set of rules lives.

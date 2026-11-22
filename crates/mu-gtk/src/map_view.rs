@@ -55,11 +55,13 @@ impl MapView {
             .tooltip_text("Follow my room as I move")
             .active(true)
             .build();
+        let import = gtk::Button::builder().icon_name("document-open-symbolic").tooltip_text("Import a BeipMU map (.atlas)").build();
         let bar = gtk::Box::builder().spacing(4).margin_start(6).margin_end(6).margin_top(6).margin_bottom(6).build();
         bar.append(&areas);
         bar.append(&search);
         bar.append(&center);
         bar.append(&follow);
+        bar.append(&import);
         let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
         root.append(&bar);
         root.append(&area);
@@ -91,6 +93,25 @@ impl MapView {
             if let Some(this) = weak.upgrade() {
                 this.area.queue_draw();
             }
+        });
+        let weak = Rc::downgrade(&this);
+        import.connect_clicked(move |button| {
+            let filter = gtk::FileFilter::new();
+            filter.set_name(Some("BeipMU maps (*.atlas)"));
+            filter.add_pattern("*.atlas");
+            let filters = gio::ListStore::new::<gtk::FileFilter>();
+            filters.append(&filter);
+            let weak = weak.clone();
+            gtk::FileDialog::builder().title("Import BeipMU Map").filters(&filters).build().open(
+                button.root().and_downcast::<gtk::Window>().as_ref(),
+                None::<&gio::Cancellable>,
+                move |result| {
+                    let (Some(this), Ok(file)) = (weak.upgrade(), result) else { return };
+                    let Some(path) = file.path() else { return };
+                    let out = this.engine.borrow_mut().map_import(&path);
+                    (this.on_outputs)(out);
+                },
+            );
         });
         let weak = Rc::downgrade(&this);
         center.connect_clicked(move |_| {

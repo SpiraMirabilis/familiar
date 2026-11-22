@@ -36,11 +36,38 @@ impl CompiledTrigger {
 
 pub struct CompiledAlias {
     pub alias: Alias,
-    /// Only for regex aliases. Plain aliases compare the first word.
+    /// For regex and substituting aliases. Other plain aliases compare the first word.
     pub regex: Option<fancy_regex::Regex>,
 }
 
 impl CompiledAlias {
+    fn new(alias: &Alias) -> Result<Self, String> {
+        let regex = if alias.matcher.regex || alias.substitute { Some(compile_pattern(&alias.matcher)?) } else { None };
+        Ok(Self { alias: alias.clone(), regex })
+    }
+
+    /// For substituting aliases: the input with every match replaced, or None if nothing
+    /// matched.
+    pub fn substitute(&self, input: &str, var: impl Fn(&str) -> Option<String>) -> Option<String> {
+        let re = self.regex.as_ref()?;
+        let mut out = String::with_capacity(input.len());
+        let mut last = 0;
+        for caps in re.captures_iter(input).flatten() {
+            let Some(whole) = caps.get(0) else { continue };
+            // An empty match would loop on the same spot and change nothing useful.
+            if whole.start() == whole.end() {
+                continue;
+            }
+            out.push_str(&input[last..whole.start()]);
+            out.push_str(&crate::expand::expand(&self.alias.replacement, &Captures::from_regex(re, &caps), &var));
+            last = whole.end();
+        }
+        (last > 0).then(|| {
+            out.push_str(&input[last..]);
+            out
+        })
+    }
+
     /// Returns the captures if the input matches.
     pub fn matches(&self, input: &str) -> Option<Captures> {
         match &self.regex {
@@ -89,18 +116,10 @@ impl CompiledRules {
                     errors.push("An alias with an empty pattern was skipped".into());
                     continue;
                 }
-                let regex = if alias.matcher.regex {
-                    match compile_pattern(&alias.matcher) {
-                        Ok(re) => Some(re),
-                        Err(e) => {
-                            errors.push(format!("Alias \"{}\" was skipped: {e}", alias.matcher.pattern));
-                            continue;
-                        }
-                    }
-                } else {
-                    None
-                };
-                compiled.aliases.push(CompiledAlias { alias: alias.clone(), regex });
+                match CompiledAlias::new(alias) {
+                    Ok(a) => compiled.aliases.push(a),
+                    Err(e) => errors.push(format!("Alias \"{}\" was skipped: {e}", alias.matcher.pattern)),
+                }
             }
             for m in &rules.macros {
                 match KeyChord::parse(&m.key) {
@@ -140,8 +159,10 @@ pub fn test_alias(alias: &Alias, input: &str) -> Result<Option<Vec<String>>, Str
     if alias.matcher.pattern.trim().is_empty() {
         return Err("the pattern is empty".into());
     }
-    let regex = if alias.matcher.regex { Some(compile_pattern(&alias.matcher)?) } else { None };
-    let compiled = CompiledAlias { alias: alias.clone(), regex };
+    let compiled = CompiledAlias::new(alias)?;
+    if alias.substitute {
+        return Ok(compiled.substitute(input, |_| None).map(|text| text.lines().map(str::to_string).collect()));
+    }
     Ok(compiled.matches(input).map(|caps| {
         crate::expand::expand(&alias.replacement, &caps, |_| None).lines().map(str::to_string).collect()
     }))
@@ -182,7 +203,7 @@ mod tests {
                 Trigger { enabled: false, matcher: pattern("x"), ..Trigger::default() },
                 Trigger { matcher: pattern("ok"), ..Trigger::default() },
             ],
-            macros: vec![Macro { key: "Bogus+K".into(), command: "x".into() }],
+            macros: vec![Macro { key: "Bogus+K".into(), command: "x".into(), insert: false }],
             ..Rules::default()
         };
         let (compiled, errors) = CompiledRules::compile([&rules]);

@@ -12,6 +12,7 @@ mu-ansi = { version = "0.1.0", path = "../mu-ansi" }
 mu-code = { version = "0.1.0", path = "../mu-code" }
 mu-config = { version = "0.1.0", path = "../mu-config" }
 mu-engine = { version = "0.1.0", path = "../mu-engine" }
+mu-import = { version = "0.1.0", path = "../mu-import" }
 mu-map = { version = "0.1.0", path = "../mu-map" }
 mu-net = { version = "0.1.0", path = "../mu-net" }
 mu-script = { version = "0.1.0", path = "../mu-script" }

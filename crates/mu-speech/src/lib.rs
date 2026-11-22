@@ -38,12 +38,18 @@ fn connect(app: &str) -> Result<Client, String> {
     };
     let user = std::env::var("USER").unwrap_or_else(|_| "user".into());
     client
-        .set_client_name(ClientName::new(&user, app))
+        .set_client_name(ClientName::new(&ssip_token(&user), &ssip_token(app)))
         .and_then(|c| c.check_client_name_set())
         .map_err(|e| e.to_string())?;
     // Text priority: messages queue up in order rather than cutting each other off.
     client.set_priority(Priority::Text).and_then(|c| c.check_status(ssip_client::OK_PRIORITY_SET)).map_err(|e| e.to_string())?;
     Ok(client)
+}
+
+/// SSIP client name parts can't contain spaces (or colons, which separate them).
+fn ssip_token(text: &str) -> String {
+    let token: String = text.chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '-' }).collect();
+    if token.is_empty() { "mu".into() } else { token }
 }
 
 fn run(app: String, commands: mpsc::Receiver<Command>, errors: mpsc::Sender<String>) {
@@ -136,12 +142,20 @@ impl Speaker {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn client_names_have_no_spaces() {
+        assert_eq!(super::ssip_token("MU Client"), "MU-Client");
+        assert_eq!(super::ssip_token("a:b"), "a-b");
+        assert_eq!(super::ssip_token(""), "mu");
+    }
+
     /// Needs a speech-dispatcher; run with `cargo test -p mu-speech -- --ignored`. It connects
     /// and sets up a client without saying anything.
     #[test]
     #[ignore]
     fn connects_to_speech_dispatcher() {
-        let mut client = super::connect("mu-speech-test").expect("connects");
+        // A name with a space, like the app's, must still be accepted.
+        let mut client = super::connect("MU Client test").expect("connects");
         client.quit().expect("quits");
     }
 }

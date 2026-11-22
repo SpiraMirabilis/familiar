@@ -39,6 +39,7 @@ impl MainWindow {
         menu.append_section(None, &session_section);
         let rules_section = gio::Menu::new();
         rules_section.append(Some("Triggers, Aliases & Macros"), Some("win.rules"));
+        rules_section.append(Some("Import from BeipMU…"), Some("win.import-beipmu"));
         menu.append_section(None, &rules_section);
         let log_section = gio::Menu::new();
         log_section.append(Some("Log to File"), Some("win.toggle-log"));
@@ -308,6 +309,20 @@ impl MainWindow {
                 let current = this.current().map(|s| s.scopes()).unwrap_or_default();
                 let weak = Rc::downgrade(this);
                 rules_dialog::show(&this.window, this.state.clone(), current.first().cloned(), move || {
+                    if let Some(this) = weak.upgrade() {
+                        for (_, session) in this.sessions.borrow().iter() {
+                            session.reload();
+                        }
+                    }
+                });
+            }),
+        );
+        add(
+            "import-beipmu",
+            &[],
+            Box::new(|this| {
+                let weak = Rc::downgrade(this);
+                crate::import::choose_and_import(this.window.upcast_ref(), this.state.clone(), move || {
                     if let Some(this) = weak.upgrade() {
                         for (_, session) in this.sessions.borrow().iter() {
                             session.reload();

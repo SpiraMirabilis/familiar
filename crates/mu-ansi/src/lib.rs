@@ -125,6 +125,55 @@ impl StyledLine {
         self.spans = spans;
     }
 
+    /// Replaces the byte range `start..end` (on character boundaries) with `with`, which takes
+    /// the style of the text it replaces.
+    pub fn replace_range(&mut self, start: usize, end: usize, with: &str) {
+        let (start, end) = (start.min(self.text.len()), end.min(self.text.len()));
+        if start > end {
+            return;
+        }
+        let style = self
+            .spans
+            .iter()
+            .find(|s| s.start <= start && start < s.end)
+            .or_else(|| self.spans.last())
+            .map(|s| s.style.clone())
+            .unwrap_or_default();
+        self.remove_range(start, end);
+        if with.is_empty() {
+            return;
+        }
+        self.text.insert_str(start, with);
+        let n = with.len();
+        let new = Span { start, end: start + n, style };
+        let mut spans: Vec<Span> = Vec::with_capacity(self.spans.len() + 2);
+        let mut push = |span: Span| match spans.last_mut() {
+            Some(last) if last.style == span.style && last.end == span.start => last.end = span.end,
+            _ => spans.push(span),
+        };
+        let mut inserted = false;
+        for span in std::mem::take(&mut self.spans) {
+            if span.end <= start {
+                push(span);
+            } else if span.start >= start {
+                if !inserted {
+                    push(new.clone());
+                    inserted = true;
+                }
+                push(Span { start: span.start + n, end: span.end + n, style: span.style });
+            } else {
+                push(Span { start: span.start, end: start, style: span.style.clone() });
+                push(new.clone());
+                inserted = true;
+                push(Span { start: start + n, end: span.end + n, style: span.style });
+            }
+        }
+        if !inserted {
+            push(new);
+        }
+        self.spans = spans;
+    }
+
     fn push(&mut self, c: char, style: &Style) {
         let start = self.text.len();
         self.text.push(c);
@@ -433,6 +482,20 @@ mod tests {
         l.remove_range(1, 5);
         assert_eq!(l.text, "af");
         assert_eq!(l.spans.len(), 1, "the plain pieces on each side merge");
+    }
+
+    #[test]
+    fn replace_range_takes_the_replaced_style() {
+        let mut l = parse("a \x1b[31mnaughty\x1b[0m word");
+        l.replace_range(2, 9, "****");
+        assert_eq!(l.text, "a **** word");
+        let texts: Vec<&str> = l.spans.iter().map(|s| l.span_text(s)).collect();
+        assert_eq!(texts, ["a ", "****", " word"]);
+        let mut l = parse("ab");
+        l.replace_range(2, 2, "c");
+        assert_eq!((l.text.as_str(), l.spans.len()), ("abc", 1), "appending merges");
+        l.replace_range(0, 3, "");
+        assert!(l.text.is_empty() && l.spans.is_empty());
     }
 
     #[test]

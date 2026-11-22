@@ -3,7 +3,7 @@
 A native Linux MU* (MUD/MUCK/MOO/MUSH) client in Rust, inspired by [BeipMU](https://github.com/BeipDev/BeipMU).
 It is a new codebase, not a port. The BeipMU sources are used only as a reference for features and protocols.
 
-## Status: M7 (puppets, speech, spellcheck)
+## Status: M8 (BeipMU compatibility)
 
 | Crate | What it does |
 |---|---|
@@ -14,6 +14,7 @@ It is a new codebase, not a port. The BeipMU sources are used only as a referenc
 | `mu-engine` | The UI-independent client: per-connection `Engine` that turns network events and input into render outputs. Triggers, aliases, keyboard macros, variables, `/` commands, input history, daily-rotating logs, GMCP (`Beip.Stats`, `Client.Media`, `WebView`), and MCP 2.1 (simpleedit, awns-status, awns-ping, vmoo-client). Shared by the GUI and the planned TUI. |
 | `mu-script` | JavaScript scripting with QuickJS: one isolated runtime per connection, a 2-second limit per call and a memory cap. Implements the engine's `ScriptHost` trait, so any frontend gets scripting. |
 | `mu-map` | World maps: rooms, exits and areas, an automapper for GMCP `Room.Info` (IRE, Aardwolf and BeipMU styles), shortest-path walking, and tracking by room name. |
+| `mu-import` | Reads BeipMU's `Config.txt` (worlds, characters, puppets, triggers, aliases, macros, variables) and `.atlas` maps (plain or zipped XML), reporting anything that can't be carried over. |
 | `mu-speech` | Text to speech through speech-dispatcher, on a background thread. |
 | `mu-code` | Editing support shared by frontends: block-aware auto-indentation for MOO, MUF and Lua. |
 | `mu-gtk` | GTK4/libadwaita client: a tab per connection, ANSI and full Unicode output with clickable links, a side dock with spawn windows and GMCP stat panes, input with history, password mode, NAWS, logging, sounds (trigger and server-driven), notifications, an MCP status line and text editor, web views, and a rules editor. |
@@ -47,15 +48,19 @@ Links work in OSC 8 output and in plain URLs. `send:` links send a command and `
 ### Rules
 
 - **Triggers** match each incoming line (plain text, whole words, or regex with lookaround). They can highlight the match or the whole line, hide it (and leave it out of the log), copy it to a named spawn window, send commands, play a sound, raise a desktop notification, or star the tab. Character triggers run first, then world, then global; "Stop here" ends the chain. A trigger that sends more than 20 times in 2 seconds is suspended so it can't flood the server.
-- **Aliases** rewrite what you type: plain ones match the first word (`$1`…`$9`, `$*`), regex ones use capture groups.
-- **Macros** bind keys (F5, Ctrl+K, number-pad keys…) to commands.
+- Triggers can also **replace** the matching text (to censor words, say), and a highlight can style only a regex's groups.
+- **Aliases** rewrite what you type: plain ones match the first word (`$1`…`$9`, `$*`), regex ones use capture groups. An alias set to "replace just the matching text" edits every match in the line and lets later aliases run too, as BeipMU's do (`Mag` → `Magdalena` inside `page Mag=hi`). An alias can expand to client commands (`/script …`, `/delay …`).
+- **Macros** bind keys (F5, Ctrl+K, number-pad keys…) to commands, or put text in the input box.
+- **`/delay [id NAME] [every] 5s command`** runs a command later or repeatedly (`/delay list`, `/delay kill NAME`, `/delay killall`). Logins can use client commands too, such as `/delay 3s "connect bob pw"`.
 - **Variables** (`%name%`) work in trigger sends and alias replacements.
 
 ### Scripting
 
 JavaScript (QuickJS) runs per connection. `~/.config/mu-client/startup.js` runs for every session, and each world can name its own script file. `/@code` runs code right away (Shift+Enter for multiple lines), and `/script reload` restarts scripting after you edit a file. Scripts get `mu.send`, `mu.input`, `mu.echo`, `mu.notice`, `mu.spawn`, `mu.gmcp`, `mu.vars`, `mu.world`/`mu.character`/`mu.connected`, events through `mu.on` (`line` to hide lines, `receive`, `send` to rewrite or drop commands, `gmcp` and `gmcp:Package`, `connect`, `disconnect`), timers and `console.log`. Triggers can call a script function with the line and its regex groups. See [examples/startup.js](examples/startup.js).
 
-Client commands start with `/`: `/set`, `/unset`, `/echo`, `/log`, `/clear`, `/reconnect`, `/disconnect`, `/gmcp` (show GMCP traffic, or `/gmcp Package {json}` to send), `/mcp`, `/webview url`, `/images on|off`, `/puppet [name]`, `/speech on|off|stop`, `/speak text`, `/map …`, `/edit [language]`, `/@code`, `/script load path`, `/script reload`, `/help`. Type `//` to send a line that starts with `/`.
+BeipMU scripts work too: the `app` and `window` objects are there (member names ignore case, as in BeipMU), including `window.connection.SetOnReceive`/`SetOnSend`/`SetOnGMCP`/`SetOnConnect` hooks, `Display`/`Send`/`Receive`, `window.output.Write`, `window.Run`, variables, `app.CreateInterval`/`CreateTimeout`, `app.PlaySound`, and `app.NewWindow_Text()` (which becomes a spawn window). Hook functions get plain text without ANSI codes. A trigger whose script is `beipmu:Name` calls `Name(ranges, line, window)` the way BeipMU did. ActiveX, sockets and drawing windows aren't available and say so.
+
+Client commands start with `/`: `/set`, `/unset`, `/echo`, `/log`, `/clear`, `/reconnect`, `/disconnect`, `/gmcp` (show GMCP traffic, or `/gmcp Package {json}` to send), `/mcp`, `/webview url`, `/images on|off`, `/puppet [name]`, `/speech on|off|stop`, `/speak text`, `/map …`, `/edit [language]`, `/delay …`, `/@code`, `/script code`, `/script load path`, `/script reload`, `/help`. Type `//` to send a line that starts with `/`.
 
 ### Program editor
 
@@ -65,7 +70,11 @@ Languages: **MOO (Stunt)** built from the Stunt lexer (keywords, `/* */` and str
 
 ### Map
 
-The map tab appears in the side dock once a world has rooms. If the game sends GMCP `Room.Info`, the map fills in as you move: rooms are placed by the direction you walked when the server sends no coordinates, and exits link up as both ends are seen. Without `Room.Info`, add rooms with `/map addroom "Name" north south` and the map follows you by recognising neighbouring room names. Double-click a room (or `/map go name`) to walk there by the shortest known path. Drag rooms to move them (Ctrl to place freely), drag the background to pan, scroll to zoom, and right-click for Walk Here, I'm Here, Rename, Delete and Add Room Here. Maps are saved per world in `~/.local/share/mu-client/maps/`.
+The map tab appears in the side dock once a world has rooms. If the game sends GMCP `Room.Info`, the map fills in as you move: rooms are placed by the direction you walked when the server sends no coordinates, and exits link up as both ends are seen. Without `Room.Info`, add rooms with `/map addroom "Name" north south` and the map follows you by recognising neighbouring room names. Double-click a room (or `/map go name`) to walk there by the shortest known path. Drag rooms to move them (Ctrl to place freely), drag the background to pan, scroll to zoom, and right-click for Walk Here, I'm Here, Rename, Delete and Add Room Here. Maps are saved per world in `~/.local/share/mu-client/maps/`. The folder button in the map (or `/map import file.atlas`) adds a BeipMU map: each of its maps becomes an area, with the room shapes, colours and exits. Background rectangles, labels and exit line shapes aren't drawn.
+
+### Importing from BeipMU
+
+Main menu → **Import from BeipMU…** and choose BeipMU's `Config.txt` (BeipMU keeps it in `%APPDATA%\BeipMU`, which under Wine is `~/.wine/drive_c/users/$USER/AppData/Roaming/BeipMU/`, or next to `BeipMU.exe`). Worlds, characters (logins with `%NAME%`/`%PASSWORD%` filled in), puppets, triggers, aliases, keyboard macros and character variables are added; worlds you already have are skipped, so importing again is safe. BeipMU's startup script is copied to `startup.js` if it's next to `Config.txt` and you don't have one. A list at the end says what couldn't be carried over: nested triggers become flat (and say so), "away" triggers come in switched off, Windows sound paths need changing, and hash colours, paragraph styling, stat updates, multi-line captures and per-puppet rules have no equivalent.
 
 ### Puppets
 
@@ -93,6 +102,6 @@ A puppet is a second character you control through your main connection, such as
 
 ## Roadmap
 
-M8 BeipMU Config.txt, `.atlas` and script compatibility → M9 a full terminal UI (`mu-tui`, ratatui) sharing the same engine.
+M9 a full terminal UI (`mu-tui`, ratatui) sharing the same engine.
 
-`assets/Worlds.xml` comes from BeipMU (MIT licence, © Bennet).
+`assets/Worlds.xml` and the test files in `crates/mu-import/tests/data/` (sample config and maps) come from BeipMU (MIT licence, © Bennet).

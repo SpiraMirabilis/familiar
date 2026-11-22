@@ -197,6 +197,17 @@ impl Atlas {
         id
     }
 
+    /// Adds a room with a given position, size and colour (for imported maps).
+    pub fn insert_room(&mut self, name: &str, area: &str, (x, y, w, h): (f64, f64, f64, f64), color: Option<String>) -> RoomId {
+        let id = self.add_room(name, area, Some((x, y)));
+        if let Some(room) = self.rooms.get_mut(&id) {
+            room.w = w.max(8.0);
+            room.h = h.max(8.0);
+            room.color = color;
+        }
+        id
+    }
+
     /// Adds (or retargets) an exit from `from`.
     pub fn set_exit(&mut self, from: RoomId, command: &str, to: Option<RoomId>, to_server_id: Option<String>) {
         let Some(room) = self.rooms.get_mut(&from) else { return };

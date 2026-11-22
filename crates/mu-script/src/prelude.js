@@ -54,6 +54,18 @@
     speak(...parts) {
       post('speak', parts.map(show).join(' '));
     },
+    /** Handles a line as if the server sent it: triggers and hooks run on it. */
+    receive(text) {
+      post('receive', String(text));
+    },
+    /** Replaces what's in the input box. */
+    setInput(text) {
+      post('setinput', String(text));
+    },
+    /** Plays a sound file. */
+    playSound(path) {
+      post('sound', String(path));
+    },
     /** Shows a line in a spawn window, creating it if needed. */
     spawn(window, text) {
       post('spawn', String(window), String(text));
@@ -189,6 +201,14 @@
       emit(name);
     },
     call(name, argsJson) {
+      if (name.startsWith('beipmu:')) {
+        try {
+          globalThis.__beipmu.callTrigger(name.slice(7), JSON.parse(argsJson));
+        } catch (e) {
+          report(name.slice(7), e);
+        }
+        return;
+      }
       const fn = globalThis[name];
       if (typeof fn !== 'function') {
         post('error', `trigger script "${name}" isn't a function. Define it with function ${name}(line, ...groups) { ... }`);
