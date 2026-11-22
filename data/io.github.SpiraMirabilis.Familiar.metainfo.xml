@@ -54,6 +54,17 @@
     <content_attribute id="social-info">mild</content_attribute>
   </content_rating>
   <releases>
+    <release version="0.2.0" date="2026-11-22">
+      <description>
+        <p>Familiar now runs on Windows as well as Linux.</p>
+        <ul>
+          <li>A Preferences dialog, with font selection; worlds can have their own font</li>
+          <li>The terminal client draws the 16 basic colours exactly, whatever the terminal's theme</li>
+          <li>The first lines of a session are no longer hidden above the top of the output</li>
+          <li>Addresses can be IPv6 and can end in "tls"</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.1.0" date="2026-11-22">
       <description>
         <p>First release.</p>

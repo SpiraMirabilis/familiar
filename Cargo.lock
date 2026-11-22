@@ -751,11 +751,11 @@ checksum = "af9673d8203fcb076b19dfd17e38b3d4ae9f44959416ea532ce72415a6020365"
 
 [[package]]
 name = "familiar-ansi"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "familiar-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -768,11 +768,11 @@ dependencies = [
 
 [[package]]
 name = "familiar-code"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "familiar-config"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "dirs 7.0.0",
  "quick-xml",
@@ -783,7 +783,7 @@ dependencies = [
 
 [[package]]
 name = "familiar-engine"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64 0.23.1",
  "chrono",
@@ -802,7 +802,7 @@ dependencies = [
 
 [[package]]
 name = "familiar-gtk"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "familiar-ansi",
  "familiar-code",
@@ -827,7 +827,7 @@ dependencies = [
 
 [[package]]
 name = "familiar-import"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "familiar-config",
  "familiar-map",
@@ -838,7 +838,7 @@ dependencies = [
 
 [[package]]
 name = "familiar-map"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "familiar-config",
  "serde",
@@ -847,7 +847,7 @@ dependencies = [
 
 [[package]]
 name = "familiar-net"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "encoding_rs",
  "familiar-telnet",
@@ -861,7 +861,7 @@ dependencies = [
 
 [[package]]
 name = "familiar-platform"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "rodio",
  "tauri-winrt-notification",
@@ -869,7 +869,7 @@ dependencies = [
 
 [[package]]
 name = "familiar-script"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "familiar-config",
  "familiar-engine",
@@ -881,7 +881,7 @@ dependencies = [
 
 [[package]]
 name = "familiar-speech"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ssip-client",
  "windows",
@@ -889,7 +889,7 @@ dependencies = [
 
 [[package]]
 name = "familiar-telnet"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "flate2",
  "serde_json",
@@ -897,7 +897,7 @@ dependencies = [
 
 [[package]]
 name = "familiar-tui"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "familiar-ansi",

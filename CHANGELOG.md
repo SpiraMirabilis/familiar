@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 (2026-11-22)
 
 - Windows: the GTK client as an installer and a zip with everything included, and the terminal
   client as a single file. Speech uses the Windows voice; web views aren't available there.
