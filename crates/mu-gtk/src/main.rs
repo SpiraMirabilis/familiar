@@ -6,7 +6,9 @@
 mod app;
 mod connect_dialog;
 mod input;
+mod keys;
 mod output;
+mod rules_dialog;
 mod session;
 mod window;
 mod world_dialog;
@@ -36,7 +38,12 @@ pub fn runtime() -> &'static tokio::runtime::Runtime {
 
 fn main() -> glib::ExitCode {
     glib::set_application_name(APP_NAME);
-    let app = adw::Application::builder().application_id(APP_ID).build();
+    let mut flags = gtk::gio::ApplicationFlags::empty();
+    // Test runs must not hand off to (or take over) a copy the user has open.
+    if std::env::var_os("MU_CLIENT_SEPARATE_INSTANCE").is_some() {
+        flags |= gtk::gio::ApplicationFlags::NON_UNIQUE;
+    }
+    let app = adw::Application::builder().application_id(APP_ID).flags(flags).build();
     let windows: Rc<RefCell<Vec<Rc<window::MainWindow>>>> = Rc::default();
 
     app.connect_activate(move |app| {

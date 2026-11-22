@@ -6,15 +6,19 @@ use std::rc::Rc;
 use adw::prelude::*;
 use mu_config::{Character, World};
 
-const ENCODINGS: [&str; 3] = ["UTF-8", "Windows-1252", "CP437"];
+const ENCODINGS: [&str; 4] = ["Auto", "UTF-8", "Windows-1252", "CP437"];
 
 struct CharacterRows {
+    /// Kept so fields the dialog doesn't edit (like rules) survive a save.
+    original: Character,
     expander: adw::ExpanderRow,
     name: adw::EntryRow,
     login: adw::PasswordEntryRow,
 }
 
 pub struct WorldDialog {
+    /// Kept so fields the dialog doesn't edit (like rules) survive a save.
+    original: World,
     dialog: adw::Dialog,
     name: adw::EntryRow,
     host: adw::EntryRow,
@@ -52,6 +56,7 @@ pub fn show(
     tls.bind_property("active", &verify, "sensitive").sync_create().build();
     let encoding = adw::ComboRow::builder()
         .title("Encoding")
+        .subtitle("Auto reads UTF-8 and falls back to Windows-1252")
         .model(&gtk::StringList::new(&ENCODINGS))
         .selected(
             mu_net::Encoding::from_name(&world.encoding)
@@ -97,6 +102,7 @@ pub fn show(
         .build();
 
     let this = Rc::new(WorldDialog {
+        original: world.clone(),
         dialog,
         name,
         host,
@@ -188,7 +194,7 @@ impl WorldDialog {
             this.characters_group.remove(&row);
             this.characters.borrow_mut().retain(|c| c.expander != row);
         });
-        self.characters.borrow_mut().push(CharacterRows { expander, name, login });
+        self.characters.borrow_mut().push(CharacterRows { original: character.clone(), expander, name, login });
     }
 
     fn world(&self) -> World {
@@ -205,9 +211,14 @@ impl WorldDialog {
                 .characters
                 .borrow()
                 .iter()
-                .map(|c| Character { name: c.name.text().trim().to_string(), login: c.login.text().to_string() })
+                .map(|c| Character {
+                    name: c.name.text().trim().to_string(),
+                    login: c.login.text().to_string(),
+                    ..c.original.clone()
+                })
                 .filter(|c| !c.name.is_empty() || !c.login.is_empty())
                 .collect(),
+            ..self.original.clone()
         }
     }
 }

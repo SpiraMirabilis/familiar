@@ -65,6 +65,13 @@ pub struct SessionHandle {
 }
 
 impl SessionHandle {
+    /// A handle that isn't attached to a connection. Commands arrive on the returned receiver.
+    /// Useful for tests and for UIs that want to inspect what would be sent.
+    pub fn channel() -> (Self, mpsc::UnboundedReceiver<SessionCommand>) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        (Self { tx }, rx)
+    }
+
     /// Returns false if the session has already ended.
     pub fn send(&self, command: SessionCommand) -> bool {
         self.tx.send(command).is_ok()
@@ -208,7 +215,7 @@ async fn run(
                 Some(command) => session.on_command(command),
             },
             _ = tokio::time::sleep(prompt_wait.unwrap_or_default()), if prompt_wait.is_some() => {
-                let text = session.encoding.decode(session.lines.partial());
+                let text = session.encoding.decode_partial(session.lines.partial());
                 session.emit(SessionEvent::PartialLine(text));
                 partial_shown = true;
             }

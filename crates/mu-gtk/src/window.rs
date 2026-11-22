@@ -9,6 +9,7 @@ use mu_config::{Character, World};
 
 use crate::app::AppState;
 use crate::connect_dialog;
+use crate::rules_dialog;
 use crate::session::SessionView;
 
 pub struct MainWindow {
@@ -36,6 +37,9 @@ impl MainWindow {
         session_section.append(Some("Disconnect"), Some("win.disconnect"));
         session_section.append(Some("Clear Output"), Some("win.clear"));
         menu.append_section(None, &session_section);
+        let rules_section = gio::Menu::new();
+        rules_section.append(Some("Triggers, Aliases & Macros"), Some("win.rules"));
+        menu.append_section(None, &rules_section);
         let log_section = gio::Menu::new();
         log_section.append(Some("Log to File"), Some("win.toggle-log"));
         log_section.append(Some("Open Log Folder"), Some("win.open-logs"));
@@ -116,7 +120,7 @@ impl MainWindow {
                     let (_, session) = sessions.remove(pos);
                     session.disconnect();
                     if session.is_logging() {
-                        let _ = session.toggle_log();
+                        session.toggle_log();
                     }
                 }
             }
@@ -132,27 +136,30 @@ impl MainWindow {
         });
 
         let weak = Rc::downgrade(self);
-        self.tab_view.connect_selected_page_notify(move |view| {
+        self.tab_view.connect_selected_page_notify(move |_| {
             let Some(this) = weak.upgrade() else { return };
-            if let Some(page) = view.selected_page() {
-                page.set_needs_attention(false);
-            }
             this.update_log_state();
             if let Some(session) = this.current() {
+                session.seen();
                 session.input.grab_focus();
             }
         });
     }
 
     pub fn open_session(self: &Rc<Self>, world: World, character: Option<Character>) {
-        let settings = self.state.config.borrow().settings.clone();
-        let session = SessionView::new(world, character, settings);
+        let session = SessionView::new(self.state.clone(), world, character);
         let page = self.tab_view.append(&session.root);
         session.set_page(&page);
 
         let window = self.window.clone();
         session.connect_open_uri(move |uri| {
             gtk::UriLauncher::new(uri).launch(Some(&window), None::<&gio::Cancellable>, |_| {});
+        });
+        let weak = Rc::downgrade(self);
+        session.connect_logging_changed(move || {
+            if let Some(this) = weak.upgrade() {
+                this.update_log_state();
+            }
         });
 
         self.sessions.borrow_mut().push((page.clone(), session.clone()));
@@ -220,7 +227,7 @@ impl MainWindow {
             &["<Control><Shift>l"],
             Box::new(|this| {
                 if let Some(s) = this.current() {
-                    s.output.clear();
+                    s.clear();
                 }
             }),
         );
@@ -246,6 +253,21 @@ impl MainWindow {
                 gtk::FileLauncher::new(Some(&file)).launch(Some(&this.window), None::<&gio::Cancellable>, |_| {});
             }),
         );
+        add(
+            "rules",
+            &["<Control>t"],
+            Box::new(|this| {
+                let current = this.current().map(|s| s.scopes()).unwrap_or_default();
+                let weak = Rc::downgrade(this);
+                rules_dialog::show(&this.window, this.state.clone(), current.first().cloned(), move || {
+                    if let Some(this) = weak.upgrade() {
+                        for (_, session) in this.sessions.borrow().iter() {
+                            session.reload();
+                        }
+                    }
+                });
+            }),
+        );
         add("about", &[], Box::new(|this| this.show_about()));
         add("shortcuts", &["<Control>question"], Box::new(|this| this.show_shortcuts()));
 
@@ -255,9 +277,7 @@ impl MainWindow {
         log.connect_activate(move |_, _| {
             let Some(this) = weak.upgrade() else { return };
             let Some(session) = this.current() else { return };
-            if let Err(e) = session.toggle_log() {
-                this.toast(&format!("Couldn't start logging: {e}"));
-            }
+            session.toggle_log();
             this.update_log_state();
         });
         self.window.add_action(&log);
@@ -283,11 +303,13 @@ impl MainWindow {
             ("Ctrl+W", "Close tab"),
             ("Ctrl+Shift+L", "Clear output"),
             ("Ctrl+Shift+G", "Log to file"),
+            ("Ctrl+T", "Triggers, aliases and macros"),
             ("Enter", "Send"),
             ("Shift+Enter", "New line in input"),
             ("Up / Down", "Input history (Ctrl+Up/Down in multi-line input)"),
             ("Page Up / Page Down", "Scroll output"),
             ("Escape", "Clear input"),
+            ("/help", "List client commands (/set, /log, /clear, ...)"),
         ];
         let group = adw::PreferencesGroup::new();
         for (keys, what) in rows {

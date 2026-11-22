@@ -16,6 +16,7 @@ pub struct InputView {
     history: RefCell<History>,
     on_submit: RefCell<Option<Box<dyn Fn(String, bool)>>>,
     on_page: RefCell<Option<Box<dyn Fn(bool)>>>,
+    on_key: RefCell<Option<Box<dyn Fn(gdk::Key, gdk::ModifierType) -> bool>>>,
 }
 
 impl InputView {
@@ -56,6 +57,7 @@ impl InputView {
             history: RefCell::new(History::new(history_size)),
             on_submit: RefCell::default(),
             on_page: RefCell::default(),
+            on_key: RefCell::default(),
         });
         this.setup_keys();
 
@@ -75,6 +77,12 @@ impl InputView {
     /// entry, which must not be echoed or logged.
     pub fn connect_submit<F: Fn(String, bool) + 'static>(&self, f: F) {
         *self.on_submit.borrow_mut() = Some(Box::new(f));
+    }
+
+    /// `f(key, modifiers)` sees every key press first, for keyboard macros. Returning true
+    /// consumes the key.
+    pub fn connect_key<F: Fn(gdk::Key, gdk::ModifierType) -> bool + 'static>(&self, f: F) {
+        *self.on_key.borrow_mut() = Some(Box::new(f));
     }
 
     /// `f(up)` is called for Page Up / Page Down, to scroll the output.
@@ -146,6 +154,9 @@ impl InputView {
         let weak = Rc::downgrade(self);
         keys.connect_key_pressed(move |_, key, _, state| {
             let Some(this) = weak.upgrade() else { return glib::Propagation::Proceed };
+            if this.on_key.borrow().as_ref().is_some_and(|f| f(key, state)) {
+                return glib::Propagation::Stop;
+            }
             let shift = state.contains(gdk::ModifierType::SHIFT_MASK);
             let ctrl = state.contains(gdk::ModifierType::CONTROL_MASK);
             match key {

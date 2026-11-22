@@ -2,7 +2,11 @@
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Encoding {
+    /// UTF-8, falling back to Windows-1252 for any line that isn't valid UTF-8. Real
+    /// Windows-1252 text almost never happens to be valid multi-byte UTF-8, so this shows both
+    /// modern and legacy servers correctly. Sends UTF-8.
     #[default]
+    Auto,
     Utf8,
     Windows1252,
     Cp437,
@@ -13,6 +17,7 @@ impl Encoding {
     pub fn from_name(name: &str) -> Option<Self> {
         let n = name.trim().to_ascii_lowercase().replace('_', "-");
         match n.as_str() {
+            "auto" => Some(Self::Auto),
             "utf-8" | "utf8" => Some(Self::Utf8),
             "windows-1252" | "cp1252" | "iso-8859-1" | "latin1" | "latin-1" | "us-ascii" | "ascii" => {
                 Some(Self::Windows1252)
@@ -24,6 +29,7 @@ impl Encoding {
 
     pub fn name(self) -> &'static str {
         match self {
+            Self::Auto => "Auto",
             Self::Utf8 => "UTF-8",
             Self::Windows1252 => "Windows-1252",
             Self::Cp437 => "CP437",
@@ -32,6 +38,10 @@ impl Encoding {
 
     pub fn decode(self, bytes: &[u8]) -> String {
         match self {
+            Self::Auto => match std::str::from_utf8(bytes) {
+                Ok(text) => text.to_string(),
+                Err(_) => Self::Windows1252.decode(bytes),
+            },
             Self::Utf8 => String::from_utf8_lossy(bytes).into_owned(),
             Self::Windows1252 => encoding_rs::WINDOWS_1252.decode_without_bom_handling(bytes).0.into_owned(),
             Self::Cp437 => bytes
@@ -41,10 +51,21 @@ impl Encoding {
         }
     }
 
+    /// Decodes the start of a line that's still arriving. A UTF-8 character cut off at the end
+    /// is left out rather than shown as a replacement character; it'll be there when the rest of
+    /// the line arrives. (With Auto, a trailing Windows-1252 letter that looks like the start of
+    /// a UTF-8 character waits too.)
+    pub fn decode_partial(self, bytes: &[u8]) -> String {
+        match self {
+            Self::Auto | Self::Utf8 => self.decode(trim_incomplete_utf8(bytes)),
+            _ => self.decode(bytes),
+        }
+    }
+
     /// Encodes outgoing text. Characters the encoding can't represent become '?'.
     pub fn encode(self, text: &str) -> Vec<u8> {
         match self {
-            Self::Utf8 => text.as_bytes().to_vec(),
+            Self::Auto | Self::Utf8 => text.as_bytes().to_vec(),
             Self::Windows1252 => {
                 let mut out = Vec::with_capacity(text.len());
                 for c in text.chars() {
@@ -65,6 +86,15 @@ impl Encoding {
                 })
                 .collect(),
         }
+    }
+}
+
+/// Drops an unfinished UTF-8 sequence from the end of `bytes`, if there is one.
+fn trim_incomplete_utf8(bytes: &[u8]) -> &[u8] {
+    match std::str::from_utf8(bytes) {
+        // error_len() is None when the input ends partway through a character.
+        Err(e) if e.error_len().is_none() => &bytes[..e.valid_up_to()],
+        _ => bytes,
     }
 }
 
@@ -92,8 +122,31 @@ mod tests {
     }
 
     #[test]
+    fn auto_reads_utf8_and_falls_back_to_cp1252() {
+        let auto = Encoding::Auto;
+        assert_eq!(auto.decode("naïve ☕ 日本語 👋🏽 שלום e\u{301}".as_bytes()), "naïve ☕ 日本語 👋🏽 שלום e\u{301}");
+        assert_eq!(auto.decode(b"caf\xe9 \x93quoted\x94"), "café \u{201c}quoted\u{201d}");
+        assert_eq!(auto.encode("☕"), "☕".as_bytes());
+        assert_eq!(Encoding::from_name("AUTO"), Some(Encoding::Auto));
+    }
+
+    #[test]
+    fn partial_lines_hold_back_split_characters() {
+        let bytes = "HP ❤ 10 ☕".as_bytes();
+        let cut = &bytes[..bytes.len() - 1];
+        assert_eq!(Encoding::Utf8.decode_partial(cut), "HP ❤ 10 ");
+        assert_eq!(Encoding::Auto.decode_partial(cut), "HP ❤ 10 ");
+        assert_eq!(Encoding::Utf8.decode_partial(bytes), "HP ❤ 10 ☕");
+        // Bytes that can't be UTF-8 are decoded as Windows-1252, not dropped.
+        assert_eq!(Encoding::Auto.decode_partial(b"caf\xe9 au lait"), "café au lait");
+        // A trailing byte that could start a UTF-8 character is ambiguous, so it waits for the
+        // rest of the line.
+        assert_eq!(Encoding::Auto.decode_partial(b"caf\xe9"), "caf");
+    }
+
+    #[test]
     fn round_trips() {
-        for enc in [Encoding::Utf8, Encoding::Windows1252, Encoding::Cp437] {
+        for enc in [Encoding::Auto, Encoding::Utf8, Encoding::Windows1252, Encoding::Cp437] {
             let text = "café ½";
             assert_eq!(enc.decode(&enc.encode(text)), text, "{enc:?}");
         }

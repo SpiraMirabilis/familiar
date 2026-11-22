@@ -69,6 +69,37 @@ impl StyledLine {
         &self.text[span.start..span.end]
     }
 
+    /// Applies `f` to the style of the text in the byte range `start..end`, splitting spans as
+    /// needed. The range must fall on character boundaries.
+    pub fn restyle(&mut self, start: usize, end: usize, f: impl Fn(&mut Style)) {
+        let (start, end) = (start.min(self.text.len()), end.min(self.text.len()));
+        if start >= end {
+            return;
+        }
+        let mut spans: Vec<Span> = Vec::with_capacity(self.spans.len() + 2);
+        let mut push = |span: Span| match spans.last_mut() {
+            Some(last) if last.style == span.style && last.end == span.start => last.end = span.end,
+            _ => spans.push(span),
+        };
+        for span in std::mem::take(&mut self.spans) {
+            let (s, e) = (start.max(span.start), end.min(span.end));
+            if s >= e {
+                push(span);
+                continue;
+            }
+            if span.start < s {
+                push(Span { start: span.start, end: s, style: span.style.clone() });
+            }
+            let mut style = span.style.clone();
+            f(&mut style);
+            push(Span { start: s, end: e, style });
+            if e < span.end {
+                push(Span { start: e, end: span.end, style: span.style });
+            }
+        }
+        self.spans = spans;
+    }
+
     fn push(&mut self, c: char, style: &Style) {
         let start = self.text.len();
         self.text.push(c);
@@ -342,6 +373,28 @@ mod tests {
 
     fn spans(line: &StyledLine) -> Vec<(&str, Style)> {
         line.spans.iter().map(|s| (line.span_text(s), s.style.clone())).collect()
+    }
+
+    #[test]
+    fn restyle_splits_and_merges() {
+        let mut l = parse("ab\x1b[31mcdef\x1b[0mgh");
+        l.restyle(1, 4, |s| s.bold = true);
+        let parts: Vec<_> = l.spans.iter().map(|s| (l.span_text(s), s.style.fg, s.style.bold)).collect();
+        assert_eq!(
+            parts,
+            vec![
+                ("a", Color::Default, false),
+                ("b", Color::Default, true),
+                ("cd", Color::Indexed(1), true),
+                ("ef", Color::Indexed(1), false),
+                ("gh", Color::Default, false),
+            ]
+        );
+        // Restyling everything back merges the spans again.
+        l.restyle(0, 8, |s| *s = Style::default());
+        assert_eq!(l.spans.len(), 1);
+        l.restyle(5, 99, |s| s.italic = true);
+        assert_eq!(l.spans.last().map(|s| l.span_text(s)), Some("fgh"));
     }
 
     #[test]

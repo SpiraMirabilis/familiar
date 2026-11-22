@@ -20,8 +20,8 @@ struct Args {
     insecure: bool,
     #[arg(long)]
     ipv4: bool,
-    /// Server encoding: utf-8, windows-1252 or cp437.
-    #[arg(long, default_value = "utf-8")]
+    /// Server encoding: auto (UTF-8 with a Windows-1252 fallback), utf-8, windows-1252 or cp437.
+    #[arg(long, default_value = "auto")]
     encoding: String,
     /// Print GMCP and MSSP messages to stderr.
     #[arg(long)]

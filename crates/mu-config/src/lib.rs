@@ -1,6 +1,9 @@
 //! Client configuration: worlds, characters and settings, stored as TOML.
 
 pub mod directory;
+mod rules;
+
+pub use rules::{Alias, Highlight, Macro, Pattern, Rules, Scope, Trigger};
 
 use std::path::{Path, PathBuf};
 
@@ -23,6 +26,9 @@ pub enum Error {
 #[serde(default)]
 pub struct Config {
     pub settings: Settings,
+    /// Rules that apply to every world.
+    #[serde(skip_serializing_if = "Rules::is_empty")]
+    pub rules: Rules,
     #[serde(rename = "world")]
     pub worlds: Vec<World>,
 }
@@ -63,8 +69,11 @@ pub struct World {
     pub port: u16,
     pub tls: bool,
     pub verify_certificate: bool,
-    /// Charset name understood by `mu_net::Encoding::from_name`.
+    /// Charset name understood by `mu_net::Encoding::from_name`. "Auto" reads UTF-8 and falls
+    /// back to Windows-1252 line by line.
     pub encoding: String,
+    #[serde(skip_serializing_if = "Rules::is_empty")]
+    pub rules: Rules,
     #[serde(rename = "character", skip_serializing_if = "Vec::is_empty")]
     pub characters: Vec<Character>,
 }
@@ -77,7 +86,8 @@ impl Default for World {
             port: 4000,
             tls: false,
             verify_certificate: true,
-            encoding: "UTF-8".into(),
+            encoding: "Auto".into(),
+            rules: Rules::default(),
             characters: Vec::new(),
         }
     }
@@ -90,6 +100,8 @@ pub struct Character {
     /// Sent right after connecting, e.g. "connect bob secret". Stored in plain text.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub login: String,
+    #[serde(skip_serializing_if = "Rules::is_empty")]
+    pub rules: Rules,
 }
 
 pub fn config_dir() -> PathBuf {
@@ -109,6 +121,52 @@ pub fn log_dir() -> PathBuf {
 }
 
 impl Config {
+    pub fn world(&self, name: &str) -> Option<&World> {
+        self.worlds.iter().find(|w| w.name == name)
+    }
+
+    /// The rules stored at `scope`, if that world or character exists.
+    pub fn rules(&self, scope: &Scope) -> Option<&Rules> {
+        match scope {
+            Scope::Global => Some(&self.rules),
+            Scope::World { world } => self.world(world).map(|w| &w.rules),
+            Scope::Character { world, character } => self
+                .world(world)
+                .and_then(|w| w.characters.iter().find(|c| &c.name == character))
+                .map(|c| &c.rules),
+        }
+    }
+
+    pub fn rules_mut(&mut self, scope: &Scope) -> Option<&mut Rules> {
+        match scope {
+            Scope::Global => Some(&mut self.rules),
+            Scope::World { world } => self.worlds.iter_mut().find(|w| &w.name == world).map(|w| &mut w.rules),
+            Scope::Character { world, character } => self
+                .worlds
+                .iter_mut()
+                .find(|w| &w.name == world)
+                .and_then(|w| w.characters.iter_mut().find(|c| &c.name == character))
+                .map(|c| &mut c.rules),
+        }
+    }
+
+    /// The scopes that apply to a session, most specific first. A world or character that isn't
+    /// saved in the config (e.g. a quick connect) has no scope of its own.
+    pub fn scopes_for(&self, world: &str, character: Option<&str>) -> Vec<Scope> {
+        let mut scopes = Vec::new();
+        if let Some(character) = character {
+            let scope = Scope::Character { world: world.into(), character: character.into() };
+            if self.rules(&scope).is_some() {
+                scopes.push(scope);
+            }
+        }
+        if self.world(world).is_some() {
+            scopes.push(Scope::World { world: world.into() });
+        }
+        scopes.push(Scope::Global);
+        scopes
+    }
+
     /// Loads the config, or returns the default if the file doesn't exist yet.
     pub fn load(path: &Path) -> Result<Self, Error> {
         match std::fs::read_to_string(path) {
@@ -140,17 +198,43 @@ mod tests {
     fn round_trip() {
         let config = Config {
             settings: Settings { font: "Fira Mono 12".into(), ..Settings::default() },
+            rules: Rules::default(),
             worlds: vec![World {
                 name: "Test".into(),
                 host: "example.com".into(),
                 port: 7777,
                 tls: true,
-                characters: vec![Character { name: "Bob".into(), login: "connect bob pw".into() }],
+                characters: vec![Character {
+                    name: "Bob".into(),
+                    login: "connect bob pw".into(),
+                    rules: Rules {
+                        aliases: vec![Alias { replacement: "kill $1".into(), ..Alias::default() }],
+                        ..Rules::default()
+                    },
+                }],
                 ..World::default()
             }],
         };
         let text = toml::to_string_pretty(&config).unwrap();
         assert_eq!(toml::from_str::<Config>(&text).unwrap(), config);
+    }
+
+    #[test]
+    fn scopes() {
+        let mut config = Config::default();
+        config.worlds.push(World {
+            name: "W".into(),
+            characters: vec![Character { name: "C".into(), ..Character::default() }],
+            ..World::default()
+        });
+        let char_scope = Scope::Character { world: "W".into(), character: "C".into() };
+        assert_eq!(
+            config.scopes_for("W", Some("C")),
+            vec![char_scope.clone(), Scope::World { world: "W".into() }, Scope::Global]
+        );
+        assert_eq!(config.scopes_for("adhoc", Some("C")), vec![Scope::Global]);
+        config.rules_mut(&char_scope).unwrap().variables.insert("x".into(), "1".into());
+        assert_eq!(config.worlds[0].characters[0].rules.variables["x"], "1");
     }
 
     #[test]

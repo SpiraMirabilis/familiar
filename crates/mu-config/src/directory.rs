@@ -29,11 +29,13 @@ impl DirectoryEntry {
             host: self.host.clone(),
             port: self.port,
             tls: self.tls,
-            encoding: self.encoding.clone(),
+            // BeipMU marks every world as CP1252 by default. Auto reads that too, and also shows
+            // UTF-8 from servers that have since moved to it.
+            encoding: if self.encoding.eq_ignore_ascii_case("CP1252") { "Auto".into() } else { self.encoding.clone() },
             characters: self
                 .guest_login
                 .iter()
-                .map(|login| Character { name: "Guest".into(), login: login.clone() })
+                .map(|login| Character { name: "Guest".into(), login: login.clone(), ..Character::default() })
                 .collect(),
             ..World::default()
         }

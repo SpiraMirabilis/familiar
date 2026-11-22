@@ -1,98 +1,128 @@
-//! One connection tab: output, input, and the network session behind them.
+//! One connection tab. The [`Engine`] does the work; this renders its [`Output`]s and forwards
+//! input to it.
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::{Rc, Weak};
-use std::time::Duration;
 
-use gtk::glib;
 use gtk::prelude::*;
-use mu_ansi::{AnsiParser, Palette};
-use mu_config::{Character, Settings, World};
-use mu_engine::Logger;
-use mu_net::{ConnectOptions, Encoding, SessionEvent, SessionHandle, SessionOptions, spawn_session};
+use gtk::{gio, glib};
+use mu_ansi::Palette;
+use mu_config::{Character, World};
+use mu_engine::{Engine, Output, Status, Target};
 
+use crate::app::AppState;
 use crate::input::InputView;
 use crate::output::OutputView;
 
-/// The longest a single batch of events may run before yielding to the UI.
+/// The most events handled in one go before letting GTK redraw.
 const BATCH_LIMIT: usize = 500;
 
 pub struct SessionView {
-    pub root: gtk::Box,
+    pub root: gtk::Paned,
     pub output: Rc<OutputView>,
     pub input: Rc<InputView>,
-    world: World,
-    character: Option<Character>,
-    settings: Settings,
+    state: Rc<AppState>,
+    engine: RefCell<Engine>,
     page: RefCell<Option<adw::TabPage>>,
-    handle: RefCell<Option<SessionHandle>>,
-    /// Incremented on each connect, so events from an old session are ignored.
+    /// Incremented on each connect, so events from an old connection are dropped.
     generation: Cell<u64>,
-    ansi: RefCell<AnsiParser>,
-    logger: RefCell<Option<Logger>>,
-    server_echo: Cell<bool>,
-    window_size: Cell<Option<(u16, u16)>>,
+    /// Why the connection closed, for the tab icon. None while connected.
+    disconnected: RefCell<Option<String>>,
+    /// An important trigger fired while the tab wasn't selected.
+    important: Cell<bool>,
+    spawn_tabs: gtk::Notebook,
+    spawns: RefCell<HashMap<String, Rc<OutputView>>>,
+    sounds: RefCell<Vec<gtk::MediaFile>>,
     on_open_uri: RefCell<Option<Box<dyn Fn(&str)>>>,
+    on_logging_changed: RefCell<Option<Box<dyn Fn()>>>,
 }
 
 impl SessionView {
-    pub fn new(world: World, character: Option<Character>, settings: Settings) -> Rc<Self> {
+    pub fn new(state: Rc<AppState>, world: World, character: Option<Character>) -> Rc<Self> {
+        let (engine, notices) = Engine::new(&state.config.borrow(), world, character);
+        let settings = state.config.borrow().settings.clone();
         let output = OutputView::new(Palette::default(), settings.scrollback_lines);
         let input = InputView::new(settings.input_history_size);
-        let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        root.append(&output.scrolled);
-        root.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-        root.append(&input.root);
+
+        let main = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        main.append(&output.scrolled);
+        main.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+        main.append(&input.root);
+
+        let spawn_tabs = gtk::Notebook::builder().scrollable(true).visible(false).build();
+        let root = gtk::Paned::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .start_child(&main)
+            .end_child(&spawn_tabs)
+            .resize_start_child(true)
+            .resize_end_child(false)
+            .shrink_end_child(false)
+            .build();
 
         let this = Rc::new(Self {
             root,
             output,
             input,
-            world,
-            character,
-            settings,
+            state,
+            engine: RefCell::new(engine),
             page: RefCell::default(),
-            handle: RefCell::default(),
             generation: Cell::new(0),
-            ansi: RefCell::new(AnsiParser::new()),
-            logger: RefCell::default(),
-            server_echo: Cell::new(false),
-            window_size: Cell::new(None),
+            disconnected: RefCell::default(),
+            important: Cell::new(false),
+            spawn_tabs,
+            spawns: RefCell::default(),
+            sounds: RefCell::default(),
             on_open_uri: RefCell::default(),
+            on_logging_changed: RefCell::default(),
         });
         this.setup();
+        this.apply(notices);
         this
     }
 
     pub fn title(&self) -> String {
-        match &self.character {
-            Some(c) if !c.name.is_empty() => format!("{} @ {}", c.name, self.world.name),
-            _ if self.world.name.is_empty() => format!("{}:{}", self.world.host, self.world.port),
-            _ => self.world.name.clone(),
-        }
+        self.engine.borrow().title()
     }
 
     pub fn set_page(&self, page: &adw::TabPage) {
+        let world = self.engine.borrow().world().clone();
         page.set_title(&self.title());
-        page.set_tooltip(&format!("{}:{}{}", self.world.host, self.world.port, if self.world.tls { " (TLS)" } else { "" }));
+        page.set_tooltip(&format!("{}:{}{}", world.host, world.port, if world.tls { " (TLS)" } else { "" }));
         *self.page.borrow_mut() = Some(page.clone());
     }
 
-    /// Called for http(s) links. send: and prompt: links are handled here.
+    /// Called for links the engine doesn't handle itself (http and so on).
     pub fn connect_open_uri<F: Fn(&str) + 'static>(&self, f: F) {
         *self.on_open_uri.borrow_mut() = Some(Box::new(f));
     }
 
-    pub fn is_connected(&self) -> bool {
-        self.handle.borrow().as_ref().is_some_and(|h| !h.is_closed())
+    pub fn connect_logging_changed<F: Fn() + 'static>(&self, f: F) {
+        *self.on_logging_changed.borrow_mut() = Some(Box::new(f));
+    }
+
+    pub fn is_logging(&self) -> bool {
+        self.engine.borrow().is_logging()
+    }
+
+    pub fn scopes(&self) -> Vec<mu_config::Scope> {
+        self.engine.borrow().scopes().to_vec()
+    }
+
+    /// Re-reads rules and settings after the config changed.
+    pub fn reload(self: &Rc<Self>) {
+        let out = self.engine.borrow_mut().reload(&self.state.config.borrow());
+        self.apply(out);
     }
 
     fn setup(self: &Rc<Self>) {
         let weak = Rc::downgrade(self);
         self.input.connect_submit(move |text, secret| {
             if let Some(this) = weak.upgrade() {
-                this.submit(&text, secret);
+                this.output.scroll_to_end();
+                let out = this.engine.borrow_mut().submit(&text, secret);
+                this.apply(out);
             }
         });
 
@@ -104,25 +134,31 @@ impl SessionView {
         });
 
         let weak = Rc::downgrade(self);
+        self.input.connect_key(move |key, state| weak.upgrade().is_some_and(|this| this.run_macro(key, state)));
+
+        let weak = Rc::downgrade(self);
         self.output.connect_link(move |uri| {
             if let Some(this) = weak.upgrade() {
                 this.follow_link(uri);
             }
         });
 
-        // Typing while the output has focus goes to the input.
+        // Typing while the output has focus goes to the input. Macros work there too.
         let keys = gtk::EventControllerKey::new();
-        let input = Rc::downgrade(&self.input);
+        let weak = Rc::downgrade(self);
         keys.connect_key_pressed(move |_, key, _, state| {
-            let Some(input) = input.upgrade() else { return glib::Propagation::Proceed };
+            let Some(this) = weak.upgrade() else { return glib::Propagation::Proceed };
+            if this.run_macro(key, state) {
+                return glib::Propagation::Stop;
+            }
             if state.intersects(gtk::gdk::ModifierType::CONTROL_MASK | gtk::gdk::ModifierType::ALT_MASK) {
                 return glib::Propagation::Proceed;
             }
             if let Some(c) = key.to_unicode().filter(|c| !c.is_control()) {
-                input.insert(&c.to_string());
+                this.input.insert(&c.to_string());
                 glib::Propagation::Stop
             } else if matches!(key, gtk::gdk::Key::Return | gtk::gdk::Key::KP_Enter) {
-                input.grab_focus();
+                this.input.grab_focus();
                 glib::Propagation::Stop
             } else {
                 glib::Propagation::Proceed
@@ -135,48 +171,36 @@ impl SessionView {
         let weak: Weak<Self> = Rc::downgrade(self);
         self.output.view.add_tick_callback(move |_, _| {
             let Some(this) = weak.upgrade() else { return glib::ControlFlow::Break };
-            if let Some(size) = this.output.grid_size()
-                && this.window_size.get() != Some(size)
-            {
-                this.window_size.set(Some(size));
-                if let Some(handle) = this.handle.borrow().as_ref() {
-                    handle.set_window_size(size.0, size.1);
-                }
+            if let Some((w, h)) = this.output.grid_size() {
+                this.engine.borrow_mut().set_window_size(w, h);
             }
             glib::ControlFlow::Continue
         });
     }
 
+    fn run_macro(self: &Rc<Self>, key: gtk::gdk::Key, state: gtk::gdk::ModifierType) -> bool {
+        let Some(chord) = crate::keys::chord(key, state) else { return false };
+        let Some(command) = self.engine.borrow().macro_for(&chord) else { return false };
+        self.output.scroll_to_end();
+        let out = self.engine.borrow_mut().submit(&command, false);
+        self.apply(out);
+        true
+    }
+
+    fn follow_link(self: &Rc<Self>, uri: &str) {
+        let out = self.engine.borrow_mut().follow_link(uri);
+        self.apply(out);
+    }
+
     pub fn connect(self: &Rc<Self>) {
-        if self.is_connected() {
+        if self.engine.borrow().is_connected() {
             return;
         }
-        let encoding = Encoding::from_name(&self.world.encoding).unwrap_or_default();
-        let mut connect = ConnectOptions::new(&self.world.host, self.world.port);
-        connect.tls = self.world.tls;
-        connect.verify_certificate = self.world.verify_certificate;
-        let mut opts = SessionOptions::new(connect);
-        opts.encoding = encoding;
-        opts.prompt_timeout = Some(Duration::from_millis(self.settings.prompt_timeout_ms));
-        opts.telnet.client_name = crate::APP_NAME.into();
-
-        self.output.notice(&format!(
-            "Connecting to {}:{}{}...",
-            self.world.host,
-            self.world.port,
-            if self.world.tls { " with TLS" } else { "" }
-        ));
-        self.set_status(true, None);
-        *self.ansi.borrow_mut() = AnsiParser::new();
-
-        let (handle, mut events) = {
+        let (mut events, out) = {
             let _guard = crate::runtime().enter();
-            spawn_session(opts)
+            self.engine.borrow_mut().connect()
         };
-        if let Some(size) = self.window_size.get() {
-            handle.set_window_size(size.0, size.1);
-        }
-        *self.handle.borrow_mut() = Some(handle);
+        self.apply(out);
         let generation = self.generation.get() + 1;
         self.generation.set(generation);
 
@@ -187,16 +211,18 @@ impl SessionView {
                 if this.generation.get() != generation {
                     return;
                 }
-                let mut done = this.handle_event(event);
+                let mut done = matches!(event, mu_net::SessionEvent::Disconnected { .. });
+                let out = this.engine.borrow_mut().handle_event(event);
+                this.apply(out);
                 // Handle whatever else has already arrived before letting GTK redraw.
                 for _ in 0..BATCH_LIMIT {
                     if done {
                         break;
                     }
-                    match events.try_recv() {
-                        Ok(event) => done = this.handle_event(event),
-                        Err(_) => break,
-                    }
+                    let Ok(event) = events.try_recv() else { break };
+                    done = matches!(event, mu_net::SessionEvent::Disconnected { .. });
+                    let out = this.engine.borrow_mut().handle_event(event);
+                    this.apply(out);
                 }
                 if done {
                     return;
@@ -206,187 +232,153 @@ impl SessionView {
     }
 
     pub fn disconnect(&self) {
-        if let Some(handle) = self.handle.borrow().as_ref() {
-            handle.disconnect();
-        }
+        self.engine.borrow_mut().disconnect();
     }
 
-    /// Shows connection state on the tab: a spinner while connecting, an icon once disconnected.
-    fn set_status(&self, connecting: bool, disconnected: Option<&str>) {
-        if let Some(page) = self.page.borrow().as_ref() {
-            page.set_loading(connecting);
-            match disconnected {
-                Some(reason) => {
-                    page.set_indicator_icon(Some(&gtk::gio::ThemedIcon::new("network-offline-symbolic")));
-                    page.set_indicator_tooltip(reason);
+    pub fn toggle_log(self: &Rc<Self>) {
+        let out = self.engine.borrow_mut().toggle_log();
+        self.apply(out);
+    }
+
+    pub fn clear(&self) {
+        self.output.clear();
+    }
+
+    fn apply(self: &Rc<Self>, outputs: Vec<Output>) {
+        for output in outputs {
+            match output {
+                Output::Line { line, target: Target::Main } => self.output.append_line(&line),
+                Output::Line { line, target: Target::Spawn(name) } => self.spawn(&name).append_line(&line),
+                Output::Prompt { line, terminated } => self.output.set_prompt(&line, terminated),
+                Output::Notice(text) => self.output.notice(&text),
+                Output::Echo(text) => self.output.echo(&text),
+                Output::Bell => self.output.view.error_bell(),
+                Output::PasswordMode(on) => self.input.set_password_mode(on),
+                Output::Status(status) => self.set_status(&status),
+                Output::Activity { important } => self.mark_activity(important),
+                Output::Notify { title, body } => {
+                    let notification = gio::Notification::new(&title);
+                    notification.set_body(Some(&body));
+                    if let Some(app) = gio::Application::default() {
+                        app.send_notification(None, &notification);
+                    }
                 }
-                None => page.set_indicator_icon(None::<&gtk::gio::Icon>),
-            }
-        }
-    }
-
-    /// Handles one event. Returns true once the session has ended.
-    fn handle_event(&self, event: SessionEvent) -> bool {
-        match event {
-            SessionEvent::Connected { addr } => {
-                self.set_status(false, None);
-                self.output.notice(&format!("Connected to {addr}"));
-                if let Some(login) = self.character.as_ref().map(|c| c.login.as_str()).filter(|l| !l.is_empty())
-                    && let Some(handle) = self.handle.borrow().as_ref()
-                {
-                    for line in login.lines() {
-                        handle.send_line(line);
+                Output::PlaySound(path) => self.play_sound(&path),
+                Output::OpenUri(uri) => {
+                    if let Some(f) = self.on_open_uri.borrow().as_ref() {
+                        f(&uri);
+                    }
+                }
+                Output::SetInput(text) => {
+                    self.input.set_text(&text);
+                    self.input.grab_focus();
+                }
+                Output::ClearOutput => self.output.clear(),
+                Output::Reconnect => self.connect(),
+                Output::VariablesChanged { scope, variables } => {
+                    if let Some(rules) = self.state.config.borrow_mut().rules_mut(&scope) {
+                        rules.variables = variables;
+                    }
+                    if let Err(e) = self.state.save() {
+                        self.output.notice(&e);
+                    }
+                }
+                Output::LoggingChanged(_) => {
+                    if let Some(f) = self.on_logging_changed.borrow().as_ref() {
+                        f();
                     }
                 }
             }
-            SessionEvent::Line(text) => {
-                let mut line = self.ansi.borrow_mut().parse_line(&text);
-                line.linkify();
-                self.output.append_line(&line);
-                self.log(&line.text);
-                if line.bell {
-                    self.output.view.error_bell();
-                }
-                self.mark_activity();
-            }
-            SessionEvent::Prompt(text) => {
-                let mut line = self.ansi.borrow_mut().parse_line(&text);
-                line.linkify();
-                self.output.set_prompt(&line, true);
-                self.log(&line.text);
-                self.mark_activity();
-            }
-            SessionEvent::PartialLine(text) => {
-                // Parse with a copy of the state: the real line will be parsed again later.
-                let line = self.ansi.borrow().clone().parse_line(&text);
-                self.output.set_prompt(&line, false);
-                self.mark_activity();
-            }
-            SessionEvent::ServerEcho(on) => {
-                self.server_echo.set(on);
-                self.input.set_password_mode(on);
-            }
-            SessionEvent::EncodingChanged(e) => self.output.notice(&format!("Server switched encoding to {}", e.name())),
-            SessionEvent::Notice(text) => self.output.notice(&text),
-            SessionEvent::Gmcp { .. } | SessionEvent::Mssp(_) | SessionEvent::Compression(_) => {}
-            SessionEvent::Disconnected { error } => {
-                let reason = match &error {
-                    Some(e) => format!("Disconnected: {e}"),
-                    None => "Disconnected".to_string(),
-                };
-                self.output.notice(&format!("{reason}. Press Ctrl+R to reconnect."));
-                self.log(&format!("--- {reason} ---"));
-                self.set_status(false, Some(&reason));
-                self.server_echo.set(false);
-                self.input.set_password_mode(false);
-                *self.handle.borrow_mut() = None;
-                return true;
-            }
-        }
-        false
-    }
-
-    fn mark_activity(&self) {
-        if let Some(page) = self.page.borrow().as_ref()
-            && !page.is_selected()
-        {
-            page.set_needs_attention(true);
         }
     }
 
-    fn submit(&self, text: &str, secret: bool) {
-        let Some(handle) = self.handle.borrow().clone().filter(|h| !h.is_closed()) else {
-            self.output.notice("Not connected. Press Ctrl+R to reconnect.");
-            return;
+    /// The spawn window with this name, created (with its tab) on first use.
+    fn spawn(self: &Rc<Self>, name: &str) -> Rc<OutputView> {
+        if let Some(view) = self.spawns.borrow().get(name) {
+            return view.clone();
+        }
+        let settings = self.state.config.borrow().settings.clone();
+        let view = OutputView::new(Palette::default(), settings.scrollback_lines);
+        let weak = Rc::downgrade(self);
+        view.connect_link(move |uri| {
+            if let Some(this) = weak.upgrade() {
+                this.follow_link(uri);
+            }
+        });
+        view.scrolled.set_size_request(260, -1);
+        self.spawn_tabs.append_page(&view.scrolled, Some(&gtk::Label::new(Some(name))));
+        if !self.spawn_tabs.is_visible() {
+            self.spawn_tabs.set_visible(true);
+            // Give the main output about two thirds of the width.
+            let width = self.root.width();
+            if width > 0 {
+                self.root.set_position(width * 2 / 3);
+            }
+        }
+        self.spawns.borrow_mut().insert(name.to_string(), view.clone());
+        view
+    }
+
+    fn play_sound(&self, path: &str) {
+        let path = match path.strip_prefix("~/") {
+            Some(rest) => glib::home_dir().join(rest),
+            None => PathBuf::from(path),
         };
-        self.output.scroll_to_end();
-        // Enter on an empty input still sends an empty line, which many MUDs use.
-        let lines: Vec<&str> = if text.is_empty() { vec![""] } else { text.lines().collect() };
-        for line in lines {
-            handle.send_line(line);
-            if !secret && self.settings.local_echo {
-                self.output.echo(line);
-            }
+        if !path.is_file() {
+            self.output.notice(&format!("Sound file not found: {}", path.display()));
+            return;
+        }
+        let mut sounds = self.sounds.borrow_mut();
+        sounds.retain(|m| !m.is_ended() && m.error().is_none());
+        let media = gtk::MediaFile::for_filename(&path);
+        media.play();
+        sounds.push(media);
+    }
+
+    /// Shows connection state on the tab: a spinner while connecting, an icon once disconnected.
+    fn set_status(&self, status: &Status) {
+        if let Some(page) = self.page.borrow().as_ref() {
+            page.set_loading(*status == Status::Connecting);
+        }
+        *self.disconnected.borrow_mut() = match status {
+            Status::Disconnected(reason) => Some(reason.clone().unwrap_or_else(|| "Disconnected".into())),
+            _ => None,
+        };
+        self.update_indicator();
+    }
+
+    fn update_indicator(&self) {
+        let Some(page) = self.page.borrow().clone() else { return };
+        if let Some(reason) = self.disconnected.borrow().as_deref() {
+            page.set_indicator_icon(Some(&gio::ThemedIcon::new("network-offline-symbolic")));
+            page.set_indicator_tooltip(reason);
+        } else if self.important.get() {
+            page.set_indicator_icon(Some(&gio::ThemedIcon::new("starred-symbolic")));
+            page.set_indicator_tooltip("An important trigger fired");
+        } else {
+            page.set_indicator_icon(None::<&gio::Icon>);
         }
     }
 
-    fn follow_link(&self, uri: &str) {
-        if let Some(command) = uri.strip_prefix("send:") {
-            let command = percent_decode(command);
-            if let Some(handle) = self.handle.borrow().as_ref() {
-                handle.send_line(&command);
-                if self.settings.local_echo {
-                    self.output.echo(&command);
-                }
-            }
-        } else if let Some(text) = uri.strip_prefix("prompt:") {
-            self.input.set_text(&percent_decode(text));
-            self.input.grab_focus();
-        } else if let Some(f) = self.on_open_uri.borrow().as_ref() {
-            f(uri);
+    fn mark_activity(&self, important: bool) {
+        let Some(page) = self.page.borrow().clone() else { return };
+        if page.is_selected() {
+            return;
+        }
+        page.set_needs_attention(true);
+        if important && !self.important.get() {
+            self.important.set(true);
+            self.update_indicator();
         }
     }
 
-    fn log(&self, text: &str) {
-        let mut logger = self.logger.borrow_mut();
-        if let Some(log) = logger.as_mut()
-            && let Err(e) = log.line(text)
-        {
-            *logger = None;
-            drop(logger);
-            self.output.notice(&format!("Logging stopped: {e}"));
+    /// The user switched to this tab.
+    pub fn seen(&self) {
+        if let Some(page) = self.page.borrow().as_ref() {
+            page.set_needs_attention(false);
         }
-    }
-
-    pub fn is_logging(&self) -> bool {
-        self.logger.borrow().is_some()
-    }
-
-    /// Starts logging, or stops it if it's already running. Returns the log path when started.
-    pub fn toggle_log(&self) -> Result<Option<PathBuf>, String> {
-        if let Some(log) = self.logger.borrow_mut().take() {
-            log.close().map_err(|e| e.to_string())?;
-            self.output.notice("Logging stopped");
-            return Ok(None);
+        if self.important.replace(false) {
+            self.update_indicator();
         }
-        let log = Logger::open(&mu_config::log_dir(), &self.title(), self.settings.log_timestamps)
-            .map_err(|e| e.to_string())?;
-        let path = log.path().to_path_buf();
-        *self.logger.borrow_mut() = Some(log);
-        self.output.notice(&format!("Logging to {}", path.display()));
-        Ok(Some(path))
-    }
-}
-
-/// Decodes %XX escapes. Invalid escapes are kept as they are.
-fn percent_decode(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%'
-            && let Some(hex) = s.get(i + 1..i + 3)
-            && let Ok(b) = u8::from_str_radix(hex, 16)
-        {
-            out.push(b);
-            i += 3;
-            continue;
-        }
-        out.push(bytes[i]);
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::percent_decode;
-
-    #[test]
-    fn decodes_percent_escapes() {
-        assert_eq!(percent_decode("look%20at%20me"), "look at me");
-        assert_eq!(percent_decode("caf%C3%A9"), "café");
-        assert_eq!(percent_decode("100%"), "100%");
-        assert_eq!(percent_decode("%zz"), "%zz");
     }
 }
