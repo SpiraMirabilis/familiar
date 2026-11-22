@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use serde_json::Value;
 
@@ -85,12 +86,7 @@ impl Media {
 
 /// Where downloaded media is kept.
 pub fn cache_dir() -> PathBuf {
-    std::env::var_os("XDG_CACHE_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))
-        .unwrap_or_else(std::env::temp_dir)
-        .join(familiar_config::APP_DIR)
-        .join("media")
+    familiar_config::paths::cache_dir().join("media")
 }
 
 /// FNV-1a, so cache names are stable across runs and Rust versions.
@@ -101,11 +97,8 @@ fn fnv1a(s: &str) -> u64 {
 /// Returns a local path for a media URL, downloading it into the cache if needed. Blocks, so
 /// call it off the UI thread. `file://` URLs and plain paths are used as they are.
 pub fn fetch(url: &str) -> Result<PathBuf, String> {
-    if let Some(path) = url.strip_prefix("file://") {
-        return Ok(PathBuf::from(path));
-    }
     if !url.starts_with("http://") && !url.starts_with("https://") {
-        return Ok(PathBuf::from(url));
+        return Ok(familiar_config::paths::expand(url));
     }
     let ext = url
         .rsplit('/')
@@ -122,16 +115,20 @@ pub fn fetch(url: &str) -> Result<PathBuf, String> {
     }
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let agent = format!("{}/{} (MU* client; +https://github.com/SpiraMirabilis/familiar)", familiar_config::APP_NAME, env!("CARGO_PKG_VERSION"));
-    let mut response = ureq::get(url).header("User-Agent", &agent).call().map_err(|e| format!("{url}: {e}"))?;
+    // Without these a server that stops answering would hold a worker thread forever.
+    let config = ureq::Agent::config_builder()
+        .timeout_connect(Some(Duration::from_secs(15)))
+        .timeout_global(Some(Duration::from_secs(120)))
+        .build();
+    let mut response =
+        ureq::Agent::new_with_config(config).get(url).header("User-Agent", &agent).call().map_err(|e| format!("{url}: {e}"))?;
     let bytes = response
         .body_mut()
         .with_config()
         .limit(50 * 1024 * 1024)
         .read_to_vec()
         .map_err(|e| format!("{url}: {e}"))?;
-    let tmp = path.with_extension("part");
-    std::fs::write(&tmp, bytes).map_err(|e| format!("{}: {e}", tmp.display()))?;
-    std::fs::rename(&tmp, &path).map_err(|e| format!("{}: {e}", path.display()))?;
+    familiar_config::paths::write_atomic(&path, &bytes).map_err(|e| format!("{}: {e}", path.display()))?;
     Ok(path)
 }
 
@@ -180,7 +177,8 @@ mod tests {
 
     #[test]
     fn fetch_local_paths() {
-        assert_eq!(fetch("file:///tmp/a.wav").unwrap(), PathBuf::from("/tmp/a.wav"));
+        // Drive-letter URLs are covered in familiar_config::paths.
+        assert_eq!(fetch("file:///tmp/a%20b.wav").unwrap(), PathBuf::from("/tmp/a b.wav"));
         assert_eq!(fetch("/tmp/b.ogg").unwrap(), PathBuf::from("/tmp/b.ogg"));
     }
 }

@@ -3,7 +3,6 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::rc::{Rc, Weak};
 use std::time::Instant;
 
@@ -195,12 +194,7 @@ impl SessionView {
         let mut out = self.engine.borrow_mut().set_script_host(Box::new(host));
         let paths = self.engine.borrow().startup_scripts();
         for path in paths {
-            let home = glib::home_dir();
-            let shown = match path.strip_prefix(&home) {
-                Ok(rest) => format!("~/{}", rest.display()),
-                Err(_) => path.display().to_string(),
-            };
-            out.push(Output::Notice(format!("Running {shown}")));
+            out.push(Output::Notice(format!("Running {}", familiar_config::paths::display(&path))));
             out.extend(self.engine.borrow_mut().load_script(&path));
         }
         self.apply(out);
@@ -927,7 +921,8 @@ impl SessionView {
         let WebViewCommand::Open(open) = command else { return };
         let who = if open.from_server { "The server wants" } else { "You asked" };
         self.output.notice(&format!(
-            "{who} to open a web view, but this build doesn't include them. Install webkitgtk-6.0 and build with --features webview."
+            "{who} to open a web view, but this build doesn't include them{}.",
+            if cfg!(windows) { " (they aren't available on Windows)" } else { ". Install webkitgtk-6.0 and build with --features webview" }
         ));
         if let Some(url) = open.url {
             let mut line = familiar_ansi::StyledLine::plain(format!("Open {url} in your browser instead"));
@@ -937,10 +932,7 @@ impl SessionView {
     }
 
     fn play_sound(&self, path: &str) {
-        let path = match path.strip_prefix("~/") {
-            Some(rest) => glib::home_dir().join(rest),
-            None => PathBuf::from(path),
-        };
+        let path = familiar_config::paths::expand(path);
         if !path.is_file() {
             self.output.notice(&format!("Sound file not found: {}", path.display()));
             return;

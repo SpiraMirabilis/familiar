@@ -55,16 +55,6 @@ pub fn show(parent: &impl IsA<gtk::Widget>, state: Rc<AppState>, on_connect: imp
     this.dialog.present(Some(parent));
 }
 
-/// Parses "host:port" or "host port". The port defaults to 23.
-fn parse_address(text: &str) -> Option<(String, u16)> {
-    let text = text.trim();
-    let (host, port) = match text.rsplit_once([':', ' ']) {
-        Some((h, p)) => (h.trim(), p.trim().parse().ok()?),
-        None => (text, 23),
-    };
-    (!host.is_empty()).then(|| (host.to_string(), port))
-}
-
 impl ConnectDialog {
     fn connect(&self, world: World, character: Option<Character>) {
         // Close first: closing returns focus to whatever had it before the dialog opened, which
@@ -96,11 +86,13 @@ impl ConnectDialog {
         let weak = Rc::downgrade(self);
         entry.connect_apply(move |entry| {
             let Some(this) = weak.upgrade() else { return };
-            match parse_address(&entry.text()) {
-                Some((host, port)) => this.connect(
-                    World { name: format!("{host}:{port}"), host, port, tls: tls.is_active(), ..World::default() },
-                    None,
-                ),
+            match familiar_config::Address::parse(&entry.text()) {
+                // Typing "tls" after the address works as well as the switch.
+                Some(address) => {
+                    let mut world = address.into_world(23);
+                    world.tls |= tls.is_active();
+                    this.connect(world, None)
+                }
                 None => this.toasts.add_toast(adw::Toast::new("Enter an address like example.com:4000")),
             }
         });
@@ -289,19 +281,5 @@ impl ConnectDialog {
         group.add(&expander);
         self.page.add(&group);
         *self.directory_group.borrow_mut() = Some(group);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::parse_address;
-
-    #[test]
-    fn addresses() {
-        assert_eq!(parse_address("a.org:4000"), Some(("a.org".into(), 4000)));
-        assert_eq!(parse_address(" a.org 23 "), Some(("a.org".into(), 23)));
-        assert_eq!(parse_address("a.org"), Some(("a.org".into(), 23)));
-        assert_eq!(parse_address("a.org:x"), None);
-        assert_eq!(parse_address(""), None);
     }
 }

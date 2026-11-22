@@ -16,18 +16,9 @@ pub struct Logger {
     file: BufWriter<File>,
 }
 
-/// Replaces characters that are awkward in file names.
-fn sanitize(name: &str) -> String {
-    let s: String = name
-        .chars()
-        .map(|c| if c.is_alphanumeric() || matches!(c, '-' | '_' | '.') { c } else { '_' })
-        .collect();
-    if s.is_empty() { "log".into() } else { s }
-}
-
 impl Logger {
     pub fn path_for(dir: &Path, name: &str, date: NaiveDate) -> PathBuf {
-        dir.join(format!("{}-{}.log", sanitize(name), date.format("%Y-%m-%d")))
+        dir.join(format!("{}-{}.log", familiar_config::paths::file_name(name, "log"), date.format("%Y-%m-%d")))
     }
 
     /// Opens (appending) today's log for `name` in `dir`, creating the directory if needed.

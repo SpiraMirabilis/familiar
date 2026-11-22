@@ -1,8 +1,11 @@
 //! Client configuration: worlds, characters and settings, stored as TOML.
 
+mod address;
 pub mod directory;
+pub mod paths;
 mod rules;
 
+pub use address::Address;
 pub use rules::{Alias, Highlight, Macro, Pattern, Rules, Scope, Trigger};
 
 use std::path::{Path, PathBuf};
@@ -22,7 +25,7 @@ pub const APP_NAME: &str = "Familiar";
 /// Returns what was copied, to tell the user.
 pub fn migrate_old_dirs() -> Vec<String> {
     let mut done = Vec::new();
-    let pairs = [(dirs::config_dir(), config_dir()), (dirs::data_dir(), data_dir())];
+    let pairs = [(dirs::config_dir(), config_dir()), (dirs::data_local_dir(), data_dir())];
     for (base, new) in pairs {
         let Some(old) = base.map(|b| b.join(OLD_APP_DIR)) else { continue };
         if old.is_dir() && !new.exists() && copy_dir(&old, &new).is_ok() {
@@ -72,7 +75,8 @@ pub struct Config {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
-    /// Pango font description, e.g. "Monospace 11".
+    /// The default font, as a Pango font description, e.g. "Monospace 11". Worlds can have
+    /// their own.
     pub font: String,
     pub scrollback_lines: usize,
     /// Show sent commands in the output window.
@@ -94,7 +98,8 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            font: "Monospace 11".into(),
+            // Pango's "Monospace" is Courier New on Windows, which reads poorly at this size.
+            font: if cfg!(windows) { "Consolas 11" } else { "Monospace 11" }.into(),
             scrollback_lines: 10_000,
             local_echo: true,
             input_history_size: 500,
@@ -204,13 +209,7 @@ impl Default for Puppet {
     }
 }
 
-pub fn config_dir() -> PathBuf {
-    dirs::config_dir().unwrap_or_else(|| PathBuf::from(".")).join(APP_DIR)
-}
-
-pub fn data_dir() -> PathBuf {
-    dirs::data_dir().unwrap_or_else(|| PathBuf::from(".")).join(APP_DIR)
-}
+pub use paths::{config_dir, data_dir};
 
 pub fn default_config_path() -> PathBuf {
     config_dir().join("config.toml")
@@ -223,8 +222,7 @@ pub fn startup_script_path() -> PathBuf {
 
 /// Where a world's map is saved.
 pub fn map_path(world: &str) -> PathBuf {
-    let name: String = world.chars().map(|c| if c.is_alphanumeric() || matches!(c, '-' | '_' | '.') { c } else { '_' }).collect();
-    data_dir().join("maps").join(format!("{}.json", if name.is_empty() { "map" } else { &name }))
+    data_dir().join("maps").join(format!("{}.json", paths::file_name(world, "map")))
 }
 
 pub fn log_dir() -> PathBuf {
@@ -292,12 +290,7 @@ impl Config {
     pub fn save(&self, path: &Path) -> Result<(), Error> {
         let text = toml::to_string_pretty(self)?;
         let io_err = |source| Error::Io { path: path.into(), source };
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir).map_err(io_err)?;
-        }
-        let tmp = path.with_extension("toml.tmp");
-        std::fs::write(&tmp, text).map_err(io_err)?;
-        std::fs::rename(&tmp, path).map_err(io_err)
+        paths::write_atomic(path, text.as_bytes()).map_err(io_err)
     }
 }
 

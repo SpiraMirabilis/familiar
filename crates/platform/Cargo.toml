@@ -1,0 +1,16 @@
+[package]
+name = "familiar-platform"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The few things Familiar asks of the desktop: play a sound, show a notification, open a link"
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+keywords = ["mud", "notifications", "sound"]
+categories = ["os"]
+
+[target.'cfg(windows)'.dependencies]
+rodio = { version = "0.23", default-features = false, features = ["playback", "wav", "vorbis", "mp3", "flac"] }
+tauri-winrt-notification = "0.8"

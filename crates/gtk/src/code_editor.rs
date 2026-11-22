@@ -61,7 +61,7 @@ fn install_languages() {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
         sourceview5::init();
-        let dir = familiar_engine::media::cache_dir().with_file_name("language-specs");
+        let dir = familiar_config::paths::cache_dir().join("language-specs");
         if std::fs::create_dir_all(&dir).is_ok() {
             for (name, spec) in LANGUAGE_SPECS {
                 let _ = std::fs::write(dir.join(name), spec);

@@ -13,10 +13,8 @@ use familiar_engine::media::{MediaCommand, fetch};
 pub fn describe_error(name: &str, error: &glib::Error) -> String {
     let message = error.message();
     if message.contains("missing a plug-in") || message.contains("No suitable plugins") {
-        format!(
-            "Couldn't play {name}: GStreamer has no decoder or audio output for it. Installing gst-plugins-good \
-             (WAV, MP3 and audio output) usually fixes this."
-        )
+        let fix = if cfg!(windows) { "" } else { " Installing gst-plugins-good (WAV, MP3 and audio output) usually fixes this." };
+        format!("Couldn't play {name}: GStreamer has no decoder or audio output for it.{fix}")
     } else {
         format!("Couldn't play {name}: {}", message.lines().next().unwrap_or(message))
     }

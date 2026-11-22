@@ -357,7 +357,7 @@ impl MainWindow {
             .application_name(crate::APP_NAME)
             .application_icon("network-server-symbolic")
             .version(env!("CARGO_PKG_VERSION"))
-            .comments("A MU* client for Linux, inspired by BeipMU.")
+            .comments("A MU* client, inspired by BeipMU.")
             .license_type(gtk::License::MitX11)
             .build();
         about.present(Some(&self.window));

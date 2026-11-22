@@ -281,8 +281,9 @@ impl Ctx {
         }
         if let Some(s) = item.scope("Sound").filter(|s| s.flag_or("Active", false)) {
             let path = s.str_or_empty("Sound");
-            if path.contains('\\') {
-                self.warn(format!("{what}: its sound is a Windows path ({path}); choose a Linux one in the trigger editor"));
+            // On Windows the path is very likely still good.
+            if path.contains('\\') && !cfg!(windows) {
+                self.warn(format!("{what}: its sound is a Windows path ({path}); choose a new one in the trigger editor"));
             }
             t.sound = path;
         }

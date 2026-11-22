@@ -449,11 +449,7 @@ impl Engine {
             }
             "clear" => out.push(Output::Notice("This deletes every room on this world's map. Type /map clear yes to do it.".into())),
             "import" if !rest.is_empty() => {
-                let path = rest.trim_matches('"');
-                let path = match path.strip_prefix("~/") {
-                    Some(rel) => std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(rel)).unwrap_or_else(|| path.into()),
-                    None => path.into(),
-                };
+                let path = familiar_config::paths::expand(rest.trim_matches('"'));
                 out.extend(self.map_import(&path));
             }
             _ => out.push(Output::Notice(
@@ -789,10 +785,7 @@ impl Engine {
         }
         let script = self.world.script.trim();
         if !script.is_empty() {
-            paths.push(match (script.strip_prefix("~/"), std::env::var_os("HOME")) {
-                (Some(rest), Some(home)) => PathBuf::from(home).join(rest),
-                _ => PathBuf::from(script),
-            });
+            paths.push(familiar_config::paths::expand(script));
         }
         paths
     }

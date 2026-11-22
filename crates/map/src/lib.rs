@@ -105,12 +105,7 @@ impl Atlas {
             return Ok(());
         }
         let text = serde_json::to_string(self).map_err(|e| e.to_string())?;
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-        }
-        let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, text).map_err(|e| format!("{}: {e}", tmp.display()))?;
-        std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))?;
+        familiar_config::paths::write_atomic(path, text.as_bytes()).map_err(|e| format!("{}: {e}", path.display()))?;
         self.dirty = false;
         Ok(())
     }

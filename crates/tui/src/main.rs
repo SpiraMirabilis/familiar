@@ -5,6 +5,7 @@ mod buffer;
 mod form;
 mod fuzzy;
 mod input;
+mod keys;
 mod session;
 mod theme;
 mod ui;
@@ -59,14 +60,23 @@ impl InputThread {
                 }
                 i.store(false, Ordering::SeqCst);
                 match event::poll(Duration::from_millis(50)) {
-                    Ok(true) => match event::read() {
-                        Ok(ev) => {
+                    Ok(true) => {
+                        let Ok(first) = event::read() else { return };
+                        let mut events = vec![first];
+                        if cfg!(windows) {
+                            // Read everything that's waiting, to tell a paste from typing.
+                            while events.len() < 100_000 && matches!(event::poll(Duration::ZERO), Ok(true)) {
+                                let Ok(ev) = event::read() else { return };
+                                events.push(ev);
+                            }
+                            events = keys::coalesce_paste(events);
+                        }
+                        for ev in events {
                             if tx.send(ev).is_err() {
                                 return;
                             }
                         }
-                        Err(_) => return,
-                    },
+                    }
                     Ok(false) => {}
                     Err(_) => return,
                 }
@@ -89,7 +99,9 @@ impl InputThread {
 
 fn enter(stdout: &mut Stdout) -> std::io::Result<()> {
     terminal::enable_raw_mode()?;
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture, EnableBracketedPaste, EnableFocusChange)?;
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture, EnableFocusChange)?;
+    // Older Windows consoles can't do this one; pastes are recognised another way there.
+    let _ = execute!(stdout, EnableBracketedPaste);
     // Lets terminals that support it report Shift+Enter and keypad keys distinctly.
     if terminal::supports_keyboard_enhancement().unwrap_or(false) {
         queue!(stdout, PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES))?;
@@ -101,7 +113,8 @@ fn leave(stdout: &mut Stdout) {
     if terminal::supports_keyboard_enhancement().unwrap_or(false) {
         let _ = queue!(stdout, PopKeyboardEnhancementFlags);
     }
-    let _ = execute!(stdout, DisableFocusChange, DisableBracketedPaste, DisableMouseCapture, LeaveAlternateScreen);
+    let _ = execute!(stdout, DisableBracketedPaste);
+    let _ = execute!(stdout, DisableFocusChange, DisableMouseCapture, LeaveAlternateScreen);
     let _ = terminal::disable_raw_mode();
 }
 
@@ -178,31 +191,25 @@ async fn run(terminal: &mut Term, args: Args) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Opens `$VISUAL` or `$EDITOR` (nano if neither is set) on a file, at `line` if the editor
-/// understands `+N`.
+/// Opens `$VISUAL` or `$EDITOR` (nano if neither is set; Notepad on Windows) on a file, at
+/// `line` if the editor understands `+N`.
 fn edit_file(path: &std::path::Path, line: Option<u32>) -> Result<(), String> {
-    let editor = std::env::var("VISUAL").or_else(|_| std::env::var("EDITOR")).unwrap_or_else(|_| "nano".into());
-    // The variable may hold arguments ("code --wait").
-    let mut parts = editor.split_whitespace();
-    let program = parts.next().unwrap_or("nano");
-    let mut cmd = std::process::Command::new(program);
-    cmd.args(parts);
-    let base = std::path::Path::new(program).file_name().and_then(|n| n.to_str()).unwrap_or("");
+    let (mut cmd, name) = familiar_platform::editor_command();
     if let Some(line) = line
-        && ["vi", "vim", "nvim", "nano", "emacs", "micro", "kak", "joe", "mg"].contains(&base)
+        && ["vi", "vim", "nvim", "nano", "emacs", "micro", "kak", "joe", "mg"].contains(&name.as_str())
     {
         cmd.arg(format!("+{line}"));
     }
-    let status = cmd.arg(path).status().map_err(|e| format!("couldn't run {program}: {e}"))?;
-    if status.success() { Ok(()) } else { Err(format!("{program} exited with {status}")) }
+    let status = cmd.arg(path).status().map_err(|e| format!("couldn't run {name}: {e}"))?;
+    if status.success() { Ok(()) } else { Err(format!("{name} exited with {status}")) }
 }
 
 /// Edits `content` in a temporary file named after `name`, returning the result.
 fn edit_text(name: &str, extension: &str, content: &str, line: Option<u32>) -> Result<String, String> {
     let dir = std::env::temp_dir().join(format!("familiar-tui-{}", std::process::id()));
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let safe: String = name.chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).take(40).collect();
-    let path = dir.join(format!("{}.{extension}", if safe.is_empty() { "edit" } else { &safe }));
+    let short: String = name.chars().take(40).collect();
+    let path = dir.join(format!("{}.{extension}", familiar_config::paths::file_name(&short, "edit")));
     // Editors expect a final newline; it's taken off again afterwards.
     let added = !content.is_empty() && !content.ends_with('\n');
     std::fs::write(&path, if added { format!("{content}\n") } else { content.to_string() }).map_err(|e| e.to_string())?;

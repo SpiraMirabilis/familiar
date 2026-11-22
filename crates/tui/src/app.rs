@@ -2,7 +2,6 @@
 //! Drawing is in `ui.rs`; this module never touches the terminal directly.
 
 use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use familiar_config::{Config, World};
@@ -213,8 +212,7 @@ pub struct App {
     esc_at: Option<Instant>,
     /// A saved world Ctrl+D was pressed on once (in the picker).
     delete_armed: Option<String>,
-    sounds: Vec<(String, Child)>,
-    player: Option<Option<&'static str>>,
+    sounds: familiar_platform::SoundPlayer,
 }
 
 impl App {
@@ -249,8 +247,7 @@ impl App {
             naws: (0, 0),
             esc_at: None,
             delete_armed: None,
-            sounds: Vec::new(),
-            player: None,
+            sounds: familiar_platform::SoundPlayer::new(),
         };
         if let Some(e) = config_error {
             app.toast(&format!("Couldn't read the config ({e}); changes won't be saved"));
@@ -371,13 +368,8 @@ impl App {
             }
         };
         let mut out = self.sessions[idx].engine.set_script_host(Box::new(host));
-        let home = std::env::var_os("HOME").map(PathBuf::from);
         for path in self.sessions[idx].engine.startup_scripts() {
-            let shown = match home.as_ref().and_then(|h| path.strip_prefix(h).ok()) {
-                Some(rest) => format!("~/{}", rest.display()),
-                None => path.display().to_string(),
-            };
-            out.push(Output::Notice(format!("Running {shown}")));
+            out.push(Output::Notice(format!("Running {}", familiar_config::paths::display(&path))));
             out.extend(self.sessions[idx].engine.load_script(&path));
         }
         self.apply(idx, out);
@@ -441,9 +433,7 @@ impl App {
                 s.engine.toggle_log();
             }
         }
-        for (_, child) in &mut self.sounds {
-            let _ = child.kill();
-        }
+        self.sounds.stop(None);
     }
 
     // ----- Engine output -----
@@ -475,39 +465,37 @@ impl App {
         match effect {
             Effect::Notify { title, body } => {
                 if !self.focused {
-                    spawn_quietly("notify-send", &["-a", familiar_config::APP_NAME, &title, &body]);
+                    familiar_platform::notify(familiar_config::APP_NAME, &title, &body);
                 }
             }
             Effect::PlaySound(path) => self.play_sound("", &path, 1.0),
             Effect::Media(cmd) => match cmd {
                 familiar_engine::media::MediaCommand::Play { name, url, volume, .. } => {
                     if url.starts_with("http://") || url.starts_with("https://") {
-                        // Download off the UI thread; play when it arrives (if still wanted).
-                        let player = self.player();
+                        // Download off the UI thread; play when it arrives, unless a stop came
+                        // in the meantime.
+                        let sounds = self.sounds.clone();
+                        let stops = sounds.stop_count();
                         tokio::task::spawn_blocking(move || {
-                            if let (Ok(path), Some(player)) = (familiar_engine::media::fetch(&url), player) {
-                                let _ = player_command(player, &path.to_string_lossy(), volume).spawn();
+                            if let Ok(path) = familiar_engine::media::fetch(&url)
+                                && sounds.stop_count() == stops
+                            {
+                                let _ = sounds.play(&name, &path, volume);
                             }
                         });
                     } else {
                         self.play_sound(&name, &url, volume);
                     }
                 }
-                familiar_engine::media::MediaCommand::Stop { name } => {
-                    self.sounds.retain_mut(|(n, child)| {
-                        let stop = name.as_ref().is_none_or(|wanted| wanted == n);
-                        if stop {
-                            let _ = child.kill();
-                        }
-                        !stop
-                    });
-                }
+                familiar_engine::media::MediaCommand::Stop { name } => self.sounds.stop(name.as_deref()),
                 familiar_engine::media::MediaCommand::Preload { .. } => {}
             },
             Effect::OpenUri(uri) => {
                 if uri.starts_with("http://") || uri.starts_with("https://") || uri.starts_with("mailto:") {
-                    spawn_quietly("xdg-open", &[&uri]);
-                    self.toast(&format!("Opening {uri}"));
+                    match familiar_platform::open_uri(&uri) {
+                        Ok(()) => self.toast(&format!("Opening {uri}")),
+                        Err(e) => self.toast(&e),
+                    }
                 }
             }
             Effect::Edit(request) => self.external = Some(External::Edit { session: id, request, line: None }),
@@ -567,19 +555,9 @@ impl App {
         }
     }
 
-    fn player(&mut self) -> Option<&'static str> {
-        *self.player.get_or_insert_with(|| ["pw-play", "paplay", "aplay"].into_iter().find(|p| which(p)))
-    }
-
     fn play_sound(&mut self, name: &str, path: &str, volume: f64) {
-        let Some(player) = self.player() else {
-            self.toast("No sound player found (install pipewire, pulseaudio-utils or alsa-utils)");
-            return;
-        };
-        let path = path.strip_prefix("file://").unwrap_or(path);
-        match player_command(player, path, volume).spawn() {
-            Ok(child) => self.sounds.push((name.to_string(), child)),
-            Err(e) => self.toast(&format!("Couldn't play {path}: {e}")),
+        if let Err(e) = self.sounds.play(name, &familiar_config::paths::expand(path), volume) {
+            self.toast(&e);
         }
     }
 
@@ -613,7 +591,7 @@ impl App {
         if self.quit_armed.is_some_and(|at| at.elapsed() > Duration::from_secs(2)) {
             self.quit_armed = None;
         }
-        self.sounds.retain_mut(|(_, child)| matches!(child.try_wait(), Ok(None)));
+        self.sounds.tidy();
     }
 
     /// The output pane was drawn at this size. Tells servers (NAWS) when it changes.
@@ -852,7 +830,7 @@ impl App {
 
     pub fn on_event(&mut self, event: Event) {
         match event {
-            Event::Key(key) if key.kind != KeyEventKind::Release => self.on_key(key),
+            Event::Key(key) if key.kind != KeyEventKind::Release => self.on_key(crate::keys::normalize(key, cfg!(windows))),
             Event::Mouse(mouse) => self.on_mouse(mouse),
             Event::Paste(text) => {
                 if let Some(Overlay::World(form)) = &mut self.overlay {
@@ -1448,19 +1426,13 @@ pub fn insert_for(usage: &str) -> String {
     text
 }
 
-/// "host:port", "host port" or "host:port tls" as a new world.
+/// "host:port", "host port" or "host:port tls" as a new world. Stricter than the GTK client's
+/// address box, because here the same text is also a search of the saved worlds: there must be
+/// a port, and the host has to look like one.
 fn parse_address(text: &str) -> Option<World> {
-    let mut words = text.split_whitespace();
-    let first = words.next()?;
-    let (host, port) = match first.rsplit_once(':') {
-        Some((h, p)) => (h, p.parse::<u16>().ok()?),
-        None => (first, words.next()?.parse::<u16>().ok()?),
-    };
-    if host.is_empty() || !host.contains(['.']) && host != "localhost" {
-        return None;
-    }
-    let tls = words.next().is_some_and(|w| w.eq_ignore_ascii_case("tls") || w.eq_ignore_ascii_case("ssl"));
-    Some(World { name: format!("{host}:{port}"), host: host.to_string(), port, tls, ..World::default() })
+    let address = familiar_config::Address::parse(text)?;
+    address.port?;
+    (address.host.contains(['.', ':']) || address.host == "localhost").then(|| address.into_world(0))
 }
 
 /// A key as a macro chord, in the GTK client's naming (GDK key names).
@@ -1511,29 +1483,6 @@ fn chord(key: &KeyEvent) -> Option<KeyChord> {
         _ => return None,
     };
     Some(KeyChord::new(&name, ctrl, alt, shift))
-}
-
-fn which(program: &str) -> bool {
-    std::env::var_os("PATH").is_some_and(|paths| std::env::split_paths(&paths).any(|dir| dir.join(program).is_file()))
-}
-
-fn spawn_quietly(program: &str, args: &[&str]) {
-    let _ = Command::new(program).args(args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
-}
-
-fn player_command(player: &str, path: &str, volume: f64) -> Command {
-    let mut cmd = Command::new(player);
-    match player {
-        "pw-play" => {
-            cmd.arg(format!("--volume={:.2}", volume.clamp(0.0, 1.0)));
-        }
-        "paplay" => {
-            cmd.arg(format!("--volume={}", (volume.clamp(0.0, 1.0) * 65536.0) as u32));
-        }
-        _ => {}
-    }
-    cmd.arg(path).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
-    cmd
 }
 
 #[cfg(test)]

@@ -1,7 +1,7 @@
 //! The scrollback view: a read-only TextView that shows styled lines.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -52,6 +52,8 @@ pub struct OutputView {
     on_link: RefCell<Option<Box<dyn Fn(&str)>>>,
     /// A widget (an avatar) to put at the start of the next line.
     next_prefix: RefCell<Option<gtk::Widget>>,
+    /// Character cell size, with the Pango context serial it was measured at.
+    cell: Cell<Option<(u32, f64, f64)>>,
 }
 
 impl OutputView {
@@ -99,6 +101,7 @@ impl OutputView {
             follow: Rc::new(Cell::new(true)),
             on_link: RefCell::default(),
             next_prefix: RefCell::default(),
+            cell: Cell::new(None),
         });
         this.setup_scrolling();
         this.setup_links();
@@ -360,6 +363,27 @@ impl OutputView {
     pub fn clear(&self) {
         self.buffer.set_text("");
         self.prompt.set(Prompt::None);
+        self.drop_unused_links();
+    }
+
+    /// Every link has a tag of its own, so on a busy world they'd pile up for ever. Drops the
+    /// ones whose text has scrolled out of the buffer.
+    fn drop_unused_links(&self) {
+        let start = self.buffer.start_iter();
+        let table = self.buffer.tag_table();
+        let mut dead = HashSet::new();
+        self.links.borrow_mut().retain(|tag, _| {
+            let mut iter = start;
+            let used = iter.has_tag(tag) || iter.forward_to_tag_toggle(Some(tag));
+            if !used {
+                table.remove(tag);
+                dead.insert(tag.clone());
+            }
+            used
+        });
+        if !dead.is_empty() {
+            self.tags.borrow_mut().retain(|_, tag| !dead.contains(tag));
+        }
     }
 
     fn trim(&self) {
@@ -369,6 +393,7 @@ impl OutputView {
             let mut start = self.buffer.start_iter();
             if let Some(mut end) = self.buffer.iter_at_line((lines - self.max_lines) as i32) {
                 self.buffer.delete(&mut start, &mut end);
+                self.drop_unused_links();
             }
         }
     }
@@ -396,9 +421,20 @@ impl OutputView {
         if width <= 0 || height <= 0 {
             return None;
         }
-        let metrics = self.view.pango_context().metrics(None, None);
-        let char_width = metrics.approximate_char_width() as f64 / pango::SCALE as f64;
-        let line_height = metrics.height() as f64 / pango::SCALE as f64;
+        // This runs every frame, and measuring a font isn't free: only do it when the font (or
+        // anything else in the Pango context) has changed.
+        let context = self.view.pango_context();
+        let serial = context.serial();
+        let (char_width, line_height) = match self.cell.get() {
+            Some((at, w, h)) if at == serial => (w, h),
+            _ => {
+                let metrics = context.metrics(None, None);
+                let w = metrics.approximate_char_width() as f64 / pango::SCALE as f64;
+                let h = metrics.height() as f64 / pango::SCALE as f64;
+                self.cell.set(Some((serial, w, h)));
+                (w, h)
+            }
+        };
         if char_width <= 0.0 || line_height <= 0.0 {
             return None;
         }
