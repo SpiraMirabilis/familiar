@@ -5,8 +5,10 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+base64 = "0.23.1"
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
 fancy-regex = "0.20.2"
+flate2 = "1.1.11"
 mu-ansi = { version = "0.1.0", path = "../mu-ansi" }
 mu-config = { version = "0.1.0", path = "../mu-config" }
 mu-map = { version = "0.1.0", path = "../mu-map" }

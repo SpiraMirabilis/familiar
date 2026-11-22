@@ -17,6 +17,7 @@ use crate::media::{Media, MediaCommand};
 use crate::rules::CompiledRules;
 use crate::script::{ScriptAction, ScriptContext, ScriptHost};
 use crate::stats::{StatPane, Stats};
+use crate::tilemap::{Tilemap, Tilemaps};
 use mu_map::{Atlas, RoomId, RoomInfo};
 use crate::{KeyChord, Logger};
 
@@ -114,6 +115,8 @@ pub enum Output {
     /// The server reported a compile error in a program that was just sent from an editor.
     /// `line` counts from 1.
     CompileError { reference: String, line: u32, message: String },
+    /// A Beip.Tilemap map was created or changed.
+    Tilemap { name: String, map: Tilemap },
     /// The map or the current room changed; redraw it.
     MapChanged,
     /// The user asked to see the map.
@@ -148,6 +151,7 @@ pub struct Engine {
     window_size: Option<(u16, u16)>,
     server_echo: bool,
     stats: Stats,
+    tilemaps: Tilemaps,
     media: Media,
     mcp: Mcp,
     /// Show GMCP traffic as notices.
@@ -205,6 +209,7 @@ impl Engine {
             window_size: None,
             server_echo: false,
             stats: Stats::default(),
+            tilemaps: Tilemaps::default(),
             media: Media::default(),
             mcp: Mcp::default(),
             gmcp_debug: false,
@@ -649,6 +654,19 @@ impl Engine {
                 }
                 Err(e) => out.push(Output::Notice(e)),
             },
+            "beip.tilemap.info" | "beip.tilemap.data" => {
+                let result = if lower.ends_with("info") { self.tilemaps.info(&data) } else { self.tilemaps.data(&data) };
+                match result {
+                    Ok(names) => {
+                        for name in names {
+                            if let Some(map) = self.tilemaps.get(&name) {
+                                out.push(Output::Tilemap { name, map: map.clone() });
+                            }
+                        }
+                    }
+                    Err(e) => out.push(Output::Notice(e)),
+                }
+            }
             "room.info" => match RoomInfo::parse(&data) {
                 Some(info) => {
                     self.room_info_seen = true;

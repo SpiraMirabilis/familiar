@@ -14,6 +14,7 @@ mod output;
 mod rules_dialog;
 mod session;
 mod stats_pane;
+mod tilemap_view;
 #[cfg(feature = "webview")]
 mod webview;
 mod window;

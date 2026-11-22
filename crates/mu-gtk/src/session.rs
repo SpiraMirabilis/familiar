@@ -56,6 +56,7 @@ pub struct SessionView {
     sounds: RefCell<Vec<gtk::MediaFile>>,
     media: Rc<MediaPlayer>,
     map: RefCell<Option<Rc<crate::map_view::MapView>>>,
+    tilemaps: RefCell<HashMap<String, Rc<crate::tilemap_view::TilemapView>>>,
     /// Open code editors by reference ("" for the latest scratch editor), for compile errors.
     editors: RefCell<HashMap<String, Weak<crate::code_editor::CodeEditor>>>,
     /// The pending script timer and when it fires.
@@ -119,6 +120,7 @@ impl SessionView {
             timer: RefCell::default(),
             editors: RefCell::default(),
             map: RefCell::default(),
+            tilemaps: RefCell::default(),
             #[cfg(feature = "webview")]
             webviews: RefCell::default(),
             on_open_uri: RefCell::default(),
@@ -459,6 +461,24 @@ impl SessionView {
                     }
                 }
                 Output::ShowMap => self.show_map(true),
+                Output::Tilemap { name, map } => {
+                    let existing = self.tilemaps.borrow().get(&name).cloned();
+                    let view = existing.unwrap_or_else(|| {
+                        let view = crate::tilemap_view::TilemapView::new();
+                        self.add_side_tab(&view.root, &name);
+                        if let Some(n) = self.side.page_num(&view.root) {
+                            self.side.set_current_page(Some(n));
+                        }
+                        self.tilemaps.borrow_mut().insert(name.clone(), view.clone());
+                        view
+                    });
+                    let weak = Rc::downgrade(self);
+                    view.update(map, Rc::new(move |text: String| {
+                        if let Some(this) = weak.upgrade() {
+                            this.output.notice(&text);
+                        }
+                    }));
+                }
                 Output::Stats { pane, data } => self.update_stats(&pane, data.as_ref()),
                 Output::Media(command) => {
                     let weak = Rc::downgrade(self);

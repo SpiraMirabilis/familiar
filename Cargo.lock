@@ -1010,8 +1010,10 @@ dependencies = [
 name = "mu-engine"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "chrono",
  "fancy-regex",
+ "flate2",
  "mu-ansi",
  "mu-config",
  "mu-map",

@@ -12,6 +12,7 @@ pub mod media;
 pub mod rules;
 pub mod script;
 pub mod stats;
+pub mod tilemap;
 
 pub use engine::{EditRequest, Engine, Output, Status, Target, WebViewCommand, WebViewOpen};
 pub use history::History;
