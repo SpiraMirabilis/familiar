@@ -1,0 +1,64 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  tarball:
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    steps:
+      - name: Install dependencies
+        run: |
+          pacman -Syu --noconfirm --needed base-devel git rust gtk4 libadwaita gtksourceview5 \
+            libspelling webkitgtk-6.0 gstreamer gst-plugins-base
+      - uses: actions/checkout@v4
+      - name: Build
+        run: make
+      - name: Package
+        run: |
+          name=familiar-${GITHUB_REF_NAME#v}-x86_64-linux
+          mkdir -p "$name/bin" "$name/examples" "$name/crates/config"
+          cp target/release/familiar target/release/familiar-tui "$name/bin/"
+          cp -r data Makefile README.md LICENSE THIRD-PARTY.md CHANGELOG.md "$name/"
+          cp examples/startup.js "$name/examples/"
+          cp crates/config/LICENSE-BeipMU "$name/crates/config/"
+          tar czf "$name.tar.gz" "$name"
+          sha256sum "$name.tar.gz" > "$name.tar.gz.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tarball
+          path: familiar-*.tar.gz*
+
+  flatpak:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-51
+      options: --privileged
+    steps:
+      - uses: actions/checkout@v4
+      - uses: flathub-infra/flatpak-github-actions/flatpak-builder@master
+        with:
+          bundle: familiar-${{ github.ref_name }}.flatpak
+          manifest-path: packaging/flatpak/io.github.SpiraMirabilis.Familiar.yml
+          cache-key: flatpak-builder-${{ github.sha }}
+
+  release:
+    needs: [tarball, flatpak]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          generate_release_notes: true
+          files: |
+            familiar-*.tar.gz
+            familiar-*.tar.gz.sha256
+            familiar-*.flatpak

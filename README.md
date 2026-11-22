@@ -30,8 +30,9 @@ isn't affiliated with BeipMU or its developers.
 **Arch Linux (AUR):** `familiar` (releases) or `familiar-git` (latest code), for example
 `paru -S familiar`. The PKGBUILDs are in [`packaging/aur`](packaging/aur).
 
-**Flatpak:** each release has a `.flatpak` bundle (`flatpak install familiar-*.flatpak`); the
-manifest is in [`packaging/flatpak`](packaging/flatpak).
+**Flatpak:** each release has a `.flatpak` bundle (`flatpak install --user familiar-*.flatpak`;
+it uses the GNOME 51 runtime from Flathub). The manifest is in [`packaging/flatpak`](packaging/flatpak).
+The Flatpak keeps its own settings, separate from a native install.
 
 **Release tarball:** unpack it and run `sudo make install` (or `make install PREFIX=~/.local`). The
 binaries are built on Arch, so they need a recent glibc, GTK 4 and libadwaita.

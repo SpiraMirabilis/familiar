@@ -1,0 +1,58 @@
+id: io.github.SpiraMirabilis.Familiar
+runtime: org.gnome.Platform
+runtime-version: '51'
+sdk: org.gnome.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: familiar
+finish-args:
+  - --share=network
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+  # Sounds from triggers and servers.
+  - --socket=pulseaudio
+  # Text to speech through the host's speech-dispatcher.
+  - --filesystem=xdg-run/speech-dispatcher
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin
+  env:
+    CARGO_HOME: /run/build/familiar/cargo
+    CARGO_NET_OFFLINE: 'true'
+cleanup:
+  - /share/doc
+modules:
+  # Spell checking in the input box (not in the GNOME runtime).
+  - name: libspelling
+    buildsystem: meson
+    config-opts:
+      - -Ddocs=false
+      - -Dintrospection=disabled
+      - -Dvapi=false
+      - -Dsysprof=false
+    cleanup:
+      - /include
+      - /lib/pkgconfig
+    sources:
+      - type: archive
+        url: https://download.gnome.org/sources/libspelling/0.4/libspelling-0.4.10.tar.xz
+        sha256: 56e3f01a3a18b575beea4c34349f99cdaba316e1f7c271b1231f7bcf5d9af73b
+
+  - name: familiar
+    buildsystem: simple
+    build-commands:
+      - make CARGOFLAGS="--offline --locked"
+      - make install PREFIX=/app
+    sources:
+      # Builds the checkout this manifest is in. For Flathub, replace with a git source
+      # pinned to a release tag.
+      - type: dir
+        path: ../..
+        skip:
+          - target
+          - .flatpak-builder
+          - build-dir
+          - repo
+      # The crates from Cargo.lock, vendored. Regenerate with cargo-sources.py.
+      - cargo-sources.json
