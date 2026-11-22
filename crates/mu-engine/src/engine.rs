@@ -217,28 +217,40 @@ pub struct Engine {
 /// Deeper nesting than this is assumed to be a loop.
 const MAX_SCRIPT_DEPTH: u32 = 8;
 
-const HELP: &str = "Client commands:
-  /set [name [value]]  show variables, or set one (use as %name% in triggers and aliases)
-  /delay [every] 5s command   run a command later (or repeatedly); /delay list, kill ID, killall
-  /unset name          remove a variable
-  /echo text           show text locally
-  /log                 start or stop logging to a file
-  /clear               clear the output
-  /reconnect, /disconnect
-  /gmcp                show or hide GMCP traffic
-  /gmcp Package {json} send a GMCP message
-  /mcp                 show MCP status
-  /webview url         open a web page in a web view
-  /@code               run JavaScript (multi-line with Shift+Enter)
-  /script load path    run a script file
-  /script reload       restart scripting and reload the startup scripts
-  /script code         run JavaScript (like /@)
-  /edit [language]     open a code editor whose text is sent line by line (moo, muf, lua)
-  /map ...             show the map, walk (/map go name), add rooms; /map help for more
-  /images on|off       show thumbnails under links to images
-  /puppet [name]       list this character's puppets, or open one's tab
-  /speech on|off|stop  speak incoming lines aloud; /speak text says something
-  //text               send text that starts with a /";
+/// Client commands, for help and for completion in frontends: (usage, description).
+pub const COMMANDS: &[(&str, &str)] = &[
+    ("/set [<name> [<value>]]", "show variables, or set one (use as %name% in triggers and aliases)"),
+    ("/unset <name>", "remove a variable"),
+    ("/delay [every] <time> <command>", "run a command later (or repeatedly); /delay list, kill ID, killall"),
+    ("/echo <text>", "show text locally"),
+    ("/log", "start or stop logging to a file"),
+    ("/clear", "clear the output"),
+    ("/reconnect", "connect again"),
+    ("/disconnect", "close the connection"),
+    ("/gmcp [<Package> <json>]", "show or hide GMCP traffic, or send a GMCP message"),
+    ("/mcp", "show MCP status"),
+    ("/webview <url>", "open a web page in a web view"),
+    ("/@<code>", "run JavaScript (multi-line with Shift+Enter)"),
+    ("/script load <path>", "run a script file"),
+    ("/script reload", "restart scripting and reload the startup scripts"),
+    ("/script <code>", "run JavaScript (like /@)"),
+    ("/edit [<language>]", "open an editor whose text is sent line by line (moo, muf, lua)"),
+    ("/map [go|here|addroom|import|track|clear] ...", "show the map, walk to a room, add rooms, import a BeipMU map"),
+    ("/images on|off", "show thumbnails under links to images"),
+    ("/puppet [<name>]", "list this character's puppets, or open one's tab"),
+    ("/speech on|off|stop", "speak incoming lines aloud"),
+    ("/speak <text>", "say something aloud"),
+    ("/help", "list client commands"),
+];
+
+fn help_text() -> String {
+    let mut text = String::from("Client commands:");
+    for (usage, description) in COMMANDS {
+        text.push_str(&format!("\n  {usage:<34} {description}"));
+    }
+    text.push_str("\n  //<text>                           send text that starts with a /");
+    text
+}
 
 impl Engine {
     pub fn new(config: &Config, world: World, character: Option<Character>) -> (Self, Vec<Output>) {
@@ -763,6 +775,23 @@ impl Engine {
             script.on_event(name);
             self.drain_script(out);
         }
+    }
+
+    /// Scripts to run when scripting starts: the global startup.js, then the world's script.
+    pub fn startup_scripts(&self) -> Vec<PathBuf> {
+        let mut paths = Vec::new();
+        let startup = mu_config::startup_script_path();
+        if startup.is_file() {
+            paths.push(startup);
+        }
+        let script = self.world.script.trim();
+        if !script.is_empty() {
+            paths.push(match (script.strip_prefix("~/"), std::env::var_os("HOME")) {
+                (Some(rest), Some(home)) => PathBuf::from(home).join(rest),
+                _ => PathBuf::from(script),
+            });
+        }
+        paths
     }
 
     pub fn title(&self) -> String {
@@ -1438,7 +1467,7 @@ impl Engine {
         let (name, args) = command.split_once(char::is_whitespace).unwrap_or((command, ""));
         let args = args.trim();
         match name.to_lowercase().as_str() {
-            "help" | "?" => out.push(Output::Notice(HELP.into())),
+            "help" | "?" => out.push(Output::Notice(help_text())),
             "set" if args.is_empty() => {
                 let all = self.merged_variables();
                 if all.is_empty() {

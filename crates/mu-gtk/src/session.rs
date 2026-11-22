@@ -186,23 +186,6 @@ impl SessionView {
         view.refresh();
     }
 
-    /// The startup scripts for this session: the global startup.js, then the world's script.
-    fn script_paths(&self) -> Vec<PathBuf> {
-        let mut paths = Vec::new();
-        let startup = mu_config::startup_script_path();
-        if startup.is_file() {
-            paths.push(startup);
-        }
-        let world_script = self.engine.borrow().world().script.clone();
-        if !world_script.is_empty() {
-            paths.push(match world_script.strip_prefix("~/") {
-                Some(rest) => glib::home_dir().join(rest),
-                None => PathBuf::from(world_script),
-            });
-        }
-        paths
-    }
-
     /// Starts a fresh JavaScript runtime and runs the startup scripts.
     fn start_scripting(self: &Rc<Self>) {
         let host = match mu_script::JsHost::new() {
@@ -210,7 +193,8 @@ impl SessionView {
             Err(e) => return self.output.notice(&format!("Scripting is unavailable: {e}")),
         };
         let mut out = self.engine.borrow_mut().set_script_host(Box::new(host));
-        for path in self.script_paths() {
+        let paths = self.engine.borrow().startup_scripts();
+        for path in paths {
             let home = glib::home_dir();
             let shown = match path.strip_prefix(&home) {
                 Ok(rest) => format!("~/{}", rest.display()),

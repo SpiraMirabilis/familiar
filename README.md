@@ -3,7 +3,7 @@
 A native Linux MU* (MUD/MUCK/MOO/MUSH) client in Rust, inspired by [BeipMU](https://github.com/BeipDev/BeipMU).
 It is a new codebase, not a port. The BeipMU sources are used only as a reference for features and protocols.
 
-## Status: M8 (BeipMU compatibility)
+## Status: M9 (terminal client)
 
 | Crate | What it does |
 |---|---|
@@ -18,10 +18,12 @@ It is a new codebase, not a port. The BeipMU sources are used only as a referenc
 | `mu-speech` | Text to speech through speech-dispatcher, on a background thread. |
 | `mu-code` | Editing support shared by frontends: block-aware auto-indentation for MOO, MUF and Lua. |
 | `mu-gtk` | GTK4/libadwaita client: a tab per connection, ANSI and full Unicode output with clickable links, a side dock with spawn windows and GMCP stat panes, input with history, password mode, NAWS, logging, sounds (trigger and server-driven), notifications, an MCP status line and text editor, web views, and a rules editor. |
+| `mu-tui` | Full-screen terminal client (ratatui) on the same engine: tabs, a sidebar with the map, stat bars and spawn windows, a command palette and fuzzy pickers, `/` completion, and `$EDITOR` for MCP editing. |
 | `mu-cli` | Terminal client for testing against real servers. |
 
 ```sh
 cargo run -p mu-gtk            # the GUI
+cargo run -p mu-tui            # the terminal client (mu-tui "World" "Character" connects straight away)
 cargo run -p mu-gtk -- "World" "Character"   # connect to a saved world on startup
 cargo test --workspace
 cargo run -p mu-cli -- lambda.moo.mud.org 8888
@@ -93,6 +95,19 @@ A puppet is a second character you control through your main connection, such as
 - **MCP 2.1** (MOOs and MUCKs, on by default per world): the status line appears under the output, and simpleedit opens an editor window that sends your changes back.
 - **Web views:** opened with `/webview url` or by the server (GMCP `webview.open`/`webview.close`, with `dock`, `width`/`height`, `source` and `http-request-headers`). The client asks before a server opens one (Block, Allow Once, Always Allow per world). Docked views go in the side dock; others get their own window. Pages reach the client as `window.mu.client`, or as `window.chrome.webview.hostObjects.client` for pages written for BeipMU, with the same case-insensitive methods: `Send`, `SendGMCP`, `Receive`, `Display`, `CloseWindow`, `SetOnSend`, `SetOnReceive`, `SetOnGMCP`, `SetOnDisplay`, `ClearOnDisplay`. Calls are asynchronous, and `SetOnDisplay` can't gag lines.
 
+### Terminal client
+
+`mu-tui` shares the config, rules, scripts, maps and logs with the GUI (don't edit settings in both at once). It opens on a world picker: type to filter saved worlds and the built-in directory, or type `host:port` (add `tls`) for a new one.
+
+- **Layout:** tabs across the top, with unread counts, ★ for trigger-marked activity and puppets as `↳ Name` tabs. Below them the output, and a sidebar (Ctrl+B) with the map, Beip.Stats bars and spawn windows (Alt+[ and Alt+] switch). Then the input box, which carries the server's prompt on its border, and a status line.
+- **Reading back:** PgUp, Shift+↑ or the mouse wheel scrolls; once scrolled, the view splits so the live tail stays visible underneath. Esc jumps back. Links, tabs and map rooms are clickable (a room walks you there). Most terminals select text with Shift+drag.
+- **Typing:** Enter sends; an empty Enter reconnects a dropped connection. Shift+Enter, Alt+Enter or Ctrl+J add a line. ↑↓ and Ctrl+R are history and history search, Tab completes names seen in the output, readline keys work, and Ctrl+C or Esc Esc clears the line. Typing `/` lists client commands with descriptions, and completes world names, puppets and map rooms as arguments.
+- **Everything else:** Ctrl+K opens the command palette and Ctrl+O the world picker; Alt+1…9 switches tabs; F1 shows the shortcuts. `/connect`, `/close`, `/sidebar`, `/config` and `/quit` are terminal-only commands.
+- **Editors:** MCP simpleedit opens in `$VISUAL`/`$EDITOR` with the right file extension (`.moo`, `.muf`) so your editor highlights it, and saving and quitting sends it back. If the server reports compile errors, Alt+E reopens it at the first one. Ctrl+G edits the input line in `$EDITOR`.
+- **Sound and alerts:** sounds play through `pw-play`, `paplay` or `aplay`. Trigger notifications use `notify-send`, and only while the terminal isn't focused. Speech works as in the GUI.
+- **Not available in a terminal:** images, avatars, web views and tilemaps. A web view's URL is shown so you can open it.
+- **Terminals:** keyboard macros on the number pad, and telling Shift+Enter from Enter, need a terminal with the kitty keyboard protocol (kitty, foot, ghostty, WezTerm, recent Alacritty); elsewhere use Alt+Enter.
+
 ### Optional system packages
 
 - `gst-plugins-good`: WAV/MP3 decoding and the standard audio output for sounds. Without it, playback reports a missing plugin.
@@ -102,6 +117,6 @@ A puppet is a second character you control through your main connection, such as
 
 ## Roadmap
 
-M9 a full terminal UI (`mu-tui`, ratatui) sharing the same engine.
+M0–M9 are done.
 
 `assets/Worlds.xml` and the test files in `crates/mu-import/tests/data/` (sample config and maps) come from BeipMU (MIT licence, © Bennet).
