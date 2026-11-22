@@ -17,7 +17,9 @@ VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
 cargo build --release --locked -p familiar-gtk --no-default-features --features spelling
 cargo build --release --locked -p familiar-tui
 
-rm -rf "$OUT"
+# Emptied rather than removed: Windows won't delete a folder something has open.
+mkdir -p "$OUT"
+find "$OUT" -mindepth 1 -delete
 mkdir -p "$OUT/bin"
 cp target/release/familiar.exe "$OUT/bin/"
 # The terminal client needs none of the rest, so it sits at the top where it's easy to find.
