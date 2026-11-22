@@ -23,7 +23,7 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 LicenseFile=..\..\LICENSE
 SetupIconFile=familiar.ico
-UninstallDisplayIcon={app}\familiar.exe
+UninstallDisplayIcon={app}\bin\familiar.exe
 OutputDir=..\..\dist
 OutputBaseFilename=familiar-{#AppVersion}-x86_64-windows-setup
 Compression=lzma2
@@ -38,9 +38,9 @@ Source: "..\..\dist\familiar\*"; DestDir: "{app}"; Flags: recursesubdirs ignorev
 
 [Icons]
 ; The app id ties the shortcut to the program's notifications.
-Name: "{group}\Familiar"; Filename: "{app}\familiar.exe"; AppUserModelID: "io.github.SpiraMirabilis.Familiar"
+Name: "{group}\Familiar"; Filename: "{app}\bin\familiar.exe"; AppUserModelID: "io.github.SpiraMirabilis.Familiar"
 Name: "{group}\Familiar (terminal)"; Filename: "{app}\familiar-tui.exe"
-Name: "{autodesktop}\Familiar"; Filename: "{app}\familiar.exe"; Tasks: desktopicon; AppUserModelID: "io.github.SpiraMirabilis.Familiar"
+Name: "{autodesktop}\Familiar"; Filename: "{app}\bin\familiar.exe"; Tasks: desktopicon; AppUserModelID: "io.github.SpiraMirabilis.Familiar"
 
 [Run]
-Filename: "{app}\familiar.exe"; Description: "{cm:LaunchProgram,Familiar}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\bin\familiar.exe"; Description: "{cm:LaunchProgram,Familiar}"; Flags: nowait postinstall skipifsilent
