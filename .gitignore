@@ -9,3 +9,4 @@
 /packaging/aur/*/*.tar.gz
 /packaging/aur/*/familiar/
 dist/
+.env
