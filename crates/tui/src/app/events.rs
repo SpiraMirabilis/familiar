@@ -507,9 +507,13 @@ impl App {
                         self.move_editor();
                         return true;
                     }
+                    "syntax" | "syntax force" => {
+                        self.install_syntax(args.to_lowercase().ends_with("force"));
+                        return true;
+                    }
                     "" => {}
                     _ => {
-                        self.toast("Use /editor tab, /editor sidebar or /editor fullscreen (/editor move moves the one that's open)");
+                        self.toast("Use /editor tab, /editor sidebar or /editor fullscreen (/editor move moves the one that's open, /editor syntax installs MOO highlighting)");
                         return true;
                     }
                 }

@@ -106,6 +106,9 @@ pub struct Settings {
     /// Terminal client: when `$EDITOR` would open in a tab, put it beside the world it came
     /// from instead, where the sidebar goes, if that world has nothing in its sidebar.
     pub editor_in_sidebar: bool,
+    /// Terminal client: the hint that `/editor syntax` installs MOO highlighting for `$EDITOR`
+    /// has been shown. It's shown once, after the first MOO edit in an editor without it.
+    pub editor_syntax_hint_shown: bool,
 }
 
 impl Default for Settings {
@@ -131,6 +134,7 @@ impl Default for Settings {
             terminal_colors: false,
             editor_in_tab: true,
             editor_in_sidebar: false,
+            editor_syntax_hint_shown: false,
         }
     }
 }

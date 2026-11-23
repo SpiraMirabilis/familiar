@@ -237,6 +237,10 @@ impl App {
 
     /// Uses what came back from the editor: `result` is the edited text.
     pub fn finish_edit(&mut self, job: External, result: Result<String, String>) {
+        // Now, rather than when it opened, so it isn't hidden behind the editor.
+        if let External::Edit { request, .. } = &job {
+            self.syntax_hint(request.language.as_deref());
+        }
         let text = match result {
             Ok(text) => text,
             Err(e) => return self.toast(&e),
@@ -261,5 +265,49 @@ impl App {
             }
             External::EditConfig => self.reload_config(),
         }
+    }
+
+    /// Once ever: after a MOO edit in an editor that has no MOO syntax file of ours, says that
+    /// `/editor syntax` installs one.
+    fn syntax_hint(&mut self, language: Option<&str>) {
+        if self.config.settings.editor_syntax_hint_shown {
+            return;
+        }
+        let Some(editor) = Editor::current() else { return };
+        let Some(file) = language.and_then(|l| editor.file(l)) else { return };
+        if file.exists() {
+            return;
+        }
+        let missing = if editor.knows_moo() { "fuller MOO highlighting" } else { "MOO highlighting" };
+        self.toast(&format!("/editor syntax installs {missing} for {}", editor.name()));
+        self.config.settings.editor_syntax_hint_shown = true;
+        self.save_config();
+    }
+
+    /// `/editor syntax`: installs the MOO syntax file for `$EDITOR`, replacing one that's
+    /// there already only if `force`.
+    pub(super) fn install_syntax(&mut self, force: bool) {
+        let Some(editor) = Editor::current() else {
+            let (_, name) = familiar_platform::editor_command();
+            return self.toast(&format!("There's no MOO syntax file for {name}, only for micro, Vim, Neovim and Emacs"));
+        };
+        let Some(file) = editor.file("moo") else { return self.toast("Couldn't find your home folder") };
+        let place = familiar_config::paths::display(&file.path);
+        match file.install(force) {
+            Ok(Installed::Written) => self.toast(&format!("Installed MOO highlighting for {} at {place}", editor.name())),
+            Ok(Installed::AlreadyThere) => self.toast(&format!("{place} is there already, so it was left alone (/editor syntax force replaces it)")),
+            Err(e) => return self.toast(&format!("Couldn't write {place}: {e}")),
+        }
+        // Too long to read in a toast, so it goes in the world's output too.
+        if let Some(line) = editor.setup(&file) {
+            let note = format!("To use {place}, add this line to your Emacs init file: {line}");
+            match self.current() {
+                Some((idx, _)) => self.sessions[idx].output.notice(&note),
+                None => self.toast(&note),
+            }
+        }
+        // There's nothing left to hint at.
+        self.config.settings.editor_syntax_hint_shown = true;
+        self.save_config();
     }
 }

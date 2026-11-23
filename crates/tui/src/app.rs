@@ -13,6 +13,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::buffer::{Buffer, Cell, Selection};
 use crate::editor::Document;
+use crate::syntax::{Editor, Installed};
 use crate::rules::RulesView;
 use crate::term::{PtyEvent, PtySender, Term};
 use crate::form::{FieldKind, WorldForm};
@@ -32,6 +33,7 @@ pub const TUI_COMMANDS: &[(&str, &str)] = &[
     ("/colors [standard|terminal]", "draw the 16 basic colours exactly, or with the terminal's theme"),
     ("/config", "edit the config file in $EDITOR"),
     ("/editor [tab|sidebar|fullscreen]", "open $EDITOR in a tab, beside the world, or with the whole terminal"),
+    ("/editor syntax [force]", "install MOO highlighting for $EDITOR (micro, Vim, Neovim, Emacs)"),
     ("/rules", "edit triggers, aliases, keyboard macros and variables"),
     ("/keys", "show keyboard shortcuts"),
     ("/quit", "disconnect everything and quit"),
