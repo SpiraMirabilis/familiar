@@ -635,7 +635,13 @@ impl App {
                 }
                 // On text: the start of a selection if the mouse moves, a click (on a link) if not.
                 self.selection = None;
-                self.press = self.hits.rows.iter().find(|r| r.y == at.y && (r.x..r.x + r.width).contains(&at.x)).and_then(|r| Some((r.buffer, self.cell_at(r, at)?)));
+                self.drag = None;
+                self.press = self
+                    .hits
+                    .rows
+                    .iter()
+                    .find(|r| r.y == at.y && (r.x..r.x + r.width).contains(&at.x))
+                    .and_then(|r| Some(Press { buffer: r.buffer, cell: self.cell_at(r, at)?, live: r.live }));
                 if self.press.is_some() {
                     return;
                 }
@@ -664,15 +670,9 @@ impl App {
                     self.close_tab();
                 }
             }
-            MouseEventKind::Drag(MouseButton::Left) => {
-                let Some((buffer, anchor)) = self.press else { return };
-                // The nearest row of the same buffer, so dragging past its edges still selects.
-                let row = self.hits.rows.iter().filter(|r| r.buffer == buffer).min_by_key(|r| r.y.abs_diff(at.y));
-                if let Some(head) = row.and_then(|r| self.cell_at(r, at)) {
-                    self.selection = (head != anchor).then_some(Selection { buffer, anchor, head });
-                }
-            }
+            MouseEventKind::Drag(MouseButton::Left) => self.drag_to(at),
             MouseEventKind::Up(MouseButton::Left) => {
+                self.drag = None;
                 if self.press.take().is_none() {
                     return;
                 }
@@ -693,6 +693,52 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    /// Extends the selection to the mouse, and scrolls when the mouse is at (or past) the top
+    /// or bottom of the part of the output that scrolls, so the selection can go on from there.
+    /// Called for every movement, and on a timer while the button is held.
+    pub(super) fn drag_to(&mut self, at: Position) {
+        let Some(press) = self.press else { return };
+        // The nearest row of the same pane, so dragging past its edges still selects. The live
+        // tail under a scrolled-back view shows the same buffer but is a pane of its own: a
+        // drag doesn't cross from one to the other, which would select everything between.
+        let row = self.hits.rows.iter().filter(|r| r.buffer == press.buffer && r.live == press.live).min_by_key(|r| r.y.abs_diff(at.y));
+        if let Some(head) = row.and_then(|r| self.cell_at(r, at)) {
+            self.selection = (head != press.cell).then_some(Selection { buffer: press.buffer, anchor: press.cell, head });
+        }
+        let last = self.drag.map(|(_, scrolled)| scrolled);
+        let mut scrolled = last.unwrap_or_else(|| Instant::now() - AUTOSCROLL);
+        if !press.live
+            && let Some((id, pane)) = self.hits.scrolling
+            && id == press.buffer
+            && scrolled.elapsed() >= AUTOSCROLL
+        {
+            let bottom = pane.y + pane.height.saturating_sub(1);
+            // Faster the further past the edge the mouse is, up to three rows at a time.
+            let rows = if at.y <= pane.y {
+                (1 + (pane.y - at.y) as isize).min(3)
+            } else if at.y >= bottom {
+                -(1 + (at.y - bottom) as isize).min(3)
+            } else {
+                0
+            };
+            let (w, h) = self.view;
+            if rows != 0
+                && let Some(buffer) = self.buffer_mut(press.buffer)
+            {
+                buffer.scroll_by(rows, w, h);
+                scrolled = Instant::now();
+            }
+        }
+        self.drag = Some((at, scrolled));
+    }
+
+    fn buffer_mut(&mut self, id: u64) -> Option<&mut Buffer> {
+        self.sessions
+            .iter_mut()
+            .flat_map(|s| std::iter::once(&mut s.output).chain(s.puppets.iter_mut().map(|p| &mut p.buffer)).chain(s.spawns.iter_mut().map(|p| &mut p.buffer)))
+            .find(|b| b.id == id)
     }
 
     fn buffer(&self, id: u64) -> Option<&Buffer> {

@@ -193,6 +193,11 @@ A puppet is a second character you control through your main connection, such as
 - The **program editor** highlights MOO, MUF and Lua; other languages are shown as plain text.
 - **Spell checking** is the system's, in whatever languages macOS is set up for.
 - **Fonts:** a config from Linux that says `Monospace 11` gets the system's monospaced font.
+- **Option as Alt in the terminal client:** macOS terminals type symbols with Option (Option+1
+  is `¡`) unless told to send it as Alt, so the Alt shortcuts need a setting: "Use Option as
+  Meta key" in Terminal.app's profile, "Esc+" for the Option keys in iTerm2's profile, or
+  `macos-option-as-alt = true` in Ghostty's config. Option+← and → usually stay the terminal's
+  own word movement even then; Ctrl+PgUp and Ctrl+PgDn (or Alt+1…9) switch tabs.
 - The **terminal client** needs nothing installed. Its sounds play through `afplay`, once each.
   Terminal.app before macOS 26 only shows 256 colours; iTerm2, Ghostty, kitty and WezTerm show
   them all, and report Shift+Enter and number pad keys separately.

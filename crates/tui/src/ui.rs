@@ -252,7 +252,9 @@ fn draw_editor_status(f: &mut Frame, app: &App, id: u64, area: Rect) {
 
 // ----- Output -----
 
-fn draw_buffer(f: &mut Frame, buffer: &mut Buffer, area: Rect, scroll: usize, selection: Option<&Selection>, hits: &mut Hits) {
+/// Draws the rows of `buffer` that are `scroll` rows up from its end. `live` marks them as the
+/// tail under a scrolled-back view.
+fn draw_buffer(f: &mut Frame, buffer: &mut Buffer, area: Rect, scroll: usize, live: bool, selection: Option<&Selection>, hits: &mut Hits) {
     let id = buffer.id;
     let selection = selection.filter(|s| s.buffer == id);
     let rows = buffer.visible(area.width, area.height, scroll);
@@ -263,7 +265,7 @@ fn draw_buffer(f: &mut Frame, buffer: &mut Buffer, area: Rect, scroll: usize, se
         for (x0, x1, uri) in row_links {
             hits.links.push((top + i as u16, area.x + x0, area.x + x1, uri));
         }
-        hits.rows.push(RowHit { y: top + i as u16, x: area.x, width: area.width, buffer: id, seq: entry.seq, row: *row });
+        hits.rows.push(RowHit { y: top + i as u16, x: area.x, width: area.width, buffer: id, seq: entry.seq, row: *row, live });
         lines.push(line);
     }
     f.render_widget(Paragraph::new(lines), Rect { y: top, height: rows.len() as u16, ..area });
@@ -292,15 +294,17 @@ fn draw_output(f: &mut Frame, app: &mut App, area: Rect) {
         let [history, rule, live] = Layout::vertical([Constraint::Min(1), Constraint::Length(1), Constraint::Length(tail)]).areas(area);
         let max = buffer.total_rows(history.width).saturating_sub(history.height as usize);
         buffer.scroll = scroll.min(max);
-        draw_buffer(f, buffer, history, buffer.scroll + tail as usize + 1, selection.as_ref(), &mut app.hits);
+        app.hits.scrolling = Some((buffer.id, history));
+        draw_buffer(f, buffer, history, buffer.scroll + tail as usize + 1, false, selection.as_ref(), &mut app.hits);
         let unseen = buffer.unseen;
-        draw_buffer(f, buffer, live, 0, selection.as_ref(), &mut app.hits);
+        draw_buffer(f, buffer, live, 0, true, selection.as_ref(), &mut app.hits);
         let label = if unseen > 0 { format!(" ▲ scrolled back · {unseen} new · Esc to jump down ") } else { " ▲ scrolled back · Esc to jump down ".to_string() };
         let pad = (rule.width as usize).saturating_sub(label.width() + 2);
         let line = Line::from(vec![Span::styled("──", theme::faint()), Span::styled(label, Style::new().fg(ACCENT_2)), Span::styled("─".repeat(pad), theme::faint())]);
         f.render_widget(Paragraph::new(line), rule);
     } else {
-        draw_buffer(f, buffer, area, scroll, selection.as_ref(), &mut app.hits);
+        app.hits.scrolling = Some((buffer.id, area));
+        draw_buffer(f, buffer, area, scroll, false, selection.as_ref(), &mut app.hits);
         if scroll > 0 {
             let pill = format!(" ↓ {} new · Esc ", buffer.unseen);
             let w = pill.width() as u16;
@@ -363,7 +367,7 @@ fn draw_sidebar(f: &mut Frame, app: &mut App, area: Rect) {
             let pane = s.spawn_mut(name).0;
             pane.unread = false;
             let scroll = pane.buffer.scroll;
-            draw_buffer(f, &mut pane.buffer, body, scroll, app.selection.as_ref(), &mut app.hits);
+            draw_buffer(f, &mut pane.buffer, body, scroll, false, app.selection.as_ref(), &mut app.hits);
         }
         None => {}
     }

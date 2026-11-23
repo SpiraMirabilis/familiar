@@ -71,6 +71,9 @@ pub enum Cmd {
     Quit,
 }
 
+/// How often the output scrolls while a selection is held at its top or bottom edge.
+const AUTOSCROLL: Duration = Duration::from_millis(40);
+
 const PALETTE: &[(Cmd, &str, &str)] = &[
     (Cmd::Connect, "Connect to a world…", "Ctrl+O"),
     (Cmd::NewWorld, "New world…", "Ctrl+O Ctrl+N"),
@@ -209,6 +212,18 @@ pub struct RowHit {
     pub buffer: u64,
     pub seq: u64,
     pub row: usize,
+    /// In the live tail shown under a scrolled-back view, which stays where it is.
+    pub live: bool,
+}
+
+/// Where the left button went down on a buffer's text.
+#[derive(Clone, Copy)]
+pub struct Press {
+    /// The `Buffer::id`.
+    pub buffer: u64,
+    pub cell: Cell,
+    /// It went down in the live tail (see [`RowHit::live`]).
+    pub live: bool,
 }
 
 /// Where things were drawn, for the mouse.
@@ -220,6 +235,9 @@ pub struct Hits {
     pub links: Vec<(u16, u16, u16, String)>,
     pub rows: Vec<RowHit>,
     pub output: Rect,
+    /// The part of the output that scrolls (all of it, or the history above the live tail),
+    /// and the `Buffer::id` shown there.
+    pub scrolling: Option<(u64, Rect)>,
     pub sidebar: Rect,
     pub picker_items: Vec<(Rect, usize)>,
     /// The map's area and the map-unit rectangle it shows: (x0, y0, x1, y1).
@@ -254,8 +272,10 @@ pub struct App {
     pub screen: (u16, u16),
     /// Text being selected (or last selected) with the mouse.
     pub selection: Option<Selection>,
-    /// Where the left button went down on a buffer: its `Buffer::id` and the cell.
-    press: Option<(u64, Cell)>,
+    press: Option<Press>,
+    /// Where the mouse is while it's dragging a selection, and when the view last scrolled to
+    /// keep up with it.
+    drag: Option<(Position, Instant)>,
     /// Text for the main loop to put on the clipboard.
     pub clipboard: Option<String>,
     pub suggestion: usize,
@@ -302,6 +322,7 @@ impl App {
             screen: (80, 24),
             selection: None,
             press: None,
+            drag: None,
             clipboard: None,
             suggestion: 0,
             suggestions_hidden: false,
@@ -555,11 +576,18 @@ impl App {
         if animating {
             wake = wake.min(now + Duration::from_millis(120));
         }
+        // A selection held at the edge of the output keeps scrolling without the mouse moving.
+        if self.press.is_some() && self.drag.is_some() {
+            wake = wake.min(now + AUTOSCROLL);
+        }
         wake
     }
 
     pub fn on_tick(&mut self) {
         let now = Instant::now();
+        if let Some((at, _)) = self.drag {
+            self.drag_to(at);
+        }
         for idx in 0..self.sessions.len() {
             if self.sessions[idx].engine.next_deadline().is_some_and(|d| d <= now) {
                 let out = self.sessions[idx].engine.tick(now);

@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Fixed: in the terminal client, selecting text with the mouse stopped at the top of the output.
+  Holding the selection at the top or bottom edge now scrolls, so it can go on.
+- Fixed: in the terminal client, selecting downwards while scrolled back jumped over the
+  "scrolled back" line into the live lines under it, selecting everything in between.
+
 ## 0.3.0 (2026-11-23)
 
 - Terminal client: `/editor sidebar` opens `$EDITOR` beside the world, where the sidebar goes,
