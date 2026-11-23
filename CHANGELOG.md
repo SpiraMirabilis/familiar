@@ -3,7 +3,8 @@
 ## Unreleased
 
 - Terminal client: `/editor syntax` installs MOO highlighting for `$EDITOR`: a syntax file for
-  micro, which has none, or for Vim and Neovim, fuller than the one they ship (Stunt's
+  micro, a `moo-mode` for Emacs (which also indents blocks, and needs one line in your init
+  file, which it shows), or for Vim and Neovim, a fuller one than they ship (Stunt's
   try/except, maps, `$#colours`, `b"bytes"`, built-in functions and verb calls). It leaves a
   file that's there already alone unless you add `force`. The first time a MOO edit closes in
   one of those editors without it, a hint says so, once.
