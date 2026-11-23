@@ -10,6 +10,7 @@ mod input;
 mod keys;
 mod rules;
 mod session;
+mod syntax;
 mod term;
 mod theme;
 mod ui;

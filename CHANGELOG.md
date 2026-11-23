@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Terminal client: `/editor syntax` installs MOO highlighting for `$EDITOR`: a syntax file for
+  micro, which has none, or for Vim and Neovim, fuller than the one they ship (Stunt's
+  try/except, maps, `$#colours`, `b"bytes"`, built-in functions and verb calls). It leaves a
+  file that's there already alone unless you add `force`. The first time a MOO edit closes in
+  one of those editors without it, a hint says so, once.
+
 ## 0.3.1 (2026-11-23)
 
 - Bouncer support: worlds can connect through an mbnc bouncer (a `[bouncer]` section in
