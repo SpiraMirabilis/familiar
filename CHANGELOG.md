@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Terminal client: `/editor sidebar` opens `$EDITOR` beside the world, where the sidebar goes,
+  when that world isn't using its sidebar. F6 switches between the editor and the world, and
+  F7 moves an open editor between the sidebar and a tab.
 - macOS: a native app, with what the GTK client has, web views included. Worlds open as
   window tabs; speech, spell checking and notifications are the system's.
 - macOS: the terminal client, as one file for Apple silicon and Intel. Speech uses the system

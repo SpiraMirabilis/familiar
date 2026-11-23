@@ -1,6 +1,16 @@
-//! `$EDITOR`: in a tab of its own, or (the main loop's job) with the whole terminal.
+//! `$EDITOR`: in a tab of its own, beside the world it was opened from (where the sidebar
+//! goes), or (the main loop's job) with the whole terminal.
 
 use super::*;
+
+/// The narrowest terminal an editor can sit beside a world in. The same as for the sidebar.
+pub const DOCK_MIN_WIDTH: u16 = 90;
+
+/// How wide an editor beside a world is, border included, in a terminal `width` wide: 80
+/// columns when the world can keep 40, and never less than half.
+pub fn dock_width(width: u16) -> u16 {
+    width.saturating_sub(40).min(80).max(width / 2)
+}
 
 impl App {
     /// Opens `$EDITOR` for `job`: in a tab, or by handing it the terminal.
@@ -45,25 +55,115 @@ impl App {
         })
     }
 
-    pub(super) fn active_editor(&mut self) -> Option<&mut EditorTab> {
-        let Some(Tab::Editor(id)) = self.tabs.get(self.active) else { return None };
-        self.editors.iter_mut().find(|e| e.id == *id)
+    /// The editor on screen: the active tab's, or the one beside the active world.
+    pub fn visible_editor(&mut self) -> Option<&mut EditorTab> {
+        match self.tabs.get(self.active)? {
+            Tab::Editor(id) => self.editors.iter_mut().find(|e| e.id == *id),
+            Tab::Main(session) => self.editors.iter_mut().find(|e| e.docked == Some(*session)),
+            Tab::Puppet(..) => None,
+        }
+    }
+
+    /// The editor the keyboard is going to, if it's going to one.
+    pub fn focused_editor(&mut self) -> Option<&mut EditorTab> {
+        self.visible_editor().filter(|e| e.docked.is_none() || e.focused)
+    }
+
+    /// Moves the keyboard between a world and the editor beside it.
+    pub(super) fn toggle_editor_focus(&mut self) {
+        match self.visible_editor().filter(|e| e.docked.is_some()) {
+            Some(editor) => editor.focused = !editor.focused,
+            None => self.toast("There's no editor beside this world (/editor sidebar puts them there)"),
+        }
+    }
+
+    /// The session an edit can sit beside, or why it can't sit beside one.
+    fn dock_for(&self, job: &External) -> Result<u64, &'static str> {
+        let (External::Edit { session, .. } | External::EditInput { session, puppet: None }) = job else {
+            return Err("it doesn't belong to a world's main tab");
+        };
+        let Some(s) = self.session_index(*session).map(|i| &self.sessions[i]) else { return Err("its world has closed") };
+        if !s.panels().is_empty() {
+            return Err("that world's sidebar is in use");
+        }
+        if self.editors.iter().any(|e| e.docked == Some(*session)) {
+            return Err("another editor is already there");
+        }
+        if self.screen.0 < DOCK_MIN_WIDTH {
+            return Err("the terminal is too narrow");
+        }
+        Ok(*session)
+    }
+
+    /// Moves the editor on screen between a tab of its own and beside its world. From a
+    /// world's tab with nothing beside it, that's one of the world's editor tabs.
+    pub(super) fn move_editor(&mut self) {
+        let here = match self.tabs.get(self.active) {
+            Some(Tab::Main(session)) => Some(*session),
+            _ => None,
+        };
+        let in_a_tab = |e: &&EditorTab| e.docked.is_none() && matches!(&e.job, External::Edit { session, .. } | External::EditInput { session, puppet: None } if Some(*session) == here);
+        let found = self.visible_editor().map(|e| (e.id, e.docked.is_some())).or_else(|| self.editors.iter().find(in_a_tab).map(|e| (e.id, false)));
+        let Some((id, docked)) = found else {
+            return self.toast("This world has no editor open to move");
+        };
+        if docked {
+            return self.undock(id, true);
+        }
+        let Some(job) = self.editors.iter().find(|e| e.id == id).map(|e| e.job.clone()) else { return };
+        match self.dock_for(&job) {
+            Ok(session) => {
+                if let Some(pos) = self.tabs.iter().position(|t| *t == Tab::Editor(id)) {
+                    self.tabs.remove(pos);
+                }
+                if let Some(editor) = self.editors.iter_mut().find(|e| e.id == id) {
+                    editor.docked = Some(session);
+                    editor.focused = true;
+                }
+                if let Some(owner) = self.owner_tab(&job) {
+                    self.switch_to(owner);
+                }
+            }
+            Err(why) => self.toast(&format!("The editor stays in its tab: {why}")),
+        }
+    }
+
+    /// Gives an editor beside a world a tab of its own instead.
+    pub fn undock(&mut self, id: u64, switch: bool) {
+        let Some(editor) = self.editors.iter_mut().find(|e| e.id == id) else { return };
+        if editor.docked.take().is_none() {
+            return;
+        }
+        let job = editor.job.clone();
+        let pos = self.owner_tab(&job).map_or(self.tabs.len(), |owner| owner + 1);
+        self.tabs.insert(pos, Tab::Editor(id));
+        if switch {
+            self.switch_to(pos);
+        } else if self.active >= pos {
+            self.active += 1;
+        }
     }
 
     fn open_editor_tab(&mut self, job: &External) -> Result<(), String> {
         let (document, title, line) = self.document(job)?;
         // Already being edited: go there instead of opening the same file twice.
-        if let Some(open) = self.editors.iter().find(|e| e.document.path == document.path) {
-            let tab = Tab::Editor(open.id);
-            if let Some(pos) = self.tabs.iter().position(|t| *t == tab) {
+        if let Some(open) = self.editors.iter_mut().find(|e| e.document.path == document.path) {
+            open.focused = true;
+            let tab = if open.docked.is_some() { self.owner_tab(job) } else { self.tabs.iter().position(|t| *t == Tab::Editor(open.id)) };
+            if let Some(pos) = tab {
                 self.switch_to(pos);
             }
             return Ok(());
         }
         let (command, name) = crate::editor::command(&document.path, line);
         let id = self.next_id;
-        // Everything but the tab bar and the status line.
-        let size = (self.screen.0, self.screen.1.saturating_sub(2));
+        let dock = if self.config.settings.editor_in_sidebar { self.dock_for(job).ok().filter(|_| self.owner_tab(job).is_some()) } else { None };
+        // Roughly what it will get; it's given its exact size when it's first drawn.
+        let size = match dock {
+            Some(_) => (dock_width(self.screen.0).saturating_sub(1), self.screen.1.saturating_sub(6)),
+            // Everything but the tab bar and the status line.
+            None => (self.screen.0, self.screen.1.saturating_sub(2)),
+        };
         let term = match Term::spawn(&command, size, id, self.pty_tx.clone()) {
             Ok(term) => term,
             Err(e) => {
@@ -72,13 +172,17 @@ impl App {
             }
         };
         self.next_id += 1;
-        self.editors.push(EditorTab { id, title, term, job: job.clone(), document });
-        // Beside the tab it belongs to.
-        let owner = self.owner_tab(job).unwrap_or(self.active);
-        let pos = (owner + 1).min(self.tabs.len());
-        self.tabs.insert(pos, Tab::Editor(id));
+        self.editors.push(EditorTab { id, title, term, job: job.clone(), document, docked: dock, focused: true });
         self.overlay = None;
-        self.switch_to(pos);
+        // Beside the tab it belongs to: inside it, or as the next tab.
+        let owner = self.owner_tab(job).unwrap_or(self.active);
+        if dock.is_some() {
+            self.switch_to(owner);
+        } else {
+            let pos = (owner + 1).min(self.tabs.len());
+            self.tabs.insert(pos, Tab::Editor(id));
+            self.switch_to(pos);
+        }
         Ok(())
     }
 

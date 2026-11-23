@@ -31,7 +31,7 @@ pub const TUI_COMMANDS: &[(&str, &str)] = &[
     ("/sidebar", "show or hide the sidebar (map, stats, spawn windows)"),
     ("/colors [standard|terminal]", "draw the 16 basic colours exactly, or with the terminal's theme"),
     ("/config", "edit the config file in $EDITOR"),
-    ("/editor [tab|fullscreen]", "open $EDITOR in a tab, or give it the whole terminal"),
+    ("/editor [tab|sidebar|fullscreen]", "open $EDITOR in a tab, beside the world, or with the whole terminal"),
     ("/rules", "edit triggers, aliases, keyboard macros and variables"),
     ("/keys", "show keyboard shortcuts"),
     ("/quit", "disconnect everything and quit"),
@@ -63,6 +63,8 @@ pub enum Cmd {
     ShowMap,
     EditInput,
     EditConfig,
+    EditorFocus,
+    MoveEditor,
     Rules,
     StopSpeech,
     Help,
@@ -86,6 +88,8 @@ const PALETTE: &[(Cmd, &str, &str)] = &[
     (Cmd::ToggleLog, "Start or stop logging", "/log"),
     (Cmd::EditInput, "Edit the input in $EDITOR", "Ctrl+G"),
     (Cmd::EditConfig, "Edit the config file", "/config"),
+    (Cmd::EditorFocus, "Switch between the world and the editor beside it", "F6"),
+    (Cmd::MoveEditor, "Move the editor between its tab and the sidebar", "F7"),
     (Cmd::Rules, "Triggers, aliases and macros…", "F2"),
     (Cmd::StopSpeech, "Stop speaking", "/speech stop"),
     (Cmd::Help, "Keyboard shortcuts", "F1"),
@@ -179,13 +183,18 @@ pub enum External {
     EditConfig,
 }
 
-/// An editor running in a tab.
+/// An editor running in a tab, or beside the world it was opened from.
 pub struct EditorTab {
     pub id: u64,
     pub title: String,
     pub term: Term,
     job: External,
     document: Document,
+    /// The session whose main tab it sits beside, taking the sidebar's place. It has no tab
+    /// of its own then.
+    pub docked: Option<u64>,
+    /// For a docked editor: keys go to it rather than to the world's input.
+    pub focused: bool,
 }
 
 /// The map's screen area, the map-unit rectangle it shows (x0, y0, x1, y1), and its area name.
@@ -457,6 +466,14 @@ impl App {
         let Some(tab) = self.tabs.get(self.active).cloned() else { return };
         match tab {
             Tab::Main(id) => {
+                // An editor beside the world goes with it.
+                let docked: Vec<u64> = self.editors.iter().filter(|e| e.docked == Some(id)).map(|e| e.id).collect();
+                for editor in docked {
+                    if let Some(editor) = self.remove_editor(editor) {
+                        editor.document.discard();
+                        self.toast(&format!("Closed the editor on {} without saving", editor.title));
+                    }
+                }
                 if let Some(i) = self.session_index(id) {
                     let mut s = self.sessions.remove(i);
                     let _ = s.engine.save_map();
@@ -589,6 +606,7 @@ impl App {
 }
 
 mod editing;
+pub use editing::{DOCK_MIN_WIDTH, dock_width};
 mod effects;
 mod events;
 mod overlays;
@@ -610,6 +628,19 @@ mod tests {
         assert_eq!(insert_for("/@<code>"), "/@");
         assert_eq!(insert_for("/images on|off"), "/images ");
         assert_eq!(insert_for("/map [go|here|addroom|import|track|clear] ..."), "/map ");
+    }
+
+    #[test]
+    fn an_editor_beside_a_world_leaves_the_world_room() {
+        // 80 columns for the editor (and its border) once the world can keep 40.
+        assert_eq!(dock_width(120), 80);
+        assert_eq!(dock_width(160), 80);
+        // Wider than that, half each.
+        assert_eq!(dock_width(200), 100);
+        // Narrower, the world keeps its 40 and the editor has the rest.
+        assert_eq!(dock_width(110), 70);
+        assert_eq!(dock_width(DOCK_MIN_WIDTH), 50);
+        assert!((DOCK_MIN_WIDTH..300).all(|w| w - dock_width(w) >= 40));
     }
 
     #[test]
