@@ -42,6 +42,21 @@ jobs:
       - name: Tests
         run: cargo test --workspace --exclude familiar-gtk --locked
 
+  # The same on macOS, and the Mac app (Swift, on top of the engine as a static library).
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: Swatinem/rust-cache@v2
+      - name: Clippy
+        run: cargo clippy --workspace --exclude familiar-gtk --all-targets --locked -- -D warnings
+      - name: Tests
+        run: cargo test --workspace --exclude familiar-gtk --locked
+      - name: Mac app
+        run: |
+          cargo build --release --locked -p familiar-bridge
+          swift build --package-path macos
+
   # The GTK client on Windows, against MSYS2's GTK (no web views: WebKitGTK doesn't exist there).
   windows-gtk:
     runs-on: windows-latest

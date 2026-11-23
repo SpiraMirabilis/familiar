@@ -1,5 +1,5 @@
-//! Sound playback: the system's command-line player on Linux (PipeWire, PulseAudio or ALSA, so
-//! no audio libraries are linked), and rodio on Windows.
+//! Sound playback: the system's command-line player on Linux (PipeWire, PulseAudio or ALSA) and
+//! macOS (`afplay`), so no audio libraries are linked, and rodio on Windows.
 
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -31,7 +31,7 @@ impl SoundPlayer {
     }
 
     /// Like [`SoundPlayer::play`], repeating `loops` times, or until stopped if that's negative.
-    /// (On Linux the command-line players can't repeat, so the sound plays once.)
+    /// (On Linux and macOS the command-line players can't repeat, so the sound plays once.)
     pub fn play_loops(&self, name: &str, path: &Path, volume: f64, loops: i32) -> Result<(), String> {
         if !path.is_file() {
             return Err(format!("Sound file not found: {}", path.display()));
@@ -77,14 +77,22 @@ mod imp {
     impl Backend {
         pub fn play(&mut self, name: &str, path: &Path, volume: f64, _loops: i32) -> Result<(), String> {
             self.tidy();
-            let player = *self.player.get_or_insert_with(|| ["pw-play", "paplay", "aplay"].into_iter().find(|p| crate::which(p).is_some()));
+            let players: &[&'static str] = if cfg!(target_os = "macos") { &["afplay"] } else { &["pw-play", "paplay", "aplay"] };
+            let player = *self.player.get_or_insert_with(|| players.iter().copied().find(|p| crate::which(p).is_some()));
             let Some(player) = player else {
-                return Err("No sound player found (install pipewire, pulseaudio-utils or alsa-utils)".into());
+                return Err(if cfg!(target_os = "macos") {
+                    "No sound player found (afplay is missing)".into()
+                } else {
+                    "No sound player found (install pipewire, pulseaudio-utils or alsa-utils)".into()
+                });
             };
             let mut cmd = Command::new(player);
             match player {
                 "pw-play" => {
                     cmd.arg(format!("--volume={volume:.2}"));
+                }
+                "afplay" => {
+                    cmd.args(["-v", &format!("{volume:.2}")]);
                 }
                 "paplay" => {
                     cmd.arg(format!("--volume={}", (volume * 65536.0) as u32));

@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- macOS: a native app, with what the GTK client has, web views included. Worlds open as
+  window tabs; speech, spell checking and notifications are the system's.
+- macOS: the terminal client, as one file for Apple silicon and Intel. Speech uses the system
+  voice, sounds play through `afplay`, and notifications come from Notification Center.
+
 ## 0.2.1 (2026-11-22)
 
 - Terminal client: dragging over the output selects text and copies it on release. Wrapped

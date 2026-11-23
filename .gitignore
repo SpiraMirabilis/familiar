@@ -10,3 +10,5 @@
 /packaging/aur/*/familiar/
 dist/
 .env
+
+/macos/.build*/

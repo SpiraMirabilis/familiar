@@ -2,8 +2,9 @@
 
 # Familiar
 
-A client for MUDs, MUSHes, MUCKs and MOOs, for Linux and Windows: a GTK 4 app and a full-screen
-terminal app that share one engine, settings, scripts and maps.
+A client for MUDs, MUSHes, MUCKs and MOOs, for Linux, Windows and macOS: a desktop app (GTK 4 on
+Linux and Windows, a native app on macOS) and a full-screen terminal app that share one engine,
+settings, scripts and maps.
 
 Familiar is inspired by [BeipMU](https://github.com/BeipDev/BeipMU), the Windows client, and can
 import its settings, maps and scripts. It is a separate project, written from scratch in Rust, and
@@ -32,6 +33,11 @@ files (unpack it anywhere and run `Familiar.cmd`). Both contain everything the a
 included, so there is nothing else to install. They also contain the terminal client,
 `familiar-tui.exe`, which is available on its own too: one file with no dependencies, best run in
 Windows Terminal. Windows 10 or newer, 64-bit. See [Windows notes](#windows-notes) for what differs.
+
+**macOS:** each release has `Familiar-…-macos.zip`, the app (unzip it and drag Familiar to
+Applications), and `familiar-tui-…-macos.tar.gz`, the terminal client on its own
+(`cargo install familiar-tui` works too). Both run on Apple silicon and Intel Macs, macOS 14 or
+newer. See [macOS notes](#macos-notes) for what differs.
 
 **Arch Linux (AUR):** `familiar` (releases) or `familiar-git` (latest code), for example
 `paru -S familiar`. The PKGBUILDs are in [`packaging/aur`](packaging/aur).
@@ -65,7 +71,8 @@ Hunspell dictionary (`hunspell-en_us`), and sounds need `gst-plugins-good` (GTK)
 
 Settings live in `~/.config/familiar/` (`config.toml`, `startup.js`) and maps and logs in
 `~/.local/share/familiar/`. Both clients use them. On Windows these are `%APPDATA%\familiar\` and
-`%LOCALAPPDATA%\familiar\`; paths elsewhere in this document are the Linux ones.
+`%LOCALAPPDATA%\familiar\`, and on macOS both are `~/Library/Application Support/familiar/`; paths
+elsewhere in this document are the Linux ones.
 
 **Fonts:** Main menu → Preferences (Ctrl+,) sets the font for output and input, along with the
 other settings. A world can have a font of its own, in its settings in the Connect dialog; it
@@ -172,6 +179,30 @@ A puppet is a second character you control through your main connection, such as
   needs are listed at the top of the script). The terminal client alone builds with plain
   `cargo build --release -p familiar-tui`, with either the MSVC or the GNU toolchain.
 
+### macOS notes
+
+- The app is written for the Mac rather than being the GTK client: worlds open as window tabs
+  (drag one out for its own window), settings are under Familiar → Settings (⌘,), and the menu
+  bar has the rest. The shortcuts use ⌘: ⌘N connect, ⌘R reconnect, ⇧⌘D disconnect, ⌘K clear the
+  output, ⇧⌘T triggers, aliases and macros, ⇧⌘L log, ⌘F find in the output, ⌘. stop sounds.
+- Keyboard macros are written the same way as on Linux ("Ctrl+F5", "Alt+KP_8"), so a config can
+  move between systems. Alt is the Option key. ⌘ is never part of a macro.
+- **Web views** work (they use the system's WebKit), unlike on Windows.
+- **Speech** uses the system voice, **sounds** play through the system (WAV, MP3, AAC and more,
+  but not Ogg Vorbis) and can loop, and notifications come from Notification Center.
+- The **program editor** highlights MOO, MUF and Lua; other languages are shown as plain text.
+- **Spell checking** is the system's, in whatever languages macOS is set up for.
+- **Fonts:** a config from Linux that says `Monospace 11` gets the system's monospaced font.
+- The **terminal client** needs nothing installed. Its sounds play through `afplay`, once each.
+  Terminal.app before macOS 26 only shows 256 colours; iTerm2, Ghostty, kitty and WezTerm show
+  them all, and report Shift+Enter and number pad keys separately.
+- If a download isn't notarized, macOS refuses to open it the first time. For the app,
+  right-click it and choose Open (or allow it in System Settings → Privacy & Security); for the
+  terminal client, `xattr -d com.apple.quarantine familiar-tui`. Copies you build yourself
+  aren't affected.
+- **Building:** `packaging/macos/build.sh` makes `dist/Familiar.app`. It needs Rust and Xcode (or
+  its command line tools), and nothing else.
+
 ### Optional system packages
 
 - `gst-plugins-good`: WAV/MP3 decoding and the standard audio output for sounds. Without it, playback reports a missing plugin.
@@ -191,8 +222,9 @@ A puppet is a second character you control through your main connection, such as
 | `familiar-script` | JavaScript scripting with QuickJS: one isolated runtime per connection, a 2-second limit per call and a memory cap. Implements the engine's `ScriptHost` trait, so any frontend gets scripting. |
 | `familiar-map` | World maps: rooms, exits and areas, an automapper for GMCP `Room.Info` (IRE, Aardwolf and BeipMU styles), shortest-path walking, and tracking by room name. |
 | `familiar-import` | Reads BeipMU's `Config.txt` (worlds, characters, puppets, triggers, aliases, macros, variables) and `.atlas` maps (plain or zipped XML), reporting anything that can't be carried over. |
-| `familiar-speech` | Text to speech on a background thread: speech-dispatcher on Linux, the built-in voice on Windows. |
+| `familiar-speech` | Text to speech on a background thread: speech-dispatcher on Linux, the built-in voice on Windows and macOS. |
 | `familiar-platform` | Sounds, notifications, opening links and finding an editor, done each system's way. |
+| `familiar-bridge` | The engine behind a small C interface (a method name and JSON in, JSON out), as a static library. The macOS app, in [`macos/`](macos), is Swift on top of it. |
 | `familiar-code` | Editing support shared by frontends: block-aware auto-indentation for MOO, MUF and Lua. |
 | `familiar-gtk` | GTK4/libadwaita client: a tab per connection, ANSI and full Unicode output with clickable links, a side dock with spawn windows and GMCP stat panes, input with history, password mode, NAWS, logging, sounds (trigger and server-driven), notifications, an MCP status line and text editor, web views, and a rules editor. |
 | `familiar-tui` | Full-screen terminal client (ratatui) on the same engine: tabs, a sidebar with the map, stat bars and spawn windows, a command palette and fuzzy pickers, `/` completion, and `$EDITOR` for MCP editing. |

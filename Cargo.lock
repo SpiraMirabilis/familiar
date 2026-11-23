@@ -766,6 +766,23 @@ name = "familiar-ansi"
 version = "0.2.1"
 
 [[package]]
+name = "familiar-bridge"
+version = "0.2.1"
+dependencies = [
+ "familiar-ansi",
+ "familiar-code",
+ "familiar-config",
+ "familiar-engine",
+ "familiar-import",
+ "familiar-map",
+ "familiar-net",
+ "familiar-script",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "familiar-cli"
 version = "0.2.1"
 dependencies = [
