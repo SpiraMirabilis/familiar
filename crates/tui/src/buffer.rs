@@ -33,16 +33,55 @@ impl Kind {
     }
 }
 
+/// A character cell in a buffer: an entry and the bytes of the character there (empty when the
+/// position is past the text).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Cell {
+    pub seq: u64,
+    pub start: usize,
+    pub end: usize,
+}
+
+/// Text selected with the mouse. It's held in terms of the buffer's content rather than the
+/// screen, so it stays put while the buffer scrolls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Selection {
+    /// The `Buffer::id` it's in.
+    pub buffer: u64,
+    pub anchor: Cell,
+    pub head: Cell,
+}
+
+impl Selection {
+    /// The first and last cells, in reading order.
+    fn ends(&self) -> (Cell, Cell) {
+        if (self.anchor.seq, self.anchor.start) <= (self.head.seq, self.head.start) { (self.anchor, self.head) } else { (self.head, self.anchor) }
+    }
+
+    /// The selected bytes of entry `seq`, whose text is `len` bytes long.
+    fn within(&self, seq: u64, len: usize) -> Option<Range<usize>> {
+        let (lo, hi) = self.ends();
+        if seq < lo.seq || seq > hi.seq {
+            return None;
+        }
+        let start = if seq == lo.seq { lo.start.min(len) } else { 0 };
+        let end = if seq == hi.seq { hi.end.min(len) } else { len };
+        Some(start..end.max(start))
+    }
+}
+
 pub struct Entry {
     pub line: StyledLine,
     pub kind: Kind,
+    /// Its place in everything the buffer has ever held.
+    pub seq: u64,
     /// Row byte ranges for the last width wrapped to.
     rows: RefCell<Option<(u16, Vec<Range<usize>>)>>,
 }
 
 impl Entry {
     pub fn new(line: StyledLine, kind: Kind) -> Self {
-        Self { line: expand_tabs(line), kind, rows: RefCell::new(None) }
+        Self { line: expand_tabs(line), kind, seq: 0, rows: RefCell::new(None) }
     }
 
     fn rows(&self, width: u16) -> std::cell::Ref<'_, Vec<Range<usize>>> {
@@ -59,8 +98,10 @@ impl Entry {
         self.rows(width).len()
     }
 
-    /// One wrapped row as a styled line, plus the links in it as (start column, end column, uri).
-    pub fn row(&self, width: u16, index: usize) -> (Line<'static>, Vec<(u16, u16, String)>) {
+    /// One wrapped row as a styled line (with the selected part, if any, highlighted), plus the
+    /// links in it as (start column, end column, uri).
+    pub fn row(&self, width: u16, index: usize, selection: Option<&Selection>) -> (Line<'static>, Vec<(u16, u16, String)>) {
+        let selected = selection.and_then(|s| s.within(self.seq, self.line.text.len())).unwrap_or(0..0);
         let range = self.rows(width).get(index).cloned().unwrap_or(0..0);
         let (prefix, prefix_style) = self.kind.prefix();
         let mut spans = Vec::new();
@@ -84,10 +125,34 @@ impl Entry {
             if let Some(link) = &span.style.link {
                 links.push((col, col + w, link.to_string()));
             }
-            spans.push(Span::styled(text.to_string(), base.patch(theme::style(&span.style))));
+            let style = base.patch(theme::style(&span.style));
+            // Up to three pieces: before, inside and after the selection.
+            let (a, b) = (selected.start.clamp(s, e), selected.end.clamp(s, e));
+            for (from, to, on) in [(s, a, false), (a, b, true), (b, e, false)] {
+                if from < to {
+                    let style = if on { style.add_modifier(Modifier::REVERSED) } else { style };
+                    spans.push(Span::styled(self.line.text[from..to].to_string(), style));
+                }
+            }
             col += w;
         }
         (Line::from(spans), links)
+    }
+
+    /// The cell at screen column `col` (counted from the pane's left edge) of a wrapped row.
+    pub fn cell_at(&self, width: u16, index: usize, col: usize) -> Cell {
+        let range = self.rows(width).get(index).cloned().unwrap_or(0..0);
+        let mut x = UnicodeWidthStr::width(self.kind.prefix().0);
+        if col >= x {
+            for (i, g) in self.line.text[range.clone()].grapheme_indices(true) {
+                x += UnicodeWidthStr::width(g);
+                if col < x {
+                    return Cell { seq: self.seq, start: range.start + i, end: range.start + i + g.len() };
+                }
+            }
+            return Cell { seq: self.seq, start: range.end, end: range.end };
+        }
+        Cell { seq: self.seq, start: range.start, end: range.start }
     }
 
     pub fn plain(&self) -> &str {
@@ -160,6 +225,9 @@ pub fn wrap(text: &str, width: usize) -> Vec<Range<usize>> {
 }
 
 pub struct Buffer {
+    /// Tells buffers apart (for the selection).
+    pub id: u64,
+    next_seq: u64,
     entries: VecDeque<Entry>,
     max: usize,
     /// Rows scrolled up from the bottom. 0 follows new output.
@@ -172,11 +240,15 @@ pub struct Buffer {
 
 impl Buffer {
     pub fn new(max: usize) -> Self {
-        Self { entries: VecDeque::new(), max: max.max(100), scroll: 0, unseen: 0, width: 80 }
+        static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let id = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Self { id, next_seq: 0, entries: VecDeque::new(), max: max.max(100), scroll: 0, unseen: 0, width: 80 }
     }
 
     pub fn push(&mut self, line: StyledLine, kind: Kind) {
-        let entry = Entry::new(line, kind);
+        let mut entry = Entry::new(line, kind);
+        entry.seq = self.next_seq;
+        self.next_seq += 1;
         if self.scroll > 0 {
             self.scroll += entry.row_count(self.width);
             self.unseen += 1;
@@ -201,6 +273,19 @@ impl Buffer {
 
     pub fn len(&self) -> usize {
         self.entries.len()
+    }
+
+    pub fn entry(&self, seq: u64) -> Option<&Entry> {
+        let first = self.entries.front()?.seq;
+        self.entries.get(usize::try_from(seq.checked_sub(first)?).ok()?)
+    }
+
+    /// The selected text, one line per entry (so a wrapped line comes back whole).
+    pub fn selected_text(&self, selection: &Selection) -> String {
+        let (lo, hi) = selection.ends();
+        let lines: Vec<&str> =
+            self.entries.iter().filter(|e| (lo.seq..=hi.seq).contains(&e.seq)).filter_map(|e| Some(&e.line.text[selection.within(e.seq, e.line.text.len())?])).collect();
+        lines.join("\n")
     }
 
     pub fn total_rows(&self, width: u16) -> usize {
@@ -294,8 +379,36 @@ mod tests {
         line.linkify();
         let e = Entry::new(line, Kind::Echo);
         assert_eq!(e.plain(), "a       b see https://example.org/x");
-        let (_, links) = e.row(80, 0);
+        let (_, links) = e.row(80, 0, None);
         assert_eq!(links, [(16, 37, "https://example.org/x".to_string())], "after the 2-column echo prefix");
+    }
+
+    #[test]
+    fn selection_follows_content_and_copies_whole_lines() {
+        let mut b = Buffer::new(100);
+        b.push(StyledLine::plain("the quick brown fox"), Kind::Server);
+        b.push(StyledLine::plain("hello"), Kind::Echo);
+        // Wrapped at 10: "the quick " / "brown fox". From the q of "quick" to the o of "brown".
+        let anchor = b.entry(0).unwrap().cell_at(10, 0, 4);
+        assert_eq!((anchor.start, anchor.end), (4, 5));
+        let head = b.entry(0).unwrap().cell_at(10, 1, 2);
+        let sel = Selection { buffer: b.id, anchor, head };
+        assert_eq!(b.selected_text(&sel), "quick bro", "no newline where the line only wrapped");
+        // Backwards, into the next entry, past its end and inside its prefix.
+        let end = b.entry(1).unwrap().cell_at(10, 0, 50);
+        assert_eq!(b.selected_text(&Selection { buffer: b.id, anchor: end, head: anchor }), "quick brown fox\nhello");
+        let prefix = b.entry(1).unwrap().cell_at(10, 0, 1);
+        assert_eq!(b.selected_text(&Selection { buffer: b.id, anchor, head: prefix }), "quick brown fox\n");
+        // The highlight splits the row's spans.
+        let (line, _) = b.entry(0).unwrap().row(10, 0, Some(&sel));
+        let parts: Vec<(&str, bool)> = line.spans.iter().map(|s| (s.content.as_ref(), s.style.add_modifier.contains(Modifier::REVERSED))).collect();
+        assert_eq!(parts, [("the ", false), ("quick ", true)]);
+        // Entries are still found after older ones are dropped.
+        for i in 0..200 {
+            b.push(StyledLine::plain(format!("line {i}")), Kind::Server);
+        }
+        assert!(b.entry(0).is_none());
+        assert_eq!(b.entry(201).unwrap().plain(), "line 199");
     }
 
     #[test]

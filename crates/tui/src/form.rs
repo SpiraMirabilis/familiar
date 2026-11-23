@@ -10,6 +10,8 @@ pub enum FieldKind {
     /// Shown as dots unless it has focus.
     Secret,
     Toggle,
+    /// Text of several lines.
+    Multi,
 }
 
 pub struct Field {
@@ -18,13 +20,28 @@ pub struct Field {
     pub kind: FieldKind,
     pub input: Input,
     pub on: bool,
+    /// A heading shown above the first field of each group.
+    pub group: &'static str,
 }
 
 impl Field {
-    fn text(label: &'static str, hint: &'static str, value: &str) -> Self {
+    pub fn text(label: &'static str, hint: &'static str, value: &str) -> Self {
         let mut input = Input::new(1);
         input.set(value);
-        Self { label, hint, kind: FieldKind::Text, input, on: false }
+        Self { label, hint, kind: FieldKind::Text, input, on: false, group: "" }
+    }
+
+    pub fn multi(label: &'static str, hint: &'static str, value: &str) -> Self {
+        Self { kind: FieldKind::Multi, ..Self::text(label, hint, value) }
+    }
+
+    pub fn toggle(label: &'static str, hint: &'static str, on: bool) -> Self {
+        Self { kind: FieldKind::Toggle, on, ..Self::text(label, hint, "") }
+    }
+
+    pub fn group(mut self, group: &'static str) -> Self {
+        self.group = group;
+        self
     }
 }
 

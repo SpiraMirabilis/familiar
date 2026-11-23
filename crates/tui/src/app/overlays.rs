@@ -149,8 +149,13 @@ impl App {
                     self.apply(i, out);
                 }
             }
-            Cmd::EditInput => self.external = Some(External::EditInput),
-            Cmd::EditConfig => self.external = Some(External::EditConfig),
+            Cmd::EditInput => {
+                if let Some((i, puppet)) = current {
+                    self.edit(External::EditInput { session: self.sessions[i].id, puppet });
+                }
+            }
+            Cmd::EditConfig => self.edit(External::EditConfig),
+            Cmd::Rules => self.open_rules(),
             Cmd::StopSpeech => self.speaker.stop(),
             Cmd::Help => self.overlay = Some(Overlay::Help),
             Cmd::Quit => self.quit = true,

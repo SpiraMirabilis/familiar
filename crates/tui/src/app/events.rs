@@ -5,7 +5,10 @@ use super::*;
 impl App {
     pub fn on_event(&mut self, event: Event) {
         match event {
-            Event::Key(key) if key.kind != KeyEventKind::Release => self.on_key(crate::keys::normalize(key, cfg!(windows))),
+            Event::Key(key) if key.kind != KeyEventKind::Release => {
+                self.selection = None;
+                self.on_key(crate::keys::normalize(key, cfg!(windows)))
+            }
             Event::Mouse(mouse) => self.on_mouse(mouse),
             Event::Paste(text) => {
                 if let Some(Overlay::World(form)) = &mut self.overlay {
@@ -13,6 +16,11 @@ impl App {
                 } else if let Some(Overlay::Picker(p)) = &mut self.overlay {
                     p.query.insert(&text.replace(['\r', '\n'], " "));
                     self.picker_query_changed();
+                } else if let Some(Overlay::Rules(view)) = &mut self.overlay {
+                    view.paste(&text);
+                } else if self.overlay.is_some() {
+                } else if let Some(editor) = self.active_editor() {
+                    editor.term.paste(&text);
                 } else if let Some(input) = self.current_input() {
                     input.insert(&text.replace("\r\n", "\n").replace('\r', "\n"));
                 }
@@ -30,6 +38,22 @@ impl App {
 
         if self.overlay.is_some() {
             return self.on_overlay_key(key);
+        }
+        // An editor gets every key but the ones that switch tabs.
+        if let Some(Tab::Editor(id)) = self.tabs.get(self.active).cloned() {
+            match key.code {
+                KeyCode::Char(c @ '1'..='9') if alt => self.switch_to(c as usize - '1' as usize),
+                KeyCode::Right if alt => self.run(Cmd::NextTab),
+                KeyCode::Left if alt => self.run(Cmd::PrevTab),
+                KeyCode::PageDown if ctrl => self.run(Cmd::NextTab),
+                KeyCode::PageUp if ctrl => self.run(Cmd::PrevTab),
+                _ => {
+                    if let Some(editor) = self.editors.iter_mut().find(|e| e.id == id) {
+                        editor.term.key(key);
+                    }
+                }
+            }
+            return;
         }
         // Keys that work everywhere.
         match key.code {
@@ -50,6 +74,7 @@ impl App {
             KeyCode::Char('b') if ctrl => return self.run(Cmd::ToggleSidebar),
             KeyCode::Char('g') if ctrl => return self.run(Cmd::EditInput),
             KeyCode::F(1) => return self.run(Cmd::Help),
+            KeyCode::F(2) => return self.run(Cmd::Rules),
             KeyCode::Char(c @ '1'..='9') if alt => return self.switch_to(c as usize - '1' as usize),
             KeyCode::Right if alt => return self.run(Cmd::NextTab),
             KeyCode::Left if alt => return self.run(Cmd::PrevTab),
@@ -61,7 +86,7 @@ impl App {
                 if let Some((i, _)) = self.current()
                     && let Some((request, line)) = self.sessions[i].last_edit.clone()
                 {
-                    self.external = Some(External::Edit { session: self.sessions[i].id, request, line });
+                    self.edit(External::Edit { session: self.sessions[i].id, request, line });
                 } else {
                     self.toast("Nothing to reopen: no program has been edited here yet");
                 }
@@ -263,6 +288,9 @@ impl App {
         if matches!(self.overlay, Some(Overlay::World(_))) {
             return self.on_form_key(key);
         }
+        if matches!(self.overlay, Some(Overlay::Rules(_))) {
+            return self.on_rules_key(key);
+        }
         // In the world picker: Ctrl+N adds a world, Ctrl+E edits the selected one and Ctrl+D
         // (twice) deletes it.
         if let Some(Overlay::Picker(p)) = &self.overlay
@@ -461,6 +489,22 @@ impl App {
             "sidebar" => self.run(Cmd::ToggleSidebar),
             "world" | "worlds" => self.run(Cmd::EditWorld),
             "config" => self.run(Cmd::EditConfig),
+            "rules" | "triggers" | "aliases" | "macros" => self.run(Cmd::Rules),
+            "editor" => {
+                match args.to_lowercase().as_str() {
+                    "tab" => self.config.settings.editor_in_tab = true,
+                    "fullscreen" | "full" => self.config.settings.editor_in_tab = false,
+                    "" => {}
+                    _ => {
+                        self.toast("Use /editor tab or /editor fullscreen");
+                        return true;
+                    }
+                }
+                if !args.is_empty() {
+                    self.save_config();
+                }
+                self.toast(if self.config.settings.editor_in_tab { "$EDITOR opens in a tab" } else { "$EDITOR takes over the whole terminal" });
+            }
             "colors" | "colours" => {
                 match args.to_lowercase().as_str() {
                     "terminal" | "theme" => self.config.settings.terminal_colors = true,
@@ -509,6 +553,22 @@ impl App {
 
     pub(super) fn on_mouse(&mut self, mouse: MouseEvent) {
         let at = Position::new(mouse.column, mouse.row);
+        if let Some(Overlay::Rules(view)) = &mut self.overlay {
+            // The wheel moves through the list.
+            if view.form.is_none() && matches!(mouse.kind, MouseEventKind::ScrollUp | MouseEventKind::ScrollDown) {
+                let count = view.rows(&self.config).len();
+                view.select(if mouse.kind == MouseEventKind::ScrollUp { -1 } else { 1 }, count);
+            }
+            return;
+        }
+        // Over an editor's screen, the mouse is the editor's.
+        let area = self.hits.editor;
+        if self.overlay.is_none()
+            && area.contains(at)
+            && let Some(editor) = self.active_editor()
+        {
+            return editor.term.mouse(mouse, at.x - area.x, at.y - area.y);
+        }
         match mouse.kind {
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
                 let delta = if mouse.kind == MouseEventKind::ScrollUp { 3 } else { -3 };
@@ -549,11 +609,10 @@ impl App {
                     }
                     return;
                 }
-                if let Some(uri) = self.hits.links.iter().find(|(y, x0, x1, _)| *y == at.y && (*x0..*x1).contains(&at.x)).map(|l| l.3.clone()) {
-                    if let Some((i, _)) = self.current() {
-                        let out = self.sessions[i].engine.follow_link(&uri);
-                        self.apply(i, out);
-                    }
+                // On text: the start of a selection if the mouse moves, a click (on a link) if not.
+                self.selection = None;
+                self.press = self.hits.rows.iter().find(|r| r.y == at.y && (r.x..r.x + r.width).contains(&at.x)).and_then(|r| Some((r.buffer, self.cell_at(r, at)?)));
+                if self.press.is_some() {
                     return;
                 }
                 if let Some((rect, (x0, y0, x1, y1), area)) = self.hits.map.clone()
@@ -572,8 +631,56 @@ impl App {
                     }
                 }
             }
+            MouseEventKind::Down(MouseButton::Middle) if self.overlay.is_none() => {
+                // A way to close an editor that has stopped answering.
+                if let Some(&(_, t)) = self.hits.tabs.iter().find(|(r, _)| r.contains(at))
+                    && matches!(self.tabs[t], Tab::Editor(_))
+                {
+                    self.switch_to(t);
+                    self.close_tab();
+                }
+            }
+            MouseEventKind::Drag(MouseButton::Left) => {
+                let Some((buffer, anchor)) = self.press else { return };
+                // The nearest row of the same buffer, so dragging past its edges still selects.
+                let row = self.hits.rows.iter().filter(|r| r.buffer == buffer).min_by_key(|r| r.y.abs_diff(at.y));
+                if let Some(head) = row.and_then(|r| self.cell_at(r, at)) {
+                    self.selection = (head != anchor).then_some(Selection { buffer, anchor, head });
+                }
+            }
+            MouseEventKind::Up(MouseButton::Left) => {
+                if self.press.take().is_none() {
+                    return;
+                }
+                if let Some(selection) = self.selection {
+                    let text = self.buffer(selection.buffer).map(|b| b.selected_text(&selection)).unwrap_or_default();
+                    if text.is_empty() {
+                        self.selection = None;
+                    } else {
+                        self.clipboard = Some(text);
+                        self.toast("Copied");
+                    }
+                } else if let Some(uri) = self.hits.links.iter().find(|(y, x0, x1, _)| *y == at.y && (*x0..*x1).contains(&at.x)).map(|l| l.3.clone())
+                    && let Some((i, _)) = self.current()
+                {
+                    let out = self.sessions[i].engine.follow_link(&uri);
+                    self.apply(i, out);
+                }
+            }
             _ => {}
         }
+    }
+
+    fn buffer(&self, id: u64) -> Option<&Buffer> {
+        self.sessions.iter().flat_map(|s| std::iter::once(&s.output).chain(s.puppets.iter().map(|p| &p.buffer)).chain(s.spawns.iter().map(|p| &p.buffer))).find(|b| b.id == id)
+    }
+
+    /// The buffer cell under (or, for a position off the row's ends, nearest) the mouse.
+    fn cell_at(&self, row: &RowHit, at: Position) -> Option<Cell> {
+        let entry = self.buffer(row.buffer)?.entry(row.seq)?;
+        // Past the right edge is past the end of the row.
+        let col = if at.x >= row.x + row.width { usize::MAX } else { at.x.saturating_sub(row.x) as usize };
+        Some(entry.cell_at(row.width, row.row, col))
     }
 }
 

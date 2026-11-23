@@ -41,7 +41,7 @@ impl App {
                     }
                 }
             }
-            Effect::Edit(request) => self.external = Some(External::Edit { session: id, request, line: None }),
+            Effect::Edit(request) => self.edit(External::Edit { session: id, request, line: None }),
             Effect::Reconnect => self.connect(idx),
             Effect::ReloadScripts => self.start_scripting(idx),
             Effect::Bell => {
@@ -63,8 +63,8 @@ impl App {
             }
             Effect::Settings(settings) => {
                 // Settings changed from inside a session (/images, /speech) don't know about ours.
-                let terminal_colors = self.config.settings.terminal_colors;
-                self.config.settings = Settings { terminal_colors, ..settings };
+                let Settings { terminal_colors, editor_in_tab, .. } = self.config.settings;
+                self.config.settings = Settings { terminal_colors, editor_in_tab, ..settings };
                 self.save_config();
             }
             Effect::OpenPuppet { name, focus } => {

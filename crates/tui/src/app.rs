@@ -11,7 +11,10 @@ use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyEvent
 use ratatui::layout::{Position, Rect};
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::buffer::Buffer;
+use crate::buffer::{Buffer, Cell, Selection};
+use crate::editor::Document;
+use crate::rules::RulesView;
+use crate::term::{PtyEvent, PtySender, Term};
 use crate::form::{FieldKind, WorldForm};
 use crate::fuzzy;
 use crate::input::Input;
@@ -28,6 +31,8 @@ pub const TUI_COMMANDS: &[(&str, &str)] = &[
     ("/sidebar", "show or hide the sidebar (map, stats, spawn windows)"),
     ("/colors [standard|terminal]", "draw the 16 basic colours exactly, or with the terminal's theme"),
     ("/config", "edit the config file in $EDITOR"),
+    ("/editor [tab|fullscreen]", "open $EDITOR in a tab, or give it the whole terminal"),
+    ("/rules", "edit triggers, aliases, keyboard macros and variables"),
     ("/keys", "show keyboard shortcuts"),
     ("/quit", "disconnect everything and quit"),
 ];
@@ -36,6 +41,8 @@ pub const TUI_COMMANDS: &[(&str, &str)] = &[
 pub enum Tab {
     Main(u64),
     Puppet(u64, String),
+    /// An `$EDITOR` running in the tab (an `EditorTab::id`).
+    Editor(u64),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,6 +63,7 @@ pub enum Cmd {
     ShowMap,
     EditInput,
     EditConfig,
+    Rules,
     StopSpeech,
     Help,
     Quit,
@@ -78,6 +86,7 @@ const PALETTE: &[(Cmd, &str, &str)] = &[
     (Cmd::ToggleLog, "Start or stop logging", "/log"),
     (Cmd::EditInput, "Edit the input in $EDITOR", "Ctrl+G"),
     (Cmd::EditConfig, "Edit the config file", "/config"),
+    (Cmd::Rules, "Triggers, aliases and macros…", "F2"),
     (Cmd::StopSpeech, "Stop speaking", "/speech stop"),
     (Cmd::Help, "Keyboard shortcuts", "F1"),
     (Cmd::Quit, "Quit", "Ctrl+C Ctrl+C"),
@@ -148,6 +157,7 @@ impl Picker {
 pub enum Overlay {
     Picker(Box<Picker>),
     World(Box<WorldForm>),
+    Rules(Box<RulesView>),
     Help,
 }
 
@@ -159,16 +169,38 @@ pub struct Suggestion {
     pub detail: String,
 }
 
-/// Work that needs the terminal to itself (an external editor).
+/// Something to open in `$EDITOR`.
+#[derive(Clone)]
 pub enum External {
     /// Open an editor on `request`, at `line` if given.
     Edit { session: u64, request: EditRequest, line: Option<u32> },
-    EditInput,
+    /// The input box of a session's tab, or of one of its puppets.
+    EditInput { session: u64, puppet: Option<String> },
     EditConfig,
+}
+
+/// An editor running in a tab.
+pub struct EditorTab {
+    pub id: u64,
+    pub title: String,
+    pub term: Term,
+    job: External,
+    document: Document,
 }
 
 /// The map's screen area, the map-unit rectangle it shows (x0, y0, x1, y1), and its area name.
 pub type MapHit = (Rect, (f64, f64, f64, f64), String);
+
+/// A row of a buffer on screen.
+pub struct RowHit {
+    pub y: u16,
+    pub x: u16,
+    pub width: u16,
+    /// The `Buffer::id`, the entry and which of its wrapped rows this is.
+    pub buffer: u64,
+    pub seq: u64,
+    pub row: usize,
+}
 
 /// Where things were drawn, for the mouse.
 #[derive(Default)]
@@ -177,11 +209,14 @@ pub struct Hits {
     pub panels: Vec<(Rect, usize)>,
     /// (row, first column, last column + 1, uri)
     pub links: Vec<(u16, u16, u16, String)>,
+    pub rows: Vec<RowHit>,
     pub output: Rect,
     pub sidebar: Rect,
     pub picker_items: Vec<(Rect, usize)>,
     /// The map's area and the map-unit rectangle it shows: (x0, y0, x1, y1).
     pub map: Option<MapHit>,
+    /// Where an editor tab's screen is.
+    pub editor: Rect,
 }
 
 pub struct App {
@@ -202,7 +237,18 @@ pub struct App {
     pub quit: bool,
     net_tx: UnboundedSender<NetEvent>,
     pub hits: Hits,
+    /// An edit that needs the terminal to itself; the main loop runs it.
     pub external: Option<External>,
+    pub editors: Vec<EditorTab>,
+    pty_tx: PtySender,
+    /// The size of the whole terminal at the last draw.
+    pub screen: (u16, u16),
+    /// Text being selected (or last selected) with the mouse.
+    pub selection: Option<Selection>,
+    /// Where the left button went down on a buffer: its `Buffer::id` and the cell.
+    press: Option<(u64, Cell)>,
+    /// Text for the main loop to put on the clipboard.
+    pub clipboard: Option<String>,
     pub suggestion: usize,
     pub suggestions_hidden: bool,
     pub started: Instant,
@@ -217,7 +263,7 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(net_tx: UnboundedSender<NetEvent>) -> Self {
+    pub fn new(net_tx: UnboundedSender<NetEvent>, pty_tx: PtySender) -> Self {
         let config_path = familiar_config::default_config_path();
         let (config, config_error) = match Config::load(&config_path) {
             Ok(c) => (c, None),
@@ -242,6 +288,12 @@ impl App {
             net_tx,
             hits: Hits::default(),
             external: None,
+            editors: Vec::new(),
+            pty_tx,
+            screen: (80, 24),
+            selection: None,
+            press: None,
+            clipboard: None,
             suggestion: 0,
             suggestions_hidden: false,
             started: Instant::now(),
@@ -285,6 +337,7 @@ impl App {
         match self.tabs.get(self.active)? {
             Tab::Main(id) => Some((self.session_index(*id)?, None)),
             Tab::Puppet(id, name) => Some((self.session_index(*id)?, Some(name.clone()))),
+            Tab::Editor(_) => None,
         }
     }
 
@@ -310,6 +363,7 @@ impl App {
         match tab {
             Tab::Main(id) => self.session_index(*id).map(|i| self.sessions[i].title()).unwrap_or_default(),
             Tab::Puppet(_, name) => format!("↳ {name}"),
+            Tab::Editor(id) => format!("✎ {}", self.editors.iter().find(|e| e.id == *id).map_or("", |e| e.title.as_str())),
         }
     }
 
@@ -419,6 +473,13 @@ impl App {
                 }
                 self.tabs.remove(self.active);
             }
+            Tab::Editor(id) => {
+                // Dropping it stops the editor.
+                if let Some(editor) = self.remove_editor(id) {
+                    editor.document.discard();
+                    self.toast(&format!("Closed the editor on {} without saving", editor.title));
+                }
+            }
         }
         self.active = self.active.min(self.tabs.len().saturating_sub(1));
         if self.tabs.is_empty() {
@@ -527,9 +588,11 @@ impl App {
 
 }
 
+mod editing;
 mod effects;
 mod events;
 mod overlays;
+mod rules;
 
 use events::parse_address;
 

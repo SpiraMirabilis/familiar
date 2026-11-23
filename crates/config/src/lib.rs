@@ -97,6 +97,9 @@ pub struct Settings {
     /// standard ones. Themes often change them a lot (a pastel "red"), which misrepresents
     /// what a server meant, so this is off by default.
     pub terminal_colors: bool,
+    /// Terminal client: run `$EDITOR` in a tab of its own, so the worlds stay in view. When
+    /// off, the editor takes over the whole terminal until it exits.
+    pub editor_in_tab: bool,
 }
 
 impl Default for Settings {
@@ -113,6 +116,7 @@ impl Default for Settings {
             speak_output: false,
             spellcheck: true,
             terminal_colors: false,
+            editor_in_tab: true,
         }
     }
 }

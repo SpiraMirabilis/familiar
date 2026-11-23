@@ -2,11 +2,15 @@
 
 mod app;
 mod buffer;
+mod clipboard;
+mod editor;
 mod form;
 mod fuzzy;
 mod input;
 mod keys;
+mod rules;
 mod session;
+mod term;
 mod theme;
 mod ui;
 
@@ -138,9 +142,10 @@ async fn main() -> std::io::Result<()> {
 async fn run(terminal: &mut Term, args: Args) -> std::io::Result<()> {
     let (net_tx, mut net_rx) = mpsc::unbounded_channel();
     let (key_tx, mut key_rx) = mpsc::unbounded_channel();
+    let (pty_tx, mut pty_rx) = mpsc::unbounded_channel();
     let input = InputThread::start(key_tx);
     let migrated = familiar_config::migrate_old_dirs();
-    let mut app = App::new(net_tx);
+    let mut app = App::new(net_tx, pty_tx);
     for message in migrated {
         app.toast(&message);
     }
@@ -173,7 +178,16 @@ async fn run(terminal: &mut Term, args: Args) -> std::io::Result<()> {
                     }
                 }
             }
+            Some(ev) = pty_rx.recv() => {
+                app.on_pty(ev);
+                while let Ok(ev) = pty_rx.try_recv() {
+                    app.on_pty(ev);
+                }
+            }
             _ = tokio::time::sleep_until(wake.into()) => app.on_tick(),
+        }
+        if let Some(text) = app.clipboard.take() {
+            clipboard::copy(&text);
         }
         if let Some(job) = app.external.take() {
             input.pause();
@@ -191,69 +205,22 @@ async fn run(terminal: &mut Term, args: Args) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Opens `$VISUAL` or `$EDITOR` (nano if neither is set; Notepad on Windows) on a file, at
-/// `line` if the editor understands `+N`.
-fn edit_file(path: &std::path::Path, line: Option<u32>) -> Result<(), String> {
-    let (mut cmd, name) = familiar_platform::editor_command();
-    if let Some(line) = line
-        && ["vi", "vim", "nvim", "nano", "emacs", "micro", "kak", "joe", "mg"].contains(&name.as_str())
-    {
-        cmd.arg(format!("+{line}"));
-    }
-    let status = cmd.arg(path).status().map_err(|e| format!("couldn't run {name}: {e}"))?;
-    if status.success() { Ok(()) } else { Err(format!("{name} exited with {status}")) }
-}
-
-/// Edits `content` in a temporary file named after `name`, returning the result.
-fn edit_text(name: &str, extension: &str, content: &str, line: Option<u32>) -> Result<String, String> {
-    let dir = std::env::temp_dir().join(format!("familiar-tui-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let short: String = name.chars().take(40).collect();
-    let path = dir.join(format!("{}.{extension}", familiar_config::paths::file_name(&short, "edit")));
-    // Editors expect a final newline; it's taken off again afterwards.
-    let added = !content.is_empty() && !content.ends_with('\n');
-    std::fs::write(&path, if added { format!("{content}\n") } else { content.to_string() }).map_err(|e| e.to_string())?;
-    let result = edit_file(&path, line).and_then(|_| std::fs::read_to_string(&path).map_err(|e| e.to_string()));
-    let _ = std::fs::remove_file(&path);
-    result.map(|text| if added { text.strip_suffix('\n').map(str::to_string).unwrap_or(text) } else { text })
-}
-
+/// Runs an edit with the terminal handed over to the editor.
 fn run_external(app: &mut App, job: External) {
-    match job {
-        External::Edit { session, request, line } => {
-            let extension = match request.language.as_deref() {
-                Some(lang) if !lang.is_empty() => lang,
-                _ => "txt",
-            };
-            let result = edit_text(&request.name, extension, &request.content, line);
-            let Some(idx) = app.session_index(session) else { return };
-            match result {
-                Ok(text) if text == request.content && !request.is_local() => app.toast("Unchanged, so nothing was sent"),
-                Ok(text) => {
-                    // Remember what was sent, so Alt+E can reopen it if the server reports errors.
-                    let sent = familiar_engine::EditRequest { content: text.clone(), ..request.clone() };
-                    app.sessions[idx].last_edit = Some((sent, None));
-                    let out = app.sessions[idx].engine.save_edit(&request, &text);
-                    app.apply(idx, out);
-                    app.toast(&format!("Sent {}", request.name));
-                }
-                Err(e) => app.toast(&e),
+    let result = app.document(&job).and_then(|(document, _, line)| {
+        let (mut command, name) = editor::command(&document.path, line);
+        let ran = match command.status() {
+            Ok(status) if status.success() => Ok(()),
+            Ok(status) => Err(format!("{name} exited with {status}")),
+            Err(e) => Err(format!("couldn't run {name}: {e}")),
+        };
+        match ran {
+            Ok(()) => document.finish(),
+            Err(e) => {
+                document.discard();
+                Err(e)
             }
         }
-        External::EditInput => {
-            let text = app.current_input().map(|i| i.text.clone()).unwrap_or_default();
-            match edit_text("input", "txt", &text, None) {
-                Ok(text) => {
-                    if let Some(input) = app.current_input() {
-                        input.set(text.trim_end_matches('\n'));
-                    }
-                }
-                Err(e) => app.toast(&e),
-            }
-        }
-        External::EditConfig => match edit_file(&familiar_config::default_config_path(), None) {
-            Ok(()) => app.reload_config(),
-            Err(e) => app.toast(&e),
-        },
-    }
+    });
+    app.finish_edit(job, result);
 }

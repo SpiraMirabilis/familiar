@@ -12,9 +12,11 @@ use ratatui::widgets::canvas::{Canvas, Line as CanvasLine, Rectangle};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 use unicode_width::UnicodeWidthStr;
 
-use crate::app::{App, Hits, Overlay, Picker, PickerKind, Tab, TUI_COMMANDS};
+use crate::app::{App, Hits, Overlay, Picker, PickerKind, RowHit, Tab, TUI_COMMANDS};
 use crate::form::{FieldKind, WorldForm};
-use crate::buffer::Buffer;
+use crate::rules::{self, RuleForm, RulesView};
+use familiar_config::Config;
+use crate::buffer::{Buffer, Selection};
 use crate::session::{Panel, Session};
 use crate::theme::{self, ACCENT, ACCENT_2, BAD, FAINT, GOOD, MUTED, SELECTED_BG, WARN};
 
@@ -37,6 +39,15 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         return;
     }
     app.mark_seen();
+    app.screen = (area.width, area.height);
+    if let Some(Tab::Editor(id)) = app.tabs.get(app.active).cloned() {
+        let [tabs, body, status] = Layout::vertical([Constraint::Length(1), Constraint::Min(1), Constraint::Length(1)]).areas(area);
+        draw_tabs(f, app, tabs);
+        draw_editor(f, app, id, body);
+        draw_editor_status(f, app, id, status);
+        draw_overlay(f, app, area);
+        return;
+    }
     let input_height = input_height(app, area.width);
     let [tabs, body, input, status] =
         Layout::vertical([Constraint::Length(1), Constraint::Min(3), Constraint::Length(input_height), Constraint::Length(1)]).areas(area);
@@ -128,6 +139,7 @@ fn draw_tabs(f: &mut Frame, app: &mut App, area: Rect) {
                 let unread = app.sessions[s].puppets.iter().find(|p| &p.name == name).map_or(0, |p| p.unread);
                 (unread, false, None)
             }),
+            Tab::Editor(_) => (0, false, None),
         };
         let dot = match status {
             Some(Status::Connected) => Span::styled("● ", Style::new().fg(GOOD)),
@@ -153,17 +165,71 @@ fn draw_tabs(f: &mut Frame, app: &mut App, area: Rect) {
     f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
+// ----- Editor tabs -----
+
+fn term_color(color: vt100::Color) -> Color {
+    match color {
+        vt100::Color::Default => Color::Reset,
+        vt100::Color::Idx(i) => Color::Indexed(i),
+        vt100::Color::Rgb(r, g, b) => Color::Rgb(r, g, b),
+    }
+}
+
+/// The screen of the editor running in a tab.
+fn draw_editor(f: &mut Frame, app: &mut App, id: u64, area: Rect) {
+    app.hits.editor = area;
+    let Some(editor) = app.editors.iter_mut().find(|e| e.id == id) else { return };
+    editor.term.resize(area.width, area.height);
+    let screen = editor.term.screen();
+    let buffer = f.buffer_mut();
+    for row in 0..area.height {
+        for col in 0..area.width {
+            let Some(cell) = screen.cell(row, col) else { continue };
+            // The second half of a wide character belongs to the cell before.
+            if cell.is_wide_continuation() {
+                continue;
+            }
+            let mut style = Style::new().fg(term_color(cell.fgcolor())).bg(term_color(cell.bgcolor()));
+            for (on, modifier) in [(cell.bold(), Modifier::BOLD), (cell.dim(), Modifier::DIM), (cell.italic(), Modifier::ITALIC), (cell.underline(), Modifier::UNDERLINED), (cell.inverse(), Modifier::REVERSED)] {
+                if on {
+                    style = style.add_modifier(modifier);
+                }
+            }
+            let target = &mut buffer[(area.x + col, area.y + row)];
+            target.set_symbol(if cell.has_contents() { cell.contents() } else { " " });
+            target.set_style(style);
+        }
+    }
+    if !screen.hide_cursor() {
+        let (row, col) = screen.cursor_position();
+        f.set_cursor_position((area.x + col.min(area.width.saturating_sub(1)), area.y + row.min(area.height.saturating_sub(1))));
+    }
+}
+
+fn draw_editor_status(f: &mut Frame, app: &App, id: u64, area: Rect) {
+    let title = app.editors.iter().find(|e| e.id == id).map_or("", |e| e.title.as_str());
+    let left = Line::from(vec![Span::styled(format!(" ✎ {title}"), Style::new().fg(ACCENT_2)), Span::styled("  save and quit to finish", theme::faint())]);
+    let right = Line::from(vec![key_hint("Alt+← →"), Span::styled(" other tabs ", theme::faint())]);
+    let right_width = right.width() as u16;
+    let [l, r] = Layout::horizontal([Constraint::Min(1), Constraint::Length(right_width)]).areas(area);
+    f.render_widget(Paragraph::new(left), l);
+    f.render_widget(Paragraph::new(right.right_aligned()), r);
+}
+
 // ----- Output -----
 
-fn draw_buffer(f: &mut Frame, buffer: &mut Buffer, area: Rect, scroll: usize, links: &mut Vec<(u16, u16, u16, String)>) {
+fn draw_buffer(f: &mut Frame, buffer: &mut Buffer, area: Rect, scroll: usize, selection: Option<&Selection>, hits: &mut Hits) {
+    let id = buffer.id;
+    let selection = selection.filter(|s| s.buffer == id);
     let rows = buffer.visible(area.width, area.height, scroll);
     let top = area.y + area.height - rows.len() as u16;
     let mut lines = Vec::with_capacity(rows.len());
     for (i, (entry, row)) in rows.iter().enumerate() {
-        let (line, row_links) = entry.row(area.width, *row);
+        let (line, row_links) = entry.row(area.width, *row, selection);
         for (x0, x1, uri) in row_links {
-            links.push((top + i as u16, area.x + x0, area.x + x1, uri));
+            hits.links.push((top + i as u16, area.x + x0, area.x + x1, uri));
         }
+        hits.rows.push(RowHit { y: top + i as u16, x: area.x, width: area.width, buffer: id, seq: entry.seq, row: *row });
         lines.push(line);
     }
     f.render_widget(Paragraph::new(lines), Rect { y: top, height: rows.len() as u16, ..area });
@@ -174,7 +240,7 @@ fn draw_output(f: &mut Frame, app: &mut App, area: Rect) {
     app.hits.output = area;
     app.set_view(area.width, area.height);
     let Some((i, puppet)) = app.current() else { return };
-    let mut links = Vec::new();
+    let selection = app.selection;
     let s = &mut app.sessions[i];
     let buffer = match &puppet {
         Some(name) => &mut s.puppet_mut(name).buffer,
@@ -192,15 +258,15 @@ fn draw_output(f: &mut Frame, app: &mut App, area: Rect) {
         let [history, rule, live] = Layout::vertical([Constraint::Min(1), Constraint::Length(1), Constraint::Length(tail)]).areas(area);
         let max = buffer.total_rows(history.width).saturating_sub(history.height as usize);
         buffer.scroll = scroll.min(max);
-        draw_buffer(f, buffer, history, buffer.scroll + tail as usize + 1, &mut links);
+        draw_buffer(f, buffer, history, buffer.scroll + tail as usize + 1, selection.as_ref(), &mut app.hits);
         let unseen = buffer.unseen;
-        draw_buffer(f, buffer, live, 0, &mut links);
+        draw_buffer(f, buffer, live, 0, selection.as_ref(), &mut app.hits);
         let label = if unseen > 0 { format!(" ▲ scrolled back · {unseen} new · Esc to jump down ") } else { " ▲ scrolled back · Esc to jump down ".to_string() };
         let pad = (rule.width as usize).saturating_sub(label.width() + 2);
         let line = Line::from(vec![Span::styled("──", theme::faint()), Span::styled(label, Style::new().fg(ACCENT_2)), Span::styled("─".repeat(pad), theme::faint())]);
         f.render_widget(Paragraph::new(line), rule);
     } else {
-        draw_buffer(f, buffer, area, scroll, &mut links);
+        draw_buffer(f, buffer, area, scroll, selection.as_ref(), &mut app.hits);
         if scroll > 0 {
             let pill = format!(" ↓ {} new · Esc ", buffer.unseen);
             let w = pill.width() as u16;
@@ -209,7 +275,6 @@ fn draw_output(f: &mut Frame, app: &mut App, area: Rect) {
             f.render_widget(Paragraph::new(Span::styled(pill, Style::new().fg(Color::Black).bg(ACCENT_2))), r);
         }
     }
-    app.hits.links = links;
 }
 
 fn draw_toasts(f: &mut Frame, app: &App, area: Rect) {
@@ -264,9 +329,7 @@ fn draw_sidebar(f: &mut Frame, app: &mut App, area: Rect) {
             let pane = s.spawn_mut(name).0;
             pane.unread = false;
             let scroll = pane.buffer.scroll;
-            let mut links = Vec::new();
-            draw_buffer(f, &mut pane.buffer, body, scroll, &mut links);
-            app.hits.links.extend(links);
+            draw_buffer(f, &mut pane.buffer, body, scroll, app.selection.as_ref(), &mut app.hits);
         }
         None => {}
     }
@@ -571,6 +634,9 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
 }
 
 fn draw_overlay(f: &mut Frame, app: &mut App, area: Rect) {
+    if let Some(Overlay::Rules(view)) = &mut app.overlay {
+        return draw_rules(f, view, &app.config, centered(area, 104, 34));
+    }
     match &app.overlay {
         Some(Overlay::Picker(p)) if !(app.tabs.is_empty() && p.kind == PickerKind::Connect) => {
             let r = centered(area, 80, 24);
@@ -579,7 +645,7 @@ fn draw_overlay(f: &mut Frame, app: &mut App, area: Rect) {
             draw_picker(f, p, r, true, &mut hits);
             app.hits.picker_items = hits;
         }
-        Some(Overlay::Help) => draw_help(f, centered(area, 96, 26)),
+        Some(Overlay::Help) => draw_help(f, centered(area, 96, 27)),
         Some(Overlay::World(form)) => draw_world_form(f, form, centered(area, 72, 19)),
         _ => {}
     }
@@ -696,6 +762,176 @@ fn draw_world_form(f: &mut Frame, form: &WorldForm, area: Rect) {
     }
 }
 
+// ----- Rules -----
+
+fn draw_rules(f: &mut Frame, view: &mut RulesView, config: &Config, area: Rect) {
+    f.render_widget(Clear, area);
+    let scope = view.scope().label();
+    if let Some(form) = &mut view.form {
+        return draw_rule_form(f, form, &scope, area);
+    }
+    let footer = if view.delete_armed {
+        Line::styled(" Press d again to delete it · any other key keeps it ", Style::new().fg(WARN))
+    } else {
+        Line::styled(" Enter edit · n new · Space on/off · d delete · Shift+↑↓ reorder · Tab section · [ ] scope · Esc close ", theme::faint())
+    };
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(theme::accent())
+        .title(Line::styled(" Triggers, aliases and macros ", theme::accent().add_modifier(Modifier::BOLD)))
+        .title_bottom(footer.centered());
+    let inner = block.inner(area).inner(Margin { horizontal: 2, vertical: 0 });
+    f.render_widget(block, area);
+    let [_, tabs, _, list, about] = Layout::vertical([Constraint::Length(1), Constraint::Length(1), Constraint::Length(1), Constraint::Min(1), Constraint::Length(2)]).areas(inner);
+
+    // The sections on the left, the scope on the right.
+    let counts = view.counts(config);
+    let mut spans = Vec::new();
+    for (i, (name, _, _)) in rules::SECTIONS.iter().enumerate() {
+        let style = if i == view.section { Style::new().fg(ACCENT).add_modifier(Modifier::BOLD | Modifier::UNDERLINED) } else { theme::muted() };
+        spans.push(Span::styled(*name, style));
+        if counts[i] > 0 {
+            spans.push(Span::styled(format!(" {}", counts[i]), theme::faint()));
+        }
+        spans.push(Span::raw("   "));
+    }
+    f.render_widget(Paragraph::new(Line::from(spans)), tabs);
+    let applies = Line::from(vec![Span::styled("Applies to ", theme::faint()), Span::styled("‹ ", theme::faint()), Span::styled(scope, Style::new().fg(ACCENT_2)), Span::styled(" ›", theme::faint())]);
+    f.render_widget(Paragraph::new(applies.right_aligned()), tabs);
+
+    let rows = view.rows(config);
+    view.selected = view.selected.min(rows.len().saturating_sub(1));
+    if rows.is_empty() {
+        let noun = rules::SECTIONS[view.section].2;
+        let line = Line::from(vec![Span::styled("Nothing here yet. Press ", theme::muted()), key_hint("n"), Span::styled(format!(" to add a{} {noun}.", if noun == "alias" { "n" } else { "" }), theme::muted())]);
+        f.render_widget(Paragraph::new(line), list);
+    }
+    let title_width = rows.iter().map(|r| r.title.width()).max().unwrap_or(0).min(list.width as usize * 2 / 5);
+    let height = list.height as usize;
+    let first = (view.selected + 1).saturating_sub(height);
+    let lines: Vec<Line> = rows
+        .iter()
+        .enumerate()
+        .skip(first)
+        .take(height)
+        .map(|(i, row)| {
+            let selected = i == view.selected;
+            let bg = if selected { SELECTED_BG } else { Color::Reset };
+            let off = row.enabled == Some(false);
+            let dot = match row.enabled {
+                Some(true) => Span::styled("● ", Style::new().fg(GOOD).bg(bg)),
+                Some(false) => Span::styled("○ ", Style::new().fg(MUTED).bg(bg)),
+                None => Span::styled("  ", Style::new().bg(bg)),
+            };
+            let title_style = if off { theme::muted() } else if selected { Style::new().fg(Color::White).add_modifier(Modifier::BOLD) } else { Style::new().fg(Color::Gray) };
+            let used = 4 + title_width + 2;
+            let detail = truncate(&row.detail, (list.width as usize).saturating_sub(used));
+            let pad = (list.width as usize).saturating_sub(used + detail.width());
+            Line::from(vec![
+                Span::styled(if selected { "▌ " } else { "  " }, Style::new().fg(ACCENT).bg(bg)),
+                dot,
+                Span::styled(format!("{:<title_width$}  ", truncate(&row.title, title_width)), title_style.bg(bg)),
+                Span::styled(detail, Style::new().fg(MUTED).bg(bg)),
+                Span::styled(" ".repeat(pad), Style::new().bg(bg)),
+            ])
+        })
+        .collect();
+    f.render_widget(Paragraph::new(lines), list);
+    f.render_widget(Paragraph::new(Span::styled(rules::SECTIONS[view.section].1, theme::faint().add_modifier(Modifier::ITALIC))).wrap(ratatui::widgets::Wrap { trim: true }), about);
+}
+
+fn draw_rule_form(f: &mut Frame, form: &mut RuleForm, scope: &str, area: Rect) {
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(theme::accent())
+        .title(Line::from(vec![Span::styled(format!(" {} ", form.title()), theme::accent().add_modifier(Modifier::BOLD)), Span::styled(format!("· {scope} "), theme::faint())]))
+        .title_bottom(Line::styled(" Tab next · Space switch · Enter save · Esc back ", theme::faint()).centered());
+    let inner = block.inner(area).inner(Margin { horizontal: 2, vertical: 0 });
+    f.render_widget(block, area);
+    let [_, body, result, hint] = Layout::vertical([Constraint::Length(1), Constraint::Min(1), Constraint::Length(1), Constraint::Length(1)]).areas(inner);
+
+    let label_width = form.fields.iter().map(|field| field.label.width()).max().unwrap_or(0) + 1;
+    let value_width = (body.width as usize).saturating_sub(label_width + 2);
+    // Every row of the form, and where the cursor goes among them.
+    let mut lines: Vec<Line> = Vec::new();
+    let mut focus_rows = 0..0;
+    let mut cursor = None;
+    for (i, field) in form.fields.iter().enumerate() {
+        if !field.group.is_empty() {
+            if !lines.is_empty() {
+                lines.push(Line::raw(""));
+            }
+            lines.push(Line::styled(field.group.to_uppercase(), theme::faint().add_modifier(Modifier::BOLD)));
+        }
+        let focused = i == form.focus;
+        let label_style = if focused { theme::accent().add_modifier(Modifier::BOLD) } else { theme::muted() };
+        let marker = if focused { Span::styled("▌ ", theme::accent()) } else { Span::styled("│ ", theme::faint()) };
+        let text_style = Style::new().fg(if focused { Color::White } else { Color::Gray });
+        let start = lines.len();
+        match field.kind {
+            FieldKind::Toggle => {
+                let style = Style::new().fg(if field.on { GOOD } else { MUTED }).add_modifier(if focused { Modifier::BOLD } else { Modifier::empty() });
+                lines.push(Line::from(vec![Span::styled(format!("{:>label_width$} ", field.label), label_style), marker, Span::styled(if field.on { "● on " } else { "○ off" }, style)]));
+            }
+            _ => {
+                // One row per line of text; only a multi-line field has more than one.
+                let mut offset = 0;
+                for (n, text) in field.input.text.split('\n').enumerate() {
+                    let label = if n == 0 { field.label } else { "" };
+                    let mut spans = vec![Span::styled(format!("{label:>label_width$} "), label_style), marker.clone()];
+                    if text.is_empty() && !focused && n == 0 {
+                        spans.push(Span::styled("—", theme::faint()));
+                    } else {
+                        spans.push(Span::styled(truncate(text, value_width), text_style));
+                    }
+                    if rules::is_color(text.trim())
+                        && let Ok(rgb) = u32::from_str_radix(&text.trim()[1..], 16)
+                    {
+                        spans.push(Span::styled("  ██", Style::new().fg(Color::Rgb((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8))));
+                    }
+                    let at = field.input.cursor;
+                    if focused && (offset..=offset + text.len()).contains(&at) {
+                        let col = text[..at - offset].width().min(value_width.saturating_sub(1));
+                        cursor = Some((lines.len(), (label_width + 3 + col) as u16));
+                    }
+                    offset += text.len() + 1;
+                    lines.push(Line::from(spans));
+                }
+            }
+        }
+        if focused {
+            focus_rows = start..lines.len();
+        }
+    }
+    // Keep the focused field in view, with its heading when that fits.
+    let height = body.height as usize;
+    let first = focus_rows.end.saturating_sub(height).min(focus_rows.start);
+    if let Some((row, col)) = cursor
+        && row >= first
+        && row < first + height
+        && !form.recording
+    {
+        f.set_cursor_position((body.x + col, body.y + (row - first) as u16));
+    }
+    let more = lines.len() > first + height;
+    f.render_widget(Paragraph::new(lines.into_iter().skip(first).take(height).collect::<Vec<_>>()), body);
+    if more {
+        f.render_widget(Paragraph::new(Line::styled("▼ more", theme::faint()).right_aligned()), Rect { y: body.y + body.height - 1, height: 1, ..body });
+    }
+
+    if let Some(text) = form.test_result() {
+        f.render_widget(Paragraph::new(Line::from(vec![Span::styled("Result  ", theme::faint()), Span::styled(text, Style::new().fg(ACCENT_2))])), result);
+    }
+    let line = if form.recording {
+        Line::styled("Press the key for this macro… (Esc to cancel)", Style::new().fg(WARN))
+    } else if let Some(error) = &form.error {
+        Line::styled(format!("✗ {error}"), Style::new().fg(BAD))
+    } else {
+        Line::styled(form.fields[form.focus].hint, theme::faint().add_modifier(Modifier::ITALIC))
+    };
+    f.render_widget(Paragraph::new(line), hint);
+}
+
 fn draw_help(f: &mut Frame, area: Rect) {
     f.render_widget(Clear, area);
     let block = Block::bordered()
@@ -711,7 +947,7 @@ fn draw_help(f: &mut Frame, area: Rect) {
             ("Shift+Enter, Ctrl+J", "new line"),
             ("↑ ↓ · Ctrl+R", "history · search it"),
             ("Tab", "complete a name from the output"),
-            ("Ctrl+G · Alt+E", "$EDITOR: the input · fix the last program"),
+            ("Ctrl+G · Alt+E", "$EDITOR (in a tab): the input · fix the last program"),
             ("Ctrl+A E U K W Y", "readline editing"),
             ("Esc Esc · Ctrl+C", "clear the input"),
         ]),
@@ -720,13 +956,14 @@ fn draw_help(f: &mut Frame, area: Rect) {
             ("Shift+↑ ↓", "scroll a line"),
             ("Esc", "jump back to the bottom"),
             ("click", "links, tabs and map rooms"),
-            ("Shift+drag", "select text to copy"),
+            ("drag", "select text; copied on release"),
         ]),
         ("Everything else", &[
             ("Ctrl+K · Ctrl+P", "command palette"),
             ("Ctrl+O", "connect to a world"),
             ("Alt+1…9 · Alt+← →", "switch tabs"),
             ("Ctrl+B · Alt+[ ]", "sidebar · its panels"),
+            ("F2", "triggers, aliases and macros"),
             ("Ctrl+C Ctrl+C", "quit"),
         ]),
     ];

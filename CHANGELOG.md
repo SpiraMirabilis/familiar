@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Terminal client: dragging over the output selects text and copies it on release. Wrapped
+  lines are copied whole, and the selection stays with its text as the output scrolls.
+- Terminal client: `$EDITOR` opens in a tab of its own instead of taking over the terminal, so
+  the world stays in view and several edits can be open at once. `/editor fullscreen` brings
+  the old behaviour back (the `editor_in_tab` setting).
+- Terminal client: a window for triggers, aliases, keyboard macros and variables (F2 or
+  `/rules`), like the GUI's.
+
 ## 0.2.0 (2026-11-22)
 
 - Windows: the GTK client as an installer and a zip with everything included, and the terminal
