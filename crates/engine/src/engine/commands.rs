@@ -11,7 +11,8 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/log", "start or stop logging to a file"),
     ("/clear", "clear the output"),
     ("/reconnect", "connect again"),
-    ("/disconnect", "close the connection"),
+    ("/disconnect", "close the connection (through a bouncer: detach, leaving the character online)"),
+    ("/bnc [list|reconnect|close]", "bouncer: list its sessions, reconnect it to the world, or log off and forget this session"),
     ("/gmcp [<Package> <json>]", "show or hide GMCP traffic, or send a GMCP message"),
     ("/mcp [debug]", "show MCP status, or show and hide MCP traffic"),
     ("/webview <url>", "open a web page in a web view"),
@@ -173,6 +174,25 @@ impl Engine {
                 }
             }
             "disconnect" | "quit" => self.disconnect(),
+            "bnc" | "bouncer" => {
+                let request = match args.to_ascii_lowercase().as_str() {
+                    "" | "list" => familiar_net::BouncerRequest::List,
+                    "reconnect" => familiar_net::BouncerRequest::Reconnect,
+                    "close" => familiar_net::BouncerRequest::Close,
+                    _ => {
+                        out.push(Output::Notice("Usage: /bnc [list|reconnect|close]".into()));
+                        return;
+                    }
+                };
+                match &self.handle {
+                    Some(handle) if self.via_bouncer => {
+                        handle.bouncer(request);
+                    }
+                    _ if !self.world.bouncer => out.push(Output::Notice("This world doesn't use the bouncer. Turn on bouncer for it in the world's settings.".into())),
+                    _ if self.bouncer.is_unset() => out.push(Output::Notice("No bouncer is set up. Add a [bouncer] section to config.toml.".into())),
+                    _ => out.push(Output::Notice("Not connected to the bouncer. Type /reconnect first.".into())),
+                }
+            }
             "gmcp" if args.is_empty() => {
                 self.gmcp_debug = !self.gmcp_debug;
                 out.push(Output::Notice(format!("GMCP traffic is {}", if self.gmcp_debug { "shown" } else { "hidden" })));

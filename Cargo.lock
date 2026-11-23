@@ -878,11 +878,14 @@ dependencies = [
 name = "familiar-net"
 version = "0.3.0"
 dependencies = [
+ "chrono",
  "encoding_rs",
  "familiar-telnet",
  "flate2",
  "rustls",
  "rustls-platform-verifier",
+ "serde",
+ "serde_json",
  "thiserror 2.0.21",
  "tokio",
  "tokio-rustls",

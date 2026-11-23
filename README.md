@@ -132,6 +132,21 @@ Main menu → **Import from BeipMU…** and choose BeipMU's `Config.txt` (BeipMU
 
 A puppet is a second character you control through your main connection, such as a MUCK zombie or a MUSH puppet, with its own tab (as in BeipMU). Add puppets to a character in the Connect dialog (edit the world). Lines starting with the puppet's receive prefix (plain text, or a regex whose group is the part to hide) go to its tab instead of the main window, and what you type there is sent with its send prefix, such as `z1 `. Tabs open when the puppet hears something, when the character connects, or with `/puppet name`, and they close with the character.
 
+### Bouncer
+
+Familiar can connect through mbnc, a bouncer for M*s: it stays connected to the world while you're away, logs back in if the world drops you, and replays what you missed, with timestamps, when you come back. Set it up once in `config.toml`:
+
+```toml
+[bouncer]
+host = "bnc.example.ts.net"
+port = 7777
+tls = true                  # false for a bouncer with allow_plaintext
+verify_certificate = true
+password = "..."            # stored in plain text, like logins
+```
+
+Then turn on **Connect through the bouncer** for a world (the world's settings in the GUI, the Bouncer toggle in the terminal client's world form, or `bouncer = true` under its `[[world]]`). The bouncer files the session under the world's host, port and character, and sends the character's login itself whenever it connects to the world. Logins become its login script: `/delay 3s connect bob pw` waits 3 seconds, and other client commands in a login still run in Familiar. `/disconnect` detaches and leaves the character online. `/bnc` lists the bouncer's sessions, `/bnc reconnect` makes it connect to the world again, and `/bnc close` logs off and makes the bouncer forget the session and anything it was holding.
+
 ### Speech and spellcheck
 
 `/speech on` speaks every incoming line through speech-dispatcher; `/speak text` says something; Ctrl+. or `/speech stop` stops. Triggers can speak (`$0` for the whole line, or a template like `Page from $1`), and scripts can call `mu.speak()`. Speech queues in order, and stopping cancels only this client's speech, not a screen reader's. The input underlines misspellings (libspelling with your Hunspell dictionaries); right-click a word for suggestions.

@@ -684,7 +684,7 @@ fn draw_overlay(f: &mut Frame, app: &mut App, area: Rect) {
             app.hits.picker_items = hits;
         }
         Some(Overlay::Help) => draw_help(f, centered(area, 96, 27)),
-        Some(Overlay::World(form)) => draw_world_form(f, form, centered(area, 72, 19)),
+        Some(Overlay::World(form)) => draw_world_form(f, form, centered(area, 72, 21)),
         _ => {}
     }
 }

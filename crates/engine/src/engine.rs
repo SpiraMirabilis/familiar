@@ -7,8 +7,8 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use familiar_ansi::{AnsiParser, Color, StyledLine};
-use familiar_config::{Character, Config, Highlight, Puppet, Scope, Settings, World};
-use familiar_net::{ConnectOptions, Encoding, SessionEvent, SessionHandle, SessionOptions, spawn_session};
+use familiar_config::{Bouncer, Character, Config, Highlight, Puppet, Scope, Settings, World};
+use familiar_net::{BouncerOptions, ConnectOptions, Encoding, SessionEvent, SessionHandle, SessionOptions, spawn_session};
 use tokio::sync::mpsc::UnboundedReceiver;
 
 use crate::expand::{Captures, expand};
@@ -171,6 +171,9 @@ pub struct Engine {
     world: World,
     character: Option<Character>,
     settings: Settings,
+    bouncer: Bouncer,
+    /// The current connection goes through the bouncer, which logs in by itself.
+    via_bouncer: bool,
     /// Most specific first. Index 0 is where `/set` stores variables.
     scopes: Vec<Scope>,
     variables: Vec<BTreeMap<String, String>>,
@@ -223,6 +226,8 @@ impl Engine {
     pub fn new(config: &Config, world: World, character: Option<Character>) -> (Self, Vec<Output>) {
         let mut engine = Self {
             settings: config.settings.clone(),
+            bouncer: config.bouncer.clone(),
+            via_bouncer: false,
             world,
             character,
             scopes: Vec::new(),
@@ -271,6 +276,7 @@ impl Engine {
     /// compile.
     pub fn reload(&mut self, config: &Config) -> Vec<Output> {
         self.settings = config.settings.clone();
+        self.bouncer = config.bouncer.clone();
         // Pick up edits to the character (its puppets, login) from the config.
         if let Some(name) = self.character.as_ref().map(|c| c.name.clone())
             && let Some(saved) = config.world(&self.world.name).and_then(|w| w.characters.iter().find(|c| c.name == name))
@@ -377,6 +383,22 @@ impl Engine {
             opts.telnet.gmcp_supports.push("WebView 1".into());
         }
         self.mcp = Mcp::default();
+        self.via_bouncer = self.world.bouncer && !self.bouncer.is_unset();
+        if self.via_bouncer {
+            let mut connect = ConnectOptions::new(&self.bouncer.host, self.bouncer.port);
+            connect.tls = self.bouncer.tls;
+            connect.verify_certificate = self.bouncer.verify_certificate;
+            let login = self.character.as_ref().map(|c| c.login.as_str()).unwrap_or_default();
+            let (steps, _) = familiar_net::login_script(login, scripting::parse_duration);
+            opts.bouncer = Some(BouncerOptions {
+                connect,
+                password: self.bouncer.password.clone(),
+                // The bouncer keys sessions by host, port and character, and needs a name.
+                character: self.character_name().filter(|n| !n.is_empty()).unwrap_or_else(|| self.world.name.clone()),
+                // Always send it, so a changed login (or a removed one) reaches the bouncer.
+                login: Some(steps),
+            });
+        }
 
         let (handle, events) = spawn_session(opts);
         if let Some((w, h)) = self.window_size {
@@ -384,15 +406,19 @@ impl Engine {
         }
         self.handle = Some(handle);
         self.ansi = AnsiParser::new();
-        let out = vec![
+        let via = if self.via_bouncer { format!(" through the bouncer at {}:{}", self.bouncer.host, self.bouncer.port) } else { String::new() };
+        let mut out = vec![
             Output::Status(Status::Connecting),
             Output::Notice(format!(
-                "Connecting to {}:{}{}...",
+                "Connecting to {}:{}{}{via}...",
                 self.world.host,
                 self.world.port,
                 if self.world.tls { " with TLS" } else { "" }
             )),
         ];
+        if self.world.bouncer && self.bouncer.is_unset() {
+            out.push(Output::Notice("This world is set to use a bouncer, but config.toml has no [bouncer] section, so the connection is direct.".into()));
+        }
         (events, out)
     }
 

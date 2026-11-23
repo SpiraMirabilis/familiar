@@ -98,6 +98,7 @@ pub struct WorldDialog {
     port: adw::SpinRow,
     tls: adw::SwitchRow,
     verify: adw::SwitchRow,
+    bouncer: adw::SwitchRow,
     encoding: adw::ComboRow,
     script: adw::EntryRow,
     program_language: adw::ComboRow,
@@ -131,6 +132,11 @@ pub fn show(
         .active(world.verify_certificate)
         .build();
     tls.bind_property("active", &verify, "sensitive").sync_create().build();
+    let bouncer = adw::SwitchRow::builder()
+        .title("Connect through the bouncer")
+        .subtitle("The bouncer set up in config.toml keeps the character connected while you're away")
+        .active(world.bouncer)
+        .build();
     let encoding = adw::ComboRow::builder()
         .title("Encoding")
         .subtitle("Auto reads UTF-8 and falls back to Windows-1252")
@@ -181,7 +187,7 @@ pub fn show(
     appearance.add(&font.row);
 
     let server = adw::PreferencesGroup::builder().title("Server").build();
-    for row in [name.upcast_ref::<gtk::Widget>(), host.upcast_ref(), port.upcast_ref(), tls.upcast_ref(), verify.upcast_ref(), encoding.upcast_ref(), program_language.upcast_ref(), script.upcast_ref()] {
+    for row in [name.upcast_ref::<gtk::Widget>(), host.upcast_ref(), port.upcast_ref(), tls.upcast_ref(), verify.upcast_ref(), bouncer.upcast_ref(), encoding.upcast_ref(), program_language.upcast_ref(), script.upcast_ref()] {
         server.add(row);
     }
 
@@ -225,6 +231,7 @@ pub fn show(
         port,
         tls,
         verify,
+        bouncer,
         encoding,
         script,
         program_language,
@@ -340,6 +347,7 @@ impl WorldDialog {
             port: self.port.value() as u16,
             tls: self.tls.is_active(),
             verify_certificate: self.verify.is_active(),
+            bouncer: self.bouncer.is_active(),
             encoding: ENCODINGS[(self.encoding.selected() as usize).min(ENCODINGS.len() - 1)].to_string(),
             script: self.script.text().trim().to_string(),
             font: self.font.font(),

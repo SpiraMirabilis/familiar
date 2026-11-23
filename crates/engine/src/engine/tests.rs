@@ -649,6 +649,31 @@ fn login_runs_client_commands() {
 }
 
 #[test]
+fn bouncer_sends_the_login_itself() {
+    let mut cfg = config(Rules::default(), Rules::default(), Rules::default());
+    cfg.bouncer.host = "bnc.example".into();
+    cfg.worlds[0].bouncer = true;
+    cfg.worlds[0].characters[0].login = "/delay 1s connect bob pw\n/echo hello".into();
+    let (mut e, mut rx) = engine(&cfg);
+    e.via_bouncer = true;
+    let out = e.handle_event(SessionEvent::Connected { addr: "127.0.0.1:4000".parse().unwrap() });
+    // The client command the bouncer can't run still runs here; the login line doesn't.
+    assert!(out.contains(&Output::Notice("hello".into())), "{out:?}");
+    e.tick(Instant::now() + std::time::Duration::from_secs(2));
+    assert!(sent(&mut rx).is_empty());
+
+    e.submit("/bnc close", false);
+    assert!(matches!(rx.try_recv(), Ok(SessionCommand::Bouncer(familiar_net::BouncerRequest::Close))));
+}
+
+#[test]
+fn bnc_without_a_bouncer_explains() {
+    let (mut e, _rx) = engine(&config(Rules::default(), Rules::default(), Rules::default()));
+    let out = e.submit("/bnc", false);
+    assert!(matches!(&out[..], [Output::Notice(n)] if n.contains("doesn't use the bouncer")), "{out:?}");
+}
+
+#[test]
 fn aliases_can_expand_to_client_commands() {
     let global = Rules {
         aliases: vec![

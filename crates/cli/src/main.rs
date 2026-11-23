@@ -5,7 +5,7 @@ use std::io::Write;
 use anyhow::Result;
 use clap::Parser;
 use familiar_ansi::{AnsiParser, Color, Style, StyledLine};
-use familiar_net::{ConnectOptions, Encoding, SessionEvent, SessionOptions, spawn_session};
+use familiar_net::{BouncerOptions, BouncerRequest, ConnectOptions, Encoding, SessionEvent, SessionOptions, spawn_session};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
 #[derive(Parser)]
@@ -26,6 +26,18 @@ struct Args {
     /// Print GMCP and MSSP messages to stderr.
     #[arg(long)]
     gmcp: bool,
+    /// Connect through an mbnc bouncer at HOST:PORT (TLS unless --bnc-plaintext). The password
+    /// comes from $FAMILIAR_BNC_PASSWORD. Type /bnc list, /bnc reconnect or /bnc close.
+    #[arg(long, value_name = "HOST:PORT")]
+    bnc: Option<String>,
+    /// The character name the bouncer files the session under.
+    #[arg(long, default_value = "familiar-cli")]
+    bnc_character: String,
+    /// A login line for the bouncer to send whenever it connects (repeatable).
+    #[arg(long)]
+    bnc_login: Vec<String>,
+    #[arg(long)]
+    bnc_plaintext: bool,
 }
 
 #[tokio::main]
@@ -41,6 +53,18 @@ async fn main() -> Result<()> {
     let mut opts = SessionOptions::new(connect);
     opts.encoding = encoding;
     opts.telnet.client_name = "familiar-cli".into();
+    if let Some(bnc) = &args.bnc {
+        let (host, port) = bnc.rsplit_once(':').map_or((bnc.as_str(), Ok(7777)), |(h, p)| (h, p.parse()));
+        let mut connect = ConnectOptions::new(host, port?);
+        connect.tls = !args.bnc_plaintext;
+        let (login, _) = familiar_net::login_script(&args.bnc_login.join("\n"), |_| None);
+        opts.bouncer = Some(BouncerOptions {
+            connect,
+            password: std::env::var("FAMILIAR_BNC_PASSWORD").unwrap_or_default(),
+            character: args.bnc_character.clone(),
+            login: (!login.is_empty()).then_some(login),
+        });
+    }
 
     eprintln!("Connecting to {}:{}...", args.host, args.port);
     let (session, mut events) = spawn_session(opts);
@@ -88,6 +112,14 @@ async fn main() -> Result<()> {
             }
             line = stdin.next_line() => match line? {
                 Some(line) if line == "/quit" => { session.disconnect(); }
+                Some(line) if line.starts_with("/bnc") => {
+                    let request = match line.split_whitespace().nth(1) {
+                        Some("reconnect") => BouncerRequest::Reconnect,
+                        Some("close") => BouncerRequest::Close,
+                        _ => BouncerRequest::List,
+                    };
+                    session.bouncer(request);
+                }
                 Some(line) => {
                     out.input_sent();
                     session.send_line(line);

@@ -1,10 +1,12 @@
 //! Networking for MU* connections: TCP/TLS transport and an async session task that runs the
 //! telnet protocol and hands decoded lines to the caller.
 
+mod bouncer;
 mod encoding;
 mod session;
 mod transport;
 
+pub use bouncer::{BouncerOptions, BouncerRequest, LoginStep, login_script};
 pub use encoding::Encoding;
 pub use session::{SessionCommand, SessionEvent, SessionHandle, SessionOptions, spawn_session};
 pub use transport::{ConnectOptions, Stream, connect};

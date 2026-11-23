@@ -10,6 +10,9 @@ impl Engine {
                 out.push(Output::Status(Status::Connected));
                 out.push(Output::Notice(format!("Connected to {addr}")));
                 let login = self.character.as_ref().map(|c| c.login.clone()).unwrap_or_default();
+                // Through a bouncer, the bouncer sends the login (and only when it connects to
+                // the world, not when resuming); client commands it can't run still run here.
+                let login = if self.via_bouncer { familiar_net::login_script(&login, scripting::parse_duration).1.join("\n") } else { login };
                 for line in login.lines().filter(|l| !l.is_empty()) {
                     // Client commands work in logins (e.g. /delay 2s connect bob pw); "//"
                     // sends a line that starts with "/".

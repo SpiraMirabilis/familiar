@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Bouncer support: worlds can connect through an mbnc bouncer (a `[bouncer]` section in
+  `config.toml`, and a per-world switch), which keeps the character online while you're away
+  and replays what arrived, with timestamps, when you return. `/disconnect` detaches; `/bnc`
+  lists sessions, `/bnc reconnect` reconnects the bouncer to the world and `/bnc close` logs off.
 - Fixed: in the terminal client, selecting text with the mouse stopped at the top of the output.
   Holding the selection at the top or bottom edge now scrolls, so it can go on.
 - Fixed: in the terminal client, selecting downwards while scrolled back jumped over the

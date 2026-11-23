@@ -266,6 +266,8 @@ struct WorldEditor: View {
                 Toggle("Verify the server’s certificate", isOn: world.flag("verify_certificate"))
                     .disabled(!draft.world["tls"].bool)
                     .help("Turn off for servers with self-signed certificates")
+                Toggle("Connect through the bouncer", isOn: world.flag("bouncer"))
+                    .help("The bouncer set up in config.toml keeps the character connected while you're away")
                 Picker("Encoding", selection: world.str("encoding")) {
                     ForEach(["Auto", "UTF-8", "Windows-1252", "CP437"], id: \.self) { Text($0).tag($0) }
                 }

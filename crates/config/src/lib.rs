@@ -63,6 +63,9 @@ pub enum Error {
 #[serde(default)]
 pub struct Config {
     pub settings: Settings,
+    /// An mbnc bouncer that worlds with `bouncer = true` connect through.
+    #[serde(skip_serializing_if = "Bouncer::is_unset")]
+    pub bouncer: Bouncer,
     /// Rules that apply to every world.
     #[serde(skip_serializing_if = "Rules::is_empty")]
     pub rules: Rules,
@@ -132,6 +135,31 @@ impl Default for Settings {
     }
 }
 
+/// An mbnc bouncer (a BNC for M*s). It holds the
+/// connection to the world while the client is away and replays what was missed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Bouncer {
+    pub host: String,
+    pub port: u16,
+    pub tls: bool,
+    pub verify_certificate: bool,
+    /// Stored in plain text, like character logins.
+    pub password: String,
+}
+
+impl Default for Bouncer {
+    fn default() -> Self {
+        Self { host: String::new(), port: 7777, tls: true, verify_certificate: true, password: String::new() }
+    }
+}
+
+impl Bouncer {
+    pub fn is_unset(&self) -> bool {
+        self.host.is_empty()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct World {
@@ -159,6 +187,9 @@ pub struct World {
     /// Whether the server may open web views (GMCP webview.open). None means ask.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub allow_webviews: Option<bool>,
+    /// Connect through the bouncer in the config's `[bouncer]` section instead of directly.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub bouncer: bool,
     #[serde(skip_serializing_if = "Rules::is_empty")]
     pub rules: Rules,
     #[serde(rename = "character", skip_serializing_if = "Vec::is_empty")]
@@ -179,6 +210,7 @@ impl Default for World {
             script: String::new(),
             font: String::new(),
             allow_webviews: None,
+            bouncer: false,
             rules: Rules::default(),
             characters: Vec::new(),
         }
@@ -327,12 +359,14 @@ mod tests {
     fn round_trip() {
         let config = Config {
             settings: Settings { font: "Fira Mono 12".into(), ..Settings::default() },
+            bouncer: Bouncer { host: "bnc.example".into(), password: "pw".into(), ..Bouncer::default() },
             rules: Rules::default(),
             worlds: vec![World {
                 name: "Test".into(),
                 host: "example.com".into(),
                 port: 7777,
                 tls: true,
+                bouncer: true,
                 characters: vec![Character {
                     name: "Bob".into(),
                     login: "connect bob pw".into(),

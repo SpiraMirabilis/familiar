@@ -49,8 +49,9 @@ pub const NAME: usize = 0;
 pub const HOST: usize = 1;
 pub const PORT: usize = 2;
 pub const TLS: usize = 3;
-pub const CHARACTER: usize = 4;
-pub const LOGIN: usize = 5;
+pub const BOUNCER: usize = 4;
+pub const CHARACTER: usize = 5;
+pub const LOGIN: usize = 6;
 
 pub struct WorldForm {
     pub fields: Vec<Field>,
@@ -75,6 +76,9 @@ impl WorldForm {
         let mut tls = Field::text("TLS", "Encrypted connection (Space to switch)", "");
         tls.kind = FieldKind::Toggle;
         tls.on = w.tls;
+        let mut bouncer = Field::text("Bouncer", "Via the [bouncer] in config.toml (Space to switch)", "");
+        bouncer.kind = FieldKind::Toggle;
+        bouncer.on = w.bouncer;
         let mut login = Field::text("Login", "Sent after connecting, e.g. connect Bob secret", &c.login);
         login.kind = FieldKind::Secret;
         let fields = vec![
@@ -82,6 +86,7 @@ impl WorldForm {
             Field::text("Host", "Server address; host:port works too", &w.host),
             Field::text("Port", "", &port),
             tls,
+            bouncer,
             Field::text("Character", "Optional", &c.name),
             login,
         ];
@@ -157,6 +162,7 @@ impl WorldForm {
         world.host = host;
         world.port = port;
         world.tls = self.fields[TLS].on;
+        world.bouncer = self.fields[BOUNCER].on;
 
         let character = self.value(CHARACTER);
         let login = self.fields[LOGIN].input.text.clone();
@@ -213,7 +219,9 @@ mod tests {
         type_into(&mut edit, NAME, "Home MOO");
         type_into(&mut edit, CHARACTER, "Robert");
         edit.fields[TLS].on = true;
+        edit.fields[BOUNCER].on = true;
         edit.save(&mut config).unwrap();
+        assert!(config.worlds[0].bouncer);
         assert_eq!(config.worlds.len(), 1);
         let w = &config.worlds[0];
         assert_eq!((w.name.as_str(), w.tls, w.characters.len(), w.characters[0].name.as_str()), ("Home MOO", true, 1, "Robert"));
