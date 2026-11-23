@@ -12,11 +12,11 @@ keywords = ["mud", "javascript", "quickjs", "scripting", "client"]
 categories = ["games"]
 
 [dependencies]
-familiar-engine = { version = "0.2.0", path = "../engine" }
+familiar-engine = { version = "0.2.1", path = "../engine" }
 rquickjs = "0.14.0"
 serde_json = "1.0.154"
 
 [dev-dependencies]
-familiar-config = { version = "0.2.0", path = "../config" }
-familiar-net = { version = "0.2.0", path = "../net" }
+familiar-config = { version = "0.2.1", path = "../config" }
+familiar-net = { version = "0.2.1", path = "../net" }
 tokio = { version = "1.54.1", features = ["sync"] }

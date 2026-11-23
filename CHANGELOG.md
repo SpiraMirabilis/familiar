@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.1 (2026-11-22)
 
 - Terminal client: dragging over the output selects text and copies it on release. Wrapped
   lines are copied whole, and the selection stays with its text as the output scrolls.

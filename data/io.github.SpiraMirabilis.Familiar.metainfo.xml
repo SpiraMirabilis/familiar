@@ -54,6 +54,16 @@
     <content_attribute id="social-info">mild</content_attribute>
   </content_rating>
   <releases>
+    <release version="0.2.1" date="2026-11-22">
+      <description>
+        <p>Three additions to the terminal client.</p>
+        <ul>
+          <li>Your editor opens in a tab of its own, so the world stays in view while you edit</li>
+          <li>A window for triggers, aliases, keyboard macros and variables (F2)</li>
+          <li>Drag over the output to select text; it is copied when you let go</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.2.0" date="2026-11-22">
       <description>
         <p>Familiar now runs on Windows as well as Linux.</p>
