@@ -100,6 +100,9 @@ pub struct Settings {
     /// Terminal client: run `$EDITOR` in a tab of its own, so the worlds stay in view. When
     /// off, the editor takes over the whole terminal until it exits.
     pub editor_in_tab: bool,
+    /// Terminal client: when `$EDITOR` would open in a tab, put it beside the world it came
+    /// from instead, where the sidebar goes, if that world has nothing in its sidebar.
+    pub editor_in_sidebar: bool,
 }
 
 impl Default for Settings {
@@ -124,6 +127,7 @@ impl Default for Settings {
             spellcheck: true,
             terminal_colors: false,
             editor_in_tab: true,
+            editor_in_sidebar: false,
         }
     }
 }

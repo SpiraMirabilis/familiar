@@ -155,6 +155,8 @@ impl App {
                 }
             }
             Cmd::EditConfig => self.edit(External::EditConfig),
+            Cmd::EditorFocus => self.toggle_editor_focus(),
+            Cmd::MoveEditor => self.move_editor(),
             Cmd::Rules => self.open_rules(),
             Cmd::StopSpeech => self.speaker.stop(),
             Cmd::Help => self.overlay = Some(Overlay::Help),

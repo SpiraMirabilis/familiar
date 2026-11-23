@@ -12,7 +12,7 @@ use ratatui::widgets::canvas::{Canvas, Line as CanvasLine, Rectangle};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 use unicode_width::UnicodeWidthStr;
 
-use crate::app::{App, Hits, Overlay, Picker, PickerKind, RowHit, Tab, TUI_COMMANDS};
+use crate::app::{App, DOCK_MIN_WIDTH, Hits, Overlay, Picker, PickerKind, RowHit, TUI_COMMANDS, Tab, dock_width};
 use crate::form::{FieldKind, WorldForm};
 use crate::rules::{self, RuleForm, RulesView};
 use familiar_config::Config;
@@ -43,7 +43,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     if let Some(Tab::Editor(id)) = app.tabs.get(app.active).cloned() {
         let [tabs, body, status] = Layout::vertical([Constraint::Length(1), Constraint::Min(1), Constraint::Length(1)]).areas(area);
         draw_tabs(f, app, tabs);
-        draw_editor(f, app, id, body);
+        draw_editor(f, app, id, body, true);
         draw_editor_status(f, app, id, status);
         draw_overlay(f, app, area);
         return;
@@ -53,19 +53,35 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         Layout::vertical([Constraint::Length(1), Constraint::Min(3), Constraint::Length(input_height), Constraint::Length(1)]).areas(area);
     draw_tabs(f, app, tabs);
 
-    let (main, side) = if app.sidebar && body.width >= 90 && app.current().is_some_and(|(i, p)| p.is_none() && !app.sessions[i].panels().is_empty()) {
+    // An editor beside this world has the sidebar's place, for as long as there's room for it.
+    let mut docked = app.visible_editor().map(|e| (e.id, e.focused));
+    if let Some((id, _)) = docked
+        && body.width < DOCK_MIN_WIDTH
+    {
+        app.undock(id, false);
+        app.toast("The editor moved to a tab of its own: the terminal is too narrow to show it beside the world");
+        docked = None;
+    }
+    let (main, side) = if docked.is_some() {
+        let [m, s] = Layout::horizontal([Constraint::Min(30), Constraint::Length(dock_width(body.width))]).areas(body);
+        (m, Some(s))
+    } else if app.sidebar && body.width >= DOCK_MIN_WIDTH && app.current().is_some_and(|(i, p)| p.is_none() && !app.sessions[i].panels().is_empty()) {
         let [m, s] = Layout::horizontal([Constraint::Min(30), Constraint::Length(SIDEBAR_WIDTH)]).areas(body);
         (m, Some(s))
     } else {
         (body, None)
     };
     draw_output(f, app, main);
-    if let Some(side) = side {
+    if let (Some(side), None) = (side, docked) {
         draw_sidebar(f, app, side);
     }
     draw_toasts(f, app, main);
     draw_input(f, app, input);
     draw_suggestions(f, app, input, main);
+    // After the input, so that the cursor is the editor's while it has the keyboard.
+    if let (Some(side), Some((id, focused))) = (side, docked) {
+        draw_docked_editor(f, app, id, focused, side);
+    }
     draw_status(f, app, status);
     draw_overlay(f, app, area);
 }
@@ -176,7 +192,25 @@ fn term_color(color: vt100::Color) -> Color {
 }
 
 /// The screen of the editor running in a tab.
-fn draw_editor(f: &mut Frame, app: &mut App, id: u64, area: Rect) {
+/// An editor beside a world: a rule down its left, its name along the top, its screen below.
+fn draw_docked_editor(f: &mut Frame, app: &mut App, id: u64, focused: bool, area: Rect) {
+    let [rule, rest] = Layout::horizontal([Constraint::Length(1), Constraint::Min(1)]).areas(area);
+    let [heading, screen] = Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(rest);
+    let border = if focused { theme::accent() } else { theme::faint() };
+    let lines: Vec<Line> = (0..rule.height).map(|_| Line::styled("│", border)).collect();
+    f.render_widget(Paragraph::new(lines), rule);
+    let title = app.editors.iter().find(|e| e.id == id).map_or(String::new(), |e| e.title.clone());
+    let name = if focused { Style::new().fg(ACCENT_2).add_modifier(Modifier::BOLD) } else { theme::muted() };
+    let hint = Line::from(vec![key_hint("F6"), Span::styled(if focused { " world  " } else { " editor  " }, theme::faint()), key_hint("F7"), Span::styled(" to a tab ", theme::faint())]);
+    let hint_width = hint.width() as u16;
+    let [l, r] = Layout::horizontal([Constraint::Min(1), Constraint::Length(hint_width)]).areas(heading);
+    f.render_widget(Paragraph::new(Line::from(vec![Span::styled(format!(" ✎ {title}"), name), Span::styled("  save and quit to finish", theme::faint())])), l);
+    f.render_widget(Paragraph::new(hint.right_aligned()), r);
+    draw_editor(f, app, id, screen, focused);
+}
+
+/// Draws an editor's screen. `cursor` is whether the keyboard is the editor's.
+fn draw_editor(f: &mut Frame, app: &mut App, id: u64, area: Rect, cursor: bool) {
     app.hits.editor = area;
     let Some(editor) = app.editors.iter_mut().find(|e| e.id == id) else { return };
     editor.term.resize(area.width, area.height);
@@ -200,7 +234,7 @@ fn draw_editor(f: &mut Frame, app: &mut App, id: u64, area: Rect) {
             target.set_style(style);
         }
     }
-    if !screen.hide_cursor() {
+    if cursor && !screen.hide_cursor() {
         let (row, col) = screen.cursor_position();
         f.set_cursor_position((area.x + col.min(area.width.saturating_sub(1)), area.y + row.min(area.height.saturating_sub(1))));
     }
@@ -209,7 +243,7 @@ fn draw_editor(f: &mut Frame, app: &mut App, id: u64, area: Rect) {
 fn draw_editor_status(f: &mut Frame, app: &App, id: u64, area: Rect) {
     let title = app.editors.iter().find(|e| e.id == id).map_or("", |e| e.title.as_str());
     let left = Line::from(vec![Span::styled(format!(" ✎ {title}"), Style::new().fg(ACCENT_2)), Span::styled("  save and quit to finish", theme::faint())]);
-    let right = Line::from(vec![key_hint("Alt+← →"), Span::styled(" other tabs ", theme::faint())]);
+    let right = Line::from(vec![key_hint("F7"), Span::styled(" to the sidebar  ", theme::faint()), key_hint("Alt+← →"), Span::styled(" other tabs ", theme::faint())]);
     let right_width = right.width() as u16;
     let [l, r] = Layout::horizontal([Constraint::Min(1), Constraint::Length(right_width)]).areas(area);
     f.render_widget(Paragraph::new(left), l);
@@ -947,7 +981,9 @@ fn draw_help(f: &mut Frame, area: Rect) {
             ("Shift+Enter, Ctrl+J", "new line"),
             ("↑ ↓ · Ctrl+R", "history · search it"),
             ("Tab", "complete a name from the output"),
-            ("Ctrl+G · Alt+E", "$EDITOR (in a tab): the input · fix the last program"),
+            ("Ctrl+G · Alt+E", "$EDITOR: the input · fix the last program"),
+            ("F6 · Alt+0", "between the world and an editor beside it"),
+            ("F7", "move the editor between a tab and the sidebar"),
             ("Ctrl+A E U K W Y", "readline editing"),
             ("Esc Esc · Ctrl+C", "clear the input"),
         ]),

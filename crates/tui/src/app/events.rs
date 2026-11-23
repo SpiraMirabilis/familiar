@@ -19,7 +19,7 @@ impl App {
                 } else if let Some(Overlay::Rules(view)) = &mut self.overlay {
                     view.paste(&text);
                 } else if self.overlay.is_some() {
-                } else if let Some(editor) = self.active_editor() {
+                } else if let Some(editor) = self.focused_editor() {
                     editor.term.paste(&text);
                 } else if let Some(input) = self.current_input() {
                     input.insert(&text.replace("\r\n", "\n").replace('\r', "\n"));
@@ -39,9 +39,13 @@ impl App {
         if self.overlay.is_some() {
             return self.on_overlay_key(key);
         }
-        // An editor gets every key but the ones that switch tabs.
-        if let Some(Tab::Editor(id)) = self.tabs.get(self.active).cloned() {
+        // An editor gets every key but the ones that switch tabs, the one that moves it and
+        // (beside a world) the ones that go back to the world.
+        if let Some((id, docked)) = self.focused_editor().map(|e| (e.id, e.docked.is_some())) {
             match key.code {
+                KeyCode::F(7) => self.move_editor(),
+                KeyCode::F(6) if docked => self.toggle_editor_focus(),
+                KeyCode::Char('0') if alt && docked => self.toggle_editor_focus(),
                 KeyCode::Char(c @ '1'..='9') if alt => self.switch_to(c as usize - '1' as usize),
                 KeyCode::Right if alt => self.run(Cmd::NextTab),
                 KeyCode::Left if alt => self.run(Cmd::PrevTab),
@@ -75,6 +79,9 @@ impl App {
             KeyCode::Char('g') if ctrl => return self.run(Cmd::EditInput),
             KeyCode::F(1) => return self.run(Cmd::Help),
             KeyCode::F(2) => return self.run(Cmd::Rules),
+            KeyCode::F(6) => return self.run(Cmd::EditorFocus),
+            KeyCode::F(7) => return self.run(Cmd::MoveEditor),
+            KeyCode::Char('0') if alt => return self.run(Cmd::EditorFocus),
             KeyCode::Char(c @ '1'..='9') if alt => return self.switch_to(c as usize - '1' as usize),
             KeyCode::Right if alt => return self.run(Cmd::NextTab),
             KeyCode::Left if alt => return self.run(Cmd::PrevTab),
@@ -491,19 +498,30 @@ impl App {
             "config" => self.run(Cmd::EditConfig),
             "rules" | "triggers" | "aliases" | "macros" => self.run(Cmd::Rules),
             "editor" => {
+                let settings = &mut self.config.settings;
                 match args.to_lowercase().as_str() {
-                    "tab" => self.config.settings.editor_in_tab = true,
-                    "fullscreen" | "full" => self.config.settings.editor_in_tab = false,
+                    "tab" => (settings.editor_in_tab, settings.editor_in_sidebar) = (true, false),
+                    "sidebar" | "side" => (settings.editor_in_tab, settings.editor_in_sidebar) = (true, true),
+                    "fullscreen" | "full" => (settings.editor_in_tab, settings.editor_in_sidebar) = (false, false),
+                    "move" => {
+                        self.move_editor();
+                        return true;
+                    }
                     "" => {}
                     _ => {
-                        self.toast("Use /editor tab or /editor fullscreen");
+                        self.toast("Use /editor tab, /editor sidebar or /editor fullscreen (/editor move moves the one that's open)");
                         return true;
                     }
                 }
                 if !args.is_empty() {
                     self.save_config();
                 }
-                self.toast(if self.config.settings.editor_in_tab { "$EDITOR opens in a tab" } else { "$EDITOR takes over the whole terminal" });
+                let settings = &self.config.settings;
+                self.toast(match (settings.editor_in_tab, settings.editor_in_sidebar) {
+                    (false, _) => "$EDITOR takes over the whole terminal",
+                    (true, false) => "$EDITOR opens in a tab",
+                    (true, true) => "$EDITOR opens beside the world when its sidebar is free, otherwise in a tab",
+                });
             }
             "colors" | "colours" => {
                 match args.to_lowercase().as_str() {
@@ -561,13 +579,19 @@ impl App {
             }
             return;
         }
-        // Over an editor's screen, the mouse is the editor's.
+        // Over an editor's screen, the mouse is the editor's. Clicking chooses between an
+        // editor beside a world and the world.
         let area = self.hits.editor;
         if self.overlay.is_none()
-            && area.contains(at)
-            && let Some(editor) = self.active_editor()
+            && let Some(editor) = self.visible_editor()
         {
-            return editor.term.mouse(mouse, at.x - area.x, at.y - area.y);
+            let inside = area.contains(at);
+            if editor.docked.is_some() && matches!(mouse.kind, MouseEventKind::Down(_)) {
+                editor.focused = inside;
+            }
+            if inside {
+                return editor.term.mouse(mouse, at.x - area.x, at.y - area.y);
+            }
         }
         match mouse.kind {
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
