@@ -108,10 +108,17 @@ jobs:
           security unlock-keychain -p "$password" "$keychain"
           security import "$RUNNER_TEMP/certificate.p12" -k "$keychain" -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
           security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain"
+          # The certificate is only usable with the Apple certificate that issued it, which the
+          # runner doesn't have.
+          curl -sSfo "$RUNNER_TEMP/DeveloperIDG2CA.cer" https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer
+          security add-certificates -k "$keychain" "$RUNNER_TEMP/DeveloperIDG2CA.cer"
           security list-keychains -d user -s "$keychain"
           xcrun notarytool store-credentials familiar --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" --keychain "$keychain"
           echo "SIGN_IDENTITY=$MACOS_SIGN_IDENTITY" >> "$GITHUB_ENV"
           echo "NOTARY_PROFILE=familiar" >> "$GITHUB_ENV"
+          echo "NOTARY_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
+          # Fails here, with a clear message, if the certificate still can't be used.
+          security find-identity -v -p codesigning "$keychain" | grep -q "1 valid identities found"
       - name: App
         run: UNIVERSAL=1 packaging/macos/build.sh
       - name: Terminal client

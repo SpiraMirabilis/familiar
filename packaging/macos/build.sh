@@ -7,7 +7,8 @@
 #
 # To sign for distribution, set SIGN_IDENTITY to a Developer ID Application certificate in your
 # keychain ("Developer ID Application: Your Name (TEAMID)"). To notarize as well, set
-# NOTARY_PROFILE to a profile saved with `xcrun notarytool store-credentials`.
+# NOTARY_PROFILE to a profile saved with `xcrun notarytool store-credentials` (and
+# NOTARY_KEYCHAIN to the keychain it was saved in, if that isn't the login keychain).
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
@@ -55,7 +56,7 @@ rm -f "$ZIP"
 ditto -c -k --keepParent "$APP" "$ZIP"
 
 if [ -n "${NOTARY_PROFILE:-}" ]; then
-    xcrun notarytool submit "$ZIP" --keychain-profile "$NOTARY_PROFILE" --wait
+    xcrun notarytool submit "$ZIP" --keychain-profile "$NOTARY_PROFILE" ${NOTARY_KEYCHAIN:+--keychain "$NOTARY_KEYCHAIN"} --wait
     xcrun stapler staple "$APP"
     # The zip has to hold the stapled app.
     rm -f "$ZIP"
