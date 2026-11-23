@@ -57,7 +57,17 @@ pub fn notify(app: &str, title: &str, body: &str) {
             let _ = show(tauri_winrt_notification::Toast::POWERSHELL_APP_ID);
         }
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        // The words are passed as arguments, never pasted into the script: they come from the server.
+        let script = ["on run argv", "display notification (item 3 of argv) with title (item 1 of argv) subtitle (item 2 of argv)", "end run"];
+        let mut command = Command::new("osascript");
+        for line in script {
+            command.args(["-e", line]);
+        }
+        let _ = quiet(command.args(["--", app, title, body])).spawn();
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         let _ = quiet(Command::new("notify-send").args(["-a", app, title, body])).spawn();
     }

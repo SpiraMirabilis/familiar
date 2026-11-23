@@ -83,8 +83,62 @@ jobs:
             dist/familiar-*-windows*.zip*
             dist/familiar-*-windows*.exe*
 
+  # The Mac app and the terminal client, each for both Apple silicon and Intel.
+  macos:
+    runs-on: macos-latest
+    env:
+      # Optional: with these repository secrets the app is signed with a Developer ID and
+      # notarized. Without them it's signed ad hoc, and macOS warns when it's first opened.
+      MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+      MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+      MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Signing certificate
+        if: env.MACOS_CERTIFICATE != ''
+        run: |
+          keychain="$RUNNER_TEMP/build.keychain"
+          password=$(uuidgen)
+          echo "$MACOS_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          security import "$RUNNER_TEMP/certificate.p12" -k "$keychain" -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain"
+          security list-keychains -d user -s "$keychain"
+          xcrun notarytool store-credentials familiar --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" --keychain "$keychain"
+          echo "SIGN_IDENTITY=$MACOS_SIGN_IDENTITY" >> "$GITHUB_ENV"
+          echo "NOTARY_PROFILE=familiar" >> "$GITHUB_ENV"
+      - name: App
+        run: UNIVERSAL=1 packaging/macos/build.sh
+      - name: Terminal client
+        run: |
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+          cargo build --release --locked -p familiar-tui --target aarch64-apple-darwin --target x86_64-apple-darwin
+      - name: Package
+        run: |
+          name=familiar-tui-${GITHUB_REF_NAME#v}-macos
+          mkdir "$name"
+          lipo -create -output "$name/familiar-tui" \
+            target/aarch64-apple-darwin/release/familiar-tui target/x86_64-apple-darwin/release/familiar-tui
+          cp README.md LICENSE THIRD-PARTY.md CHANGELOG.md "$name/"
+          tar czf "$name.tar.gz" "$name"
+          shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256"
+          # Everything in one folder, so the artifact has no folders inside it.
+          mv "$name.tar.gz" "$name.tar.gz.sha256" dist/
+          (cd dist && for file in Familiar-*-macos.zip; do shasum -a 256 "$file" > "$file.sha256"; done)
+      - uses: actions/upload-artifact@v7
+        with:
+          name: macos
+          path: |
+            dist/familiar-tui-*-macos.tar.gz*
+            dist/Familiar-*-macos.zip*
+
   release:
-    needs: [tarball, flatpak, windows]
+    needs: [tarball, flatpak, windows, macos]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v8
@@ -99,3 +153,4 @@ jobs:
             familiar-*.tar.gz.sha256
             familiar-*.flatpak
             familiar-*-windows*
+            Familiar-*-macos.zip*

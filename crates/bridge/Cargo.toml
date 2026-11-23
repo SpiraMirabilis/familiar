@@ -1,0 +1,27 @@
+[package]
+name = "familiar-bridge"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Familiar's engine behind a small C interface, for front ends that aren't written in Rust (the macOS app)"
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+familiar-ansi = { version = "0.2.1", path = "../ansi" }
+familiar-code = { version = "0.2.1", path = "../code" }
+familiar-config = { version = "0.2.1", path = "../config" }
+familiar-engine = { version = "0.2.1", path = "../engine" }
+familiar-import = { version = "0.2.1", path = "../import" }
+familiar-map = { version = "0.2.1", path = "../map" }
+familiar-net = { version = "0.2.1", path = "../net" }
+familiar-script = { version = "0.2.1", path = "../script" }
+serde = "1.0.229"
+serde_json = { version = "1.0.154", features = ["preserve_order"] }
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "net", "time", "sync"] }

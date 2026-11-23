@@ -1,5 +1,6 @@
 //! Where things live on disk, and turning what users type (`~/x`, `file://` URLs) into paths.
-//! Everything goes through `dirs`, so it follows XDG on Linux and the known folders on Windows.
+//! Everything goes through `dirs`, so it follows XDG on Linux, the known folders on Windows and
+//! `~/Library` on macOS.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -10,18 +11,20 @@ pub fn home_dir() -> Option<PathBuf> {
     dirs::home_dir()
 }
 
-/// Settings: `~/.config/familiar`, or `%APPDATA%\familiar` on Windows.
+/// Settings: `~/.config/familiar`, `%APPDATA%\familiar` on Windows, or
+/// `~/Library/Application Support/familiar` on macOS.
 pub fn config_dir() -> PathBuf {
     dirs::config_dir().unwrap_or_else(|| PathBuf::from(".")).join(APP_DIR)
 }
 
 /// Maps and logs: `~/.local/share/familiar`, or `%LOCALAPPDATA%\familiar` on Windows (local, so
-/// big log folders don't roam with the profile).
+/// big log folders don't roam with the profile). On macOS it's the same folder as the settings.
 pub fn data_dir() -> PathBuf {
     dirs::data_local_dir().unwrap_or_else(|| PathBuf::from(".")).join(APP_DIR)
 }
 
-/// Things that can be thrown away: `~/.cache/familiar`, or `%LOCALAPPDATA%\familiar\cache`.
+/// Things that can be thrown away: `~/.cache/familiar`, `%LOCALAPPDATA%\familiar\cache`, or
+/// `~/Library/Caches/familiar` on macOS.
 pub fn cache_dir() -> PathBuf {
     match dirs::cache_dir() {
         // Windows has no separate cache folder, so keep ours apart from the data.

@@ -3,7 +3,7 @@ name = "familiar-speech"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Text to speech on a background thread: speech-dispatcher on Linux, SAPI on Windows"
+description = "Text to speech on a background thread: speech-dispatcher on Linux, SAPI on Windows, say on macOS"
 authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
@@ -11,7 +11,7 @@ rust-version.workspace = true
 keywords = ["speech", "tts", "accessibility", "speech-dispatcher", "sapi"]
 categories = ["accessibility", "multimedia::audio"]
 
-[target.'cfg(unix)'.dependencies]
+[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
 ssip-client = "0.10.2"
 
 [target.'cfg(windows)'.dependencies]

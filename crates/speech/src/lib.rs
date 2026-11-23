@@ -1,12 +1,15 @@
-//! Text to speech: speech-dispatcher (SSIP) on Linux, the built-in SAPI voice on Windows. Speech
-//! runs on a background thread, so a slow or missing speech service never blocks the UI. Shared
+//! Text to speech: speech-dispatcher (SSIP) on Linux, the built-in SAPI voice on Windows, `say`
+//! on macOS. Speech runs on a background thread, so a slow or missing speech service never blocks the UI. Shared
 //! by the GTK and terminal clients.
 
 use std::sync::mpsc;
 use std::thread;
 
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "macos")))]
 #[path = "ssip.rs"]
+mod backend;
+#[cfg(target_os = "macos")]
+#[path = "say.rs"]
 mod backend;
 #[cfg(windows)]
 #[path = "sapi.rs"]

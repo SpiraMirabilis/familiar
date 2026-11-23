@@ -106,7 +106,14 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             // Pango's "Monospace" is Courier New on Windows, which reads poorly at this size.
-            font: if cfg!(windows) { "Consolas 11" } else { "Monospace 11" }.into(),
+            font: if cfg!(windows) {
+                "Consolas 11"
+            } else if cfg!(target_os = "macos") {
+                "Menlo 12"
+            } else {
+                "Monospace 11"
+            }
+            .into(),
             scrollback_lines: 10_000,
             local_echo: true,
             input_history_size: 500,
