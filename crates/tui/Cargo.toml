@@ -14,14 +14,14 @@ readme = "../../README.md"
 
 [dependencies]
 clap = { version = "4.6.9", features = ["derive"] }
-familiar-ansi = { version = "0.3.0", path = "../ansi" }
-familiar-config = { version = "0.3.0", path = "../config" }
-familiar-engine = { version = "0.3.0", path = "../engine" }
-familiar-map = { version = "0.3.0", path = "../map" }
-familiar-platform = { version = "0.3.0", path = "../platform" }
-familiar-net = { version = "0.3.0", path = "../net" }
-familiar-script = { version = "0.3.0", path = "../script" }
-familiar-speech = { version = "0.3.0", path = "../speech" }
+familiar-ansi = { version = "0.3.1", path = "../ansi" }
+familiar-config = { version = "0.3.1", path = "../config" }
+familiar-engine = { version = "0.3.1", path = "../engine" }
+familiar-map = { version = "0.3.1", path = "../map" }
+familiar-platform = { version = "0.3.1", path = "../platform" }
+familiar-net = { version = "0.3.1", path = "../net" }
+familiar-script = { version = "0.3.1", path = "../script" }
+familiar-speech = { version = "0.3.1", path = "../speech" }
 ratatui = "0.30.2"
 tokio = { version = "1.54.1", features = ["full"] }
 unicode-segmentation = "1.13.3"

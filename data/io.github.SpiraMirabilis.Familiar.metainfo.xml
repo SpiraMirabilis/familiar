@@ -54,6 +54,16 @@
     <content_attribute id="social-info">mild</content_attribute>
   </content_rating>
   <releases>
+    <release version="0.3.1" date="2026-11-23">
+      <description>
+        <p>Bouncer support, and fixes to selecting text in the terminal client.</p>
+        <ul>
+          <li>Worlds can connect through an mbnc bouncer, which keeps your character online while you're away and replays what arrived when you return</li>
+          <li>In the terminal client, holding a mouse selection at the top or bottom edge of the output scrolls it, so the selection can go on</li>
+          <li>In the terminal client, selecting downwards while scrolled back no longer jumps into the live lines</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.3.0" date="2026-11-23">
       <description>
         <p>Familiar now runs on macOS, and the terminal client can show your editor beside the world.</p>

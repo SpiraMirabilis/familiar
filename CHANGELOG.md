@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.1 (2026-11-23)
 
 - Bouncer support: worlds can connect through an mbnc bouncer (a `[bouncer]` section in
   `config.toml`, and a per-world switch), which keeps the character online while you're away

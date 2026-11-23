@@ -16,11 +16,11 @@ base64 = "0.23.1"
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
 fancy-regex = "0.20.2"
 flate2 = "1.1.11"
-familiar-ansi = { version = "0.3.0", path = "../ansi" }
-familiar-config = { version = "0.3.0", path = "../config" }
-familiar-import = { version = "0.3.0", path = "../import" }
-familiar-map = { version = "0.3.0", path = "../map" }
-familiar-net = { version = "0.3.0", path = "../net" }
+familiar-ansi = { version = "0.3.1", path = "../ansi" }
+familiar-config = { version = "0.3.1", path = "../config" }
+familiar-import = { version = "0.3.1", path = "../import" }
+familiar-map = { version = "0.3.1", path = "../map" }
+familiar-net = { version = "0.3.1", path = "../net" }
 serde_json = { version = "1.0.154", features = ["preserve_order"] }
 tokio = { version = "1.54.1", features = ["sync"] }
 ureq = "3.5.2"
