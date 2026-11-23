@@ -54,6 +54,15 @@
     <content_attribute id="social-info">mild</content_attribute>
   </content_rating>
   <releases>
+    <release version="0.3.0" date="2026-11-23">
+      <description>
+        <p>Familiar now runs on macOS, and the terminal client can show your editor beside the world.</p>
+        <ul>
+          <li>The terminal client can open your editor beside the world, where the sidebar goes, when the sidebar is free (/editor sidebar). F6 switches between the two and F7 moves the editor to a tab and back</li>
+          <li>A native app for macOS, and the terminal client for macOS</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.2.1" date="2026-11-22">
       <description>
         <p>Three additions to the terminal client.</p>

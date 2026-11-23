@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 (2026-11-23)
 
 - Terminal client: `/editor sidebar` opens `$EDITOR` beside the world, where the sidebar goes,
   when that world isn't using its sidebar. F6 switches between the editor and the world, and
