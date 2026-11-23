@@ -10,9 +10,9 @@ Familiar is inspired by [BeipMU](https://github.com/BeipDev/BeipMU), the Windows
 import its settings, maps and scripts. It is a separate project, written from scratch in Rust, and
 isn't affiliated with BeipMU or its developers.
 
-| GTK | Terminal |
-|---|---|
-| ![The GTK client with stat bars](docs/screenshots/gui.png) | ![The terminal client with the map and command completion](docs/screenshots/tui.png) |
+| GTK | Terminal | Terminal, with `$EDITOR` beside the world |
+|---|---|---|
+| ![The GTK client with stat bars](docs/screenshots/gui.png) | ![The terminal client with the map and command completion](docs/screenshots/tui.png) | ![The terminal client with a MOO verb open in vim beside the world's output](docs/screenshots/tui-editor.png) |
 
 ## Highlights
 
