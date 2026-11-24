@@ -1,4 +1,4 @@
-@create #65 named MCP Simple Edit,mcpedit
+@create $feature named MCP Simple Edit,mcpedit
 @property mcpedit.sessions 0 ""
 @set mcpedit.feature_verbs to {"@sedit"}
 @verb mcpedit:confunc this none this rxd
