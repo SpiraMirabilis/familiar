@@ -1,6 +1,6 @@
 pkgbase = familiar
 	pkgdesc = Client for MUDs, MUSHes, MUCKs and MOOs, with GTK and terminal interfaces
-	pkgver = 0.3.1
+	pkgver = 0.4.0
 	pkgrel = 1
 	url = https://github.com/SpiraMirabilis/familiar
 	arch = x86_64
@@ -27,7 +27,7 @@ pkgbase = familiar
 	optdepends = pipewire: sounds in the terminal client (pw-play)
 	optdepends = libnotify: desktop notifications from the terminal client
 	options = !lto
-	source = familiar-0.3.1.tar.gz::https://github.com/SpiraMirabilis/familiar/archive/refs/tags/v0.3.1.tar.gz
+	source = familiar-0.4.0.tar.gz::https://github.com/SpiraMirabilis/familiar/archive/refs/tags/v0.4.0.tar.gz
 	sha256sums = 0f8f15728a72258a59fd59d5ffa66efd348d0ca1c1160328cd9e890c95c8d964
 
 pkgname = familiar

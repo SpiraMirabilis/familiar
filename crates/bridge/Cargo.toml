@@ -14,19 +14,19 @@ publish = false
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [dependencies]
-familiar-ansi = { version = "0.3.1", path = "../ansi" }
-familiar-code = { version = "0.3.1", path = "../code" }
-familiar-config = { version = "0.3.1", path = "../config" }
-familiar-engine = { version = "0.3.1", path = "../engine" }
-familiar-import = { version = "0.3.1", path = "../import" }
-familiar-map = { version = "0.3.1", path = "../map" }
-familiar-net = { version = "0.3.1", path = "../net" }
-familiar-script = { version = "0.3.1", path = "../script" }
+familiar-ansi = { version = "0.4.0", path = "../ansi" }
+familiar-code = { version = "0.4.0", path = "../code" }
+familiar-config = { version = "0.4.0", path = "../config" }
+familiar-engine = { version = "0.4.0", path = "../engine" }
+familiar-import = { version = "0.4.0", path = "../import" }
+familiar-map = { version = "0.4.0", path = "../map" }
+familiar-net = { version = "0.4.0", path = "../net" }
+familiar-script = { version = "0.4.0", path = "../script" }
 serde = "1.0.229"
 serde_json = { version = "1.0.154", features = ["preserve_order"] }
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "net", "time", "sync"] }
 
 # Sounds, speech and notifications for the Windows app, which leaves them to us.
 [target.'cfg(windows)'.dependencies]
-familiar-platform = { version = "0.3.1", path = "../platform" }
-familiar-speech = { version = "0.3.1", path = "../speech" }
+familiar-platform = { version = "0.4.0", path = "../platform" }
+familiar-speech = { version = "0.4.0", path = "../speech" }

@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 (2026-11-24)
 
 - Every client: the triggers, aliases and macros editor can add a set of examples to learn
   from ("Add Examples"; `x` in the terminal client). They aren't for any one game: each shows
