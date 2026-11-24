@@ -32,6 +32,8 @@ internal sealed class RulesPage : UserControl
     private readonly StackPanel rows = new() { Spacing = 4 };
     private readonly Button add = new() { Style = Form.Style("AccentButtonStyle") };
     private readonly TextBlock hint = Form.Caption("");
+    private readonly Button examples = new() { Content = "Add Examples" };
+    private readonly InfoBar notice = new() { IsOpen = false, Severity = InfoBarSeverity.Informational };
     private bool filling;
 
     public RulesPage(string? world, string? character)
@@ -43,6 +45,14 @@ internal sealed class RulesPage : UserControl
         bar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         bar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         bar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        ToolTipService.SetToolTip(examples, "Adds a few triggers, aliases and macros to learn from and change. Triggers and aliases start switched off.");
+        // Beside the title, as it's about all four kinds at once.
+        examples.HorizontalAlignment = HorizontalAlignment.Right;
+        examples.VerticalAlignment = VerticalAlignment.Center;
+        var header = new Grid();
+        header.Children.Add(title);
+        header.Children.Add(examples);
+        examples.Click += (_, _) => AddExamples();
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(scopes, "Applies to");
         ToolTipService.SetToolTip(scopes, "Where these apply: every world, one world, or one character");
         Grid.SetColumn(scopes, 1);
@@ -52,9 +62,10 @@ internal sealed class RulesPage : UserControl
         bar.Children.Add(add);
 
         var panel = new StackPanel { Spacing = 12, MaxWidth = 760, Padding = new Thickness(24, 28, 24, 24) };
-        panel.Children.Add(title);
+        panel.Children.Add(header);
         panel.Children.Add(bar);
         panel.Children.Add(hint);
+        panel.Children.Add(notice);
         panel.Children.Add(rows);
         Content = new ScrollViewer { Content = panel };
 
@@ -139,6 +150,31 @@ internal sealed class RulesPage : UserControl
         if (rules[kind] is JsonArray list) return list;
         rules[kind] = list = [];
         return list;
+    }
+
+    /// <summary>Adds the engine's examples to the scope that's showing: every kind at once, since
+    /// they refer to each other (an alias and a trigger use the example variable).</summary>
+    internal async void AddExamples()
+    {
+        var scope = Current;
+        var where = scope switch
+        {
+            { World: null } => Json.Args(("kind", "global")),
+            { Character: null } => Json.Args(("kind", "world"), ("world", scope.World)),
+            _ => Json.Args(("kind", "character"), ("world", scope.World), ("character", scope.Character)),
+        };
+        try
+        {
+            var reply = Core.Call("rules.add_examples", Json.Args(("scope", where)));
+            AppState.ReloadFromEngine();
+            notice.Title = reply.Int("added") > 0 ? "Examples added" : "Nothing to add";
+            notice.Message = reply.Str("message") + (reply.Int("added") > 0 ? " Look on each page: Triggers, Aliases, Macros and Variables." : "");
+            notice.IsOpen = true;
+        }
+        catch (CoreException e)
+        {
+            await AppState.Alert(XamlRoot, "Couldn’t add the examples", e.Message);
+        }
     }
 
     // MARK: The list

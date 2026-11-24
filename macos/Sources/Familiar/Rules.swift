@@ -34,6 +34,11 @@ enum RulesWindow {
         window.makeKeyAndOrderFront(nil)
     }
 
+    #if DEBUG
+    /// For the debug script (see App.swift): presses "Add Examples" in the open window.
+    static func addExamplesForTest() { model?.addExamples() }
+    #endif
+
     /// For quitting: offers to save unsaved rules. False means the user cancelled.
     static func canQuit() -> Bool {
         guard let model, model.isDirty else { return true }
@@ -298,6 +303,8 @@ private final class RulesModel: NSObject, ObservableObject, NSWindowDelegate {
 
     @Published var selection: UUID?
     @Published var problem: String?
+    /// What the last "Add Examples" did, shown where the note about unsaved changes goes.
+    @Published var notice: String?
     /// Working copies of every scope looked at since the last save, so switching scope doesn't
     /// lose edits.
     @Published private(set) var drafts: [RuleScope: RulesDraft] = [:] {
@@ -327,6 +334,7 @@ private final class RulesModel: NSObject, ObservableObject, NSWindowDelegate {
         get { drafts[scope]?[kind] ?? [] }
         set {
             problem = nil
+            notice = nil
             drafts[scope]?[kind] = newValue
         }
     }
@@ -356,6 +364,32 @@ private final class RulesModel: NSObject, ObservableObject, NSWindowDelegate {
     }
 
     // MARK: Editing the list
+
+    /// Adds the engine's example triggers, aliases, macros and variable to the scope showing,
+    /// to learn from and change. They go straight into the settings (the engine skips any
+    /// that are there already), so changes that aren't saved yet are saved first.
+    func addExamples() {
+        notice = nil
+        guard !isDirty || save() else { return }
+        let target: JSON
+        if let world = scope.world {
+            if let character = scope.character {
+                target = ["kind": "character", "world": .of(world), "character": .of(character)]
+            } else {
+                target = ["kind": "world", "world": .of(world)]
+            }
+        } else {
+            target = ["kind": "global"]
+        }
+        do {
+            let reply = try Core.call("rules.add_examples", ["scope": target])
+            // The rows are reloaded when the config's change reaches us (see configChanged).
+            AppState.shared.reloadFromEngine()
+            notice = reply["message"].string
+        } catch {
+            problem = error.localizedDescription
+        }
+    }
 
     func add() {
         guard drafts[scope] != nil else { return }
@@ -677,8 +711,12 @@ private struct RulesView: View {
                 Label(problem, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.red).font(.callout)
             } else if model.isDirty {
                 Text("You have changes that aren’t saved yet.").foregroundStyle(.secondary).font(.callout)
+            } else if let notice = model.notice {
+                Text(notice).foregroundStyle(.secondary).font(.callout)
             }
             Spacer()
+            Button("Add Examples") { model.addExamples() }
+                .help("Adds a few triggers, aliases and macros to learn from and change. Triggers and aliases start switched off.")
             Button("Revert") { model.revert() }
                 .disabled(!model.isDirty)
                 .help("Discard the changes you haven’t saved")

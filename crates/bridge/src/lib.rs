@@ -392,6 +392,17 @@ impl State {
         }
     }
 
+    fn add_examples(&mut self, args: &Value) -> Reply {
+        let scope = args.get("scope").and_then(json::parse_scope).ok_or("bad \"scope\"")?;
+        let rules = self.config.rules_mut(&scope).ok_or_else(|| format!("{} isn't saved, so it has no rules of its own", scope.label()))?;
+        let added = rules.add_examples();
+        if added.total() > 0 {
+            self.save()?;
+            self.reload_sessions();
+        }
+        Ok(json!({ "added": added.total(), "message": added.describe() }))
+    }
+
     fn call(&mut self, method: &str, args: &Value) -> Reply {
         match method {
             // What the app needs to start: the config, where things are, the colours.
@@ -422,6 +433,10 @@ impl State {
             // Saves the config and has every open session pick it up.
             "config.set" => self.set_config(args),
             "import.beipmu" => self.import_beipmu(args),
+            // Adds the example triggers, aliases, macros and variable that a set of rules doesn't
+            // have yet. "scope" says whose: {"kind": "global"}, or "world" with "world", or
+            // "character" with "world" and "character".
+            "rules.add_examples" => self.add_examples(args),
 
             "session.open" => self.open(args),
             "session.info" => {
@@ -701,6 +716,15 @@ pub unsafe extern "C" fn familiar_free(reply: *mut c_char) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scopes_read_back_as_written() {
+        use familiar_config::Scope;
+        for scope in [Scope::Global, Scope::World { world: "Vale".into() }, Scope::Character { world: "Vale".into(), character: "Mara".into() }] {
+            assert_eq!(json::parse_scope(&json::scope(&scope)), Some(scope));
+        }
+        assert_eq!(json::parse_scope(&json!({ "kind": "world" })), None);
+    }
 
     #[test]
     fn stateless_methods() {

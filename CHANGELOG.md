@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Every client: the triggers, aliases and macros editor can add a set of examples to learn
+  from ("Add Examples"; `x` in the terminal client). They aren't for any one game: each shows
+  one thing, from highlighting a word to answering with what a regular expression matched,
+  aliases with `$1` and `$*`, and a macro that types into the input box. Triggers and aliases
+  arrive switched off, and nothing already there is replaced.
 - Windows: a native app, written for Windows 11 (C# and WinUI 3) on the same engine, in place
   of the GTK client. It follows the system's light and dark modes, keeps worlds in title-bar
   tabs, and has what the GTK client lacked there: web views (through WebView2) and spell

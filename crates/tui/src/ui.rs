@@ -810,8 +810,10 @@ fn draw_rules(f: &mut Frame, view: &mut RulesView, config: &Config, area: Rect) 
     }
     let footer = if view.delete_armed {
         Line::styled(" Press d again to delete it · any other key keeps it ", Style::new().fg(WARN))
+    } else if let Some(notice) = &view.notice {
+        Line::styled(format!(" {notice} "), theme::accent())
     } else {
-        Line::styled(" Enter edit · n new · Space on/off · d delete · Shift+↑↓ reorder · Tab section · [ ] scope · Esc close ", theme::faint())
+        Line::styled(" Enter edit · n new · x examples · Space on/off · d delete · Shift+↑↓ reorder · Tab section · [ ] scope · Esc close ", theme::faint())
     };
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
@@ -841,7 +843,7 @@ fn draw_rules(f: &mut Frame, view: &mut RulesView, config: &Config, area: Rect) 
     view.selected = view.selected.min(rows.len().saturating_sub(1));
     if rows.is_empty() {
         let noun = rules::SECTIONS[view.section].2;
-        let line = Line::from(vec![Span::styled("Nothing here yet. Press ", theme::muted()), key_hint("n"), Span::styled(format!(" to add a{} {noun}.", if noun == "alias" { "n" } else { "" }), theme::muted())]);
+        let line = Line::from(vec![Span::styled("Nothing here yet. Press ", theme::muted()), key_hint("n"), Span::styled(format!(" to add a{} {noun}, or ", if noun == "alias" { "n" } else { "" }), theme::muted()), key_hint("x"), Span::styled(" for some examples to learn from.", theme::muted())]);
         f.render_widget(Paragraph::new(line), list);
     }
     let title_width = rows.iter().map(|r| r.title.width()).max().unwrap_or(0).min(list.width as usize * 2 / 5);

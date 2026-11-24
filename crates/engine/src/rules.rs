@@ -176,6 +176,48 @@ mod tests {
         Pattern { pattern: p.into(), ..Pattern::default() }
     }
 
+    /// The examples the rules editors offer are meant to teach, so they had better work.
+    #[test]
+    fn the_examples_do_what_they_say() {
+        let examples = familiar_config::examples::examples();
+        for m in &examples.macros {
+            assert!(KeyChord::parse(&m.key).is_some(), "{} isn't a key", m.key);
+        }
+        let alias = |pattern: &str, input: &str| {
+            let alias = examples.aliases.iter().find(|a| a.matcher.pattern == pattern).unwrap_or_else(|| panic!("no alias {pattern}"));
+            test_alias(alias, input).unwrap()
+        };
+        let sends = |lines: &[&str]| Some(lines.iter().map(|l| l.to_string()).collect::<Vec<_>>());
+        assert_eq!(alias("hi", "hi"), sends(&["say Hello, everyone!"]));
+        assert_eq!(alias("hi", "high noon"), None);
+        assert_eq!(alias("gt", "gt lamp Mara"), sends(&["give lamp to Mara"]));
+        assert_eq!(alias("ooc", "ooc back in five"), sends(&["say (OOC) back in five"]));
+        assert_eq!(alias(r"^'(.+)$", "'hello there"), sends(&["say hello there"]));
+        assert_eq!(alias("brb", "say brb, tea"), sends(&["say be right back, tea"]));
+        assert_eq!(alias("greet", "greet").map(|lines| lines.len()), Some(2));
+
+        let trigger = |name: &str, line: &str| {
+            let full = format!("{}{name}", familiar_config::examples::PREFIX);
+            let trigger = examples.triggers.iter().find(|t| t.name == full).unwrap_or_else(|| panic!("no trigger {name}"));
+            test_trigger(trigger, line).unwrap().is_some()
+        };
+        assert!(trigger("highlight a word", "You find treasure here."));
+        assert!(!trigger("highlight a word", "A treasured memory."));
+        assert!(trigger("colour the whole line and mark the tab", "Mara tells you, \"Hello.\""));
+        assert!(trigger("hide a line", "The wind howls."));
+        assert!(trigger("notify me, with a regular expression", "Mara pages: are you there?"));
+        assert!(trigger("notify me, with a regular expression", "Oswin whispers to you, \"psst\""));
+        assert!(!trigger("notify me, with a regular expression", "You hear that Mara pages: often"));
+        assert!(trigger("answer, using what matched", "Oswin waves at you."));
+        assert!(trigger("rewrite part of a line", "<Public> hi"));
+        assert!(trigger("copy a channel to a side window", "[Chat] Mara: hi"));
+        assert!(!trigger("copy a channel to a side window", "[Staff] hi"));
+        assert!(trigger("send a command that uses a variable", "You feel playful."));
+        // Every example is covered above; a new one needs a line here too.
+        assert_eq!(examples.triggers.len(), 8);
+        assert_eq!(examples.aliases.len(), 6);
+    }
+
     #[test]
     fn plain_patterns_are_literal_and_case_insensitive() {
         let re = compile_pattern(&pattern("a.b (c)")).unwrap();

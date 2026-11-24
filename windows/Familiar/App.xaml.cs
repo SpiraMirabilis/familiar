@@ -59,6 +59,7 @@ public partial class App : Application
         {
             await Task.Delay(3500);
             if (edit == "trigger") rules?.Edit(0);
+            if (edit == "examples") rules?.AddExamples();
             if (edit == "code" && window.CurrentView is { } shown)
             {
                 var code = "\"Shows what is here.\";\nif (this.dark && !player.wizard)\n  player:tell(\"It is too dark to see.\");\n  return E_PERM;\nendif\nfor thing in (this.contents)\n  /* skip the unseen */\n  if (thing != player && is_player(thing))\n    player:tell($string_utils:pronoun_sub(\"%N is here.\", thing), \" \", #123);\n  endif\nendfor\n";

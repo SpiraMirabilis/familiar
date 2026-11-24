@@ -53,6 +53,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         }
         if env["FAMILIAR_TEST_SETTINGS"] != nil { showPreferences(nil) }
         if env["FAMILIAR_TEST_RULES"] != nil { showRules(nil) }
+        // With FAMILIAR_TEST_RULES: adds the example rules, as the button in that window does.
+        if env["FAMILIAR_TEST_EXAMPLES"] != nil {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { RulesWindow.addExamplesForTest() }
+        }
         let commands = (env["FAMILIAR_TEST_INPUT"] ?? "").split(separator: "\n").map(String.init)
         for (i, command) in commands.enumerated() {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5 + Double(i) * 0.4) { [weak self] in self?.current?.submit(command) }

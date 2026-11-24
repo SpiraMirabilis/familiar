@@ -64,6 +64,17 @@ pub fn scope(scope: &Scope) -> Value {
     v
 }
 
+/// The other way: a scope as [`scope`] writes it (its label is ignored).
+pub fn parse_scope(v: &Value) -> Option<Scope> {
+    let s = |k: &str| v.get(k).and_then(Value::as_str).map(str::to_string);
+    match v.get("kind")?.as_str()? {
+        "global" => Some(Scope::Global),
+        "world" => Some(Scope::World { world: s("world")? }),
+        "character" => Some(Scope::Character { world: s("world")?, character: s("character")? }),
+        _ => None,
+    }
+}
+
 pub fn status(status: &Status) -> Value {
     match status {
         Status::Connecting => json!({ "state": "connecting" }),
