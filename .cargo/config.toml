@@ -1,0 +1,10 @@
+# Built with Microsoft's toolchain, a Rust program normally needs the Visual C++ runtime
+# (vcruntime140.dll), which a fresh Windows doesn't have: the program then fails to start,
+# without saying why. Putting the runtime inside the program avoids that. It matters for
+# everything we ship from an MSVC build: the engine's DLL under the Windows app, and the
+# terminal client, which is meant to be one file that needs nothing else.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.aarch64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
