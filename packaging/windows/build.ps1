@@ -16,11 +16,14 @@ $out = "dist\familiar"
 cargo build --release --locked -p familiar-bridge -p familiar-tui
 if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }
 
-# The engine must stand alone: a DLL that needed MinGW's runtime would only work on the PC
-# that built it.
-$dll = [Text.Encoding]::GetEncoding(28591).GetString([IO.File]::ReadAllBytes((Resolve-Path "target\release\familiar_bridge.dll")))
-foreach ($runtime in "libgcc_s_seh-1.dll", "libwinpthread-1.dll", "libstdc++-6.dll") {
-    if ($dll.Contains($runtime)) { throw "familiar_bridge.dll depends on $runtime, which isn't part of Windows" }
+# What we built must stand alone. A file that needed MinGW's runtime would only work on the PC
+# that built it, and one that needed the Visual C++ runtime (an MSVC build without the static
+# runtime that .cargo/config.toml asks for) wouldn't start on a fresh Windows.
+foreach ($file in "familiar_bridge.dll", "familiar-tui.exe") {
+    $bytes = [Text.Encoding]::GetEncoding(28591).GetString([IO.File]::ReadAllBytes((Resolve-Path "target\release\$file")))
+    foreach ($runtime in "libgcc_s_seh-1.dll", "libwinpthread-1.dll", "libstdc++-6.dll", "vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll") {
+        if ($bytes.IndexOf($runtime, [StringComparison]::OrdinalIgnoreCase) -ge 0) { throw "$file depends on $runtime, which isn't part of Windows" }
+    }
 }
 
 # Emptied rather than removed: Windows won't delete a folder something has open.

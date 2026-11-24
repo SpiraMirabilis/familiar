@@ -40,6 +40,8 @@ Type: filesandordirs; Name: "{app}\bin"
 Type: filesandordirs; Name: "{app}\lib"
 Type: filesandordirs; Name: "{app}\share"
 Type: files; Name: "{app}\Familiar.cmd"
+; Its licences folder held GTK's and its libraries'; ours is written afresh.
+Type: filesandordirs; Name: "{app}\licenses"
 
 [Files]
 Source: "..\..\dist\familiar\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion

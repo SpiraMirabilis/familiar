@@ -49,6 +49,10 @@ jobs:
         run: |
           cargo build --locked -p familiar-bridge
           dotnet build windows/Familiar/Familiar.csproj -c Debug -p:Platform=x64 -warnaserror
+      # The release build as it ships, which also checks that what it built needs nothing a fresh
+      # Windows doesn't have.
+      - name: Windows package
+        run: packaging\windows\build.ps1
 
   # The same on macOS, and the Mac app (Swift, on top of the engine as a static library).
   macos:
