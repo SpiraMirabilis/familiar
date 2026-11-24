@@ -188,7 +188,6 @@ colour, and keeps its worlds in tabs in the title bar.
 - **Speech** uses the voice built into Windows instead of speech-dispatcher, and **sounds** play
   through Windows' own audio (WAV, Ogg Vorbis, MP3 and FLAC).
 - **Spell checking** is Windows' own, in whichever languages Windows has installed.
-- **Not there yet:** avatars and pictures under links to images (`/images on`) aren't shown.
 - **Terminal client:** use Windows Terminal. The console can't tell number pad keys from the main
   ones, so number pad macros only work in the GUI. Without `$EDITOR` set, editing opens Notepad.
   Pasting several lines puts them in the input box rather than sending each one.

@@ -107,9 +107,9 @@ internal sealed class CodeEditorWindow : Window
         top.Children.Add(bar);
         top.Children.Add(languages);
 
-        var previous = new Button { Content = new SymbolIcon(Symbol.Up) };
-        var next = new Button { Content = new SymbolIcon(Symbol.Download) };
-        var done = new Button { Content = new SymbolIcon(Symbol.Cancel) };
+        var previous = new Button { Content = new FontIcon { Glyph = "\uE70E", FontSize = 14 } };
+        var next = new Button { Content = new FontIcon { Glyph = "\uE70D", FontSize = 14 } };
+        var done = new Button { Content = new FontIcon { Glyph = "\uE711", FontSize = 14 } };
         ToolTipService.SetToolTip(previous, "Previous (Shift+F3)");
         ToolTipService.SetToolTip(next, "Next (F3)");
         previous.Click += (_, _) => editor.FindPrevious();

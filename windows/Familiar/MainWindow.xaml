@@ -44,6 +44,9 @@
                                     <MenuFlyoutItem.Icon><FontIcon Glyph="&#xF384;" /></MenuFlyoutItem.Icon>
                                 </MenuFlyoutItem>
                                 <MenuFlyoutSeparator />
+                                <MenuFlyoutItem x:Name="FindItem" Text="Find…" Click="OnFind" KeyboardAcceleratorTextOverride="Ctrl+F">
+                                    <MenuFlyoutItem.Icon><FontIcon Glyph="&#xE721;" /></MenuFlyoutItem.Icon>
+                                </MenuFlyoutItem>
                                 <MenuFlyoutItem x:Name="ClearItem" Text="Clear Output" Click="OnClear" KeyboardAcceleratorTextOverride="Ctrl+Shift+L">
                                     <MenuFlyoutItem.Icon><FontIcon Glyph="&#xE894;" /></MenuFlyoutItem.Icon>
                                 </MenuFlyoutItem>

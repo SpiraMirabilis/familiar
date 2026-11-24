@@ -190,6 +190,7 @@ internal sealed class PuppetView : UserControl
         root.Children.Add(Input);
         Content = root;
 
+        Output.FindClosed += Input.FocusInput;
         Loaded += (_, _) => Input.FocusInput();
         Output.LinkClicked += session.FollowLink;
         Output.TypingStarted += Input.FocusInput;

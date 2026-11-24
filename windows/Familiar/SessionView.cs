@@ -15,6 +15,8 @@ internal sealed class SessionView : UserControl
     public InputBox Input { get; }
 
     private readonly TextBlock status = new() { Visibility = Visibility.Collapsed, Margin = new Thickness(4, 6, 4, 0), TextTrimming = TextTrimming.CharacterEllipsis };
+    private readonly InfoBar dropped = new() { Severity = InfoBarSeverity.Warning, Title = "Disconnected", IsOpen = false, Margin = new Thickness(0, 8, 0, 0) };
+    private bool dismissed;
     private readonly TabView dock = new() { VerticalAlignment = VerticalAlignment.Stretch, IsAddTabButtonVisible = false, TabWidthMode = TabViewWidthMode.SizeToContent, CanReorderTabs = true, CloseButtonOverlayMode = TabViewCloseButtonOverlayMode.OnPointerOver };
     private readonly ColumnDefinition dockColumn = new() { Width = new GridLength(0) };
     private readonly GridSplitter splitter = new() { Width = 12, Visibility = Visibility.Collapsed, ResizeBehavior = GridSplitter.GridResizeBehavior.PreviousAndNext };
@@ -42,8 +44,16 @@ internal sealed class SessionView : UserControl
         main.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
         main.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         main.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        Grid.SetRow(status, 1);
-        Grid.SetRow(Input, 2);
+        main.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        Grid.SetRow(dropped, 1);
+        Grid.SetRow(status, 2);
+        Grid.SetRow(Input, 3);
+        // When the connection ends, a bar says why and offers to reconnect.
+        var reconnect = new Button { Content = "Reconnect" };
+        reconnect.Click += (_, _) => session.Connect();
+        dropped.ActionButton = reconnect;
+        dropped.Closed += (_, _) => dismissed = true;
+        main.Children.Add(dropped);
         Input.Margin = new Thickness(0, 8, 0, 0);
         main.Children.Add(Card(Output));
         main.Children.Add(status);
@@ -65,6 +75,7 @@ internal sealed class SessionView : UserControl
             if (e.Tab.Tag is string id && id.StartsWith("web:")) CloseWebView(id[4..]);
         };
 
+        Output.FindClosed += Input.FocusInput;
         Output.LinkClicked += session.FollowLink;
         Output.GridSizeChanged += session.Resize;
         Output.TypingStarted += Input.FocusInput;
@@ -116,6 +127,9 @@ internal sealed class SessionView : UserControl
     {
         var settings = AppState.Settings;
         var font = Session.Font;
+        if (!Session.Dropped) dismissed = false;
+        dropped.Message = Session.DropReason ?? "The connection was closed.";
+        dropped.IsOpen = Session.Dropped && !dismissed;
         status.Text = Session.StatusText;
         status.Visibility = Session.StatusText.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
         Output.Font = font;

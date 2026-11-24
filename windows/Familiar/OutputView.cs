@@ -28,7 +28,19 @@ internal sealed class OutputView : UserControl
     private readonly DrawingSurface canvas = new();
     private readonly ScrollBar bar = new() { Orientation = Orientation.Vertical, IndicatorMode = ScrollingIndicatorMode.MouseIndicator, HorizontalAlignment = HorizontalAlignment.Right, SmallChange = 1 };
     private readonly Dictionary<Line, (int Version, CanvasTextLayout Layout)> layouts = [];
-    private readonly List<(int Index, float Y, float Height, CanvasTextLayout Layout)> visible = [];
+    private readonly List<(int Index, float X, float Y, float Height, CanvasTextLayout Layout)> visible = [];
+    /// <summary>The pictures on screen: where they are, what clicking one opens, and what it says when pointed at.</summary>
+    private readonly List<(Rect Box, string? Link, string? Tip)> pictures = [];
+    private string? tip;
+
+    // Find: what's being looked for, where it is, and which one is the current one.
+    private readonly TextBox findBox = new() { PlaceholderText = "Find", Width = 200 };
+    private readonly TextBlock findCount = new() { VerticalAlignment = VerticalAlignment.Center, MinWidth = 64, Margin = new Thickness(4, 0, 4, 0) };
+    private readonly Border findBar = new() { Visibility = Visibility.Collapsed, HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(0, 8, 24, 0), Padding = new Thickness(6), CornerRadius = new CornerRadius(8), BorderThickness = new Thickness(1) };
+    private readonly Dictionary<Line, List<(int Start, int Length)>> found = [];
+    private readonly List<(Line Line, int Start, int Length)> matches = [];
+    private int currentMatch = -1;
+    private bool findStale;
 
     private OutputBuffer buffer;
     private FontSpec font;
@@ -64,6 +76,7 @@ internal sealed class OutputView : UserControl
         var root = new Grid();
         root.Children.Add(canvas);
         root.Children.Add(bar);
+        root.Children.Add(BuildFindBar());
         Content = root;
 
         canvas.Draw += OnDraw;
@@ -170,7 +183,7 @@ internal sealed class OutputView : UserControl
             cached.Layout.Dispose();
         }
         // An empty string would have no height.
-        var layout = new CanvasTextLayout(canvas.Canvas, line.Text.Length == 0 ? " " : line.Text, Format, TextWidth, 0);
+        var layout = new CanvasTextLayout(canvas.Canvas, line.Text.Length == 0 ? " " : line.Text, Format, Math.Max(1, TextWidth - Indent(line)), 0);
         foreach (var span in line.Spans)
         {
             layout.SetColor(span.Start, span.Length, span.Foreground);
@@ -183,7 +196,26 @@ internal sealed class OutputView : UserControl
         return layout;
     }
 
-    private float RowHeight(int index) => (float)Layout(buffer.Lines[index]).LayoutBounds.Height;
+    /// <summary>How far a line's text is moved right, to make room for its avatar.</summary>
+    private float Indent(Line line) => line.Avatar is null ? 0 : lineHeight + cellWidth;
+
+    /// <summary>A picture line's thumbnail and its size (at most 320 by 200), once it has arrived.</summary>
+    private (Microsoft.Graphics.Canvas.CanvasBitmap Bitmap, float Width, float Height)? Thumbnail(Line line)
+    {
+        if (line.Picture is null || Images.Get(line.Picture, canvas.Invalidate) is not { } bitmap) return null;
+        var size = bitmap.Size;
+        if (size.Width <= 0 || size.Height <= 0) return null;
+        var scale = Math.Min(Math.Min(320 / size.Width, 200 / size.Height), 1);
+        return (bitmap, (float)(size.Width * scale), (float)(size.Height * scale));
+    }
+
+    private float RowHeight(Line line)
+    {
+        if (Thumbnail(line) is { } thumbnail) return thumbnail.Height + 6;
+        return (float)Layout(line).LayoutBounds.Height;
+    }
+
+    private float RowHeight(int index) => RowHeight(buffer.Lines[index]);
 
     /// <summary>Works out where the top of the view is when it's following the bottom.</summary>
     private void AnchorToBottom()
@@ -208,7 +240,9 @@ internal sealed class OutputView : UserControl
     {
         var ds = args.DrawingSession;
         var lines = buffer.Lines;
+        if (findStale && IsFinding) Search();
         visible.Clear();
+        pictures.Clear();
         topLine = Math.Clamp(topLine, 0, Math.Max(0, lines.Count - 1));
         if (follow) AnchorToBottom();
 
@@ -221,14 +255,46 @@ internal sealed class OutputView : UserControl
         {
             var line = lines[i];
             var layout = Layout(line);
-            var height = (float)layout.LayoutBounds.Height;
+            var height = RowHeight(line);
+            var x = Pad + Indent(line);
             used.Add(line);
+            if (Thumbnail(line) is { } thumbnail)
+            {
+                var box = new Rect(Pad, y + 3, thumbnail.Width, thumbnail.Height);
+                ds.DrawImage(thumbnail.Bitmap, box, thumbnail.Bitmap.Bounds, 1, Microsoft.Graphics.Canvas.CanvasImageInterpolation.HighQualityCubic);
+                pictures.Add((box, line.Picture, line.Picture));
+            }
+            if (line.Avatar is { } avatar)
+            {
+                var box = new Rect(Pad, y, lineHeight, lineHeight);
+                if (avatar.Url is not null && Images.Get(avatar.Url, canvas.Invalidate) is { } face)
+                {
+                    // Fitted into the square, with its corners rounded off.
+                    var scale = Math.Min(lineHeight / face.Size.Width, lineHeight / face.Size.Height);
+                    var to = new Rect(Pad + (lineHeight - face.Size.Width * scale) / 2, y + (lineHeight - face.Size.Height * scale) / 2, face.Size.Width * scale, face.Size.Height * scale);
+                    using var corners = Microsoft.Graphics.Canvas.Geometry.CanvasGeometry.CreateRoundedRectangle(sender, box, 3, 3);
+                    using (ds.CreateLayer(1, corners))
+                    {
+                        ds.DrawImage(face, to, face.Bounds, 1, Microsoft.Graphics.Canvas.CanvasImageInterpolation.HighQualityCubic);
+                    }
+                }
+                pictures.Add((box, avatar.Link, avatar.Hover));
+            }
             foreach (var span in line.Spans)
             {
                 if (span.Background is not { } background) continue;
                 foreach (var region in layout.GetCharacterRegions(span.Start, span.Length))
                 {
-                    ds.FillRectangle(Offset(region.LayoutBounds, Pad, y), background);
+                    ds.FillRectangle(Offset(region.LayoutBounds, x, y), background);
+                }
+            }
+            if (found.TryGetValue(line, out var here))
+            {
+                foreach (var (start, length) in here)
+                {
+                    var isCurrent = currentMatch >= 0 && currentMatch < matches.Count && ReferenceEquals(matches[currentMatch].Line, line) && matches[currentMatch].Start == start;
+                    var colour = isCurrent ? Color.FromArgb(170, 255, 140, 0) : Color.FromArgb(90, 255, 213, 0);
+                    foreach (var region in layout.GetCharacterRegions(start, length)) ds.FillRectangle(Offset(region.LayoutBounds, x, y), colour);
                 }
             }
             if (selection is { } s && i >= s.First && i <= s.Last)
@@ -237,17 +303,17 @@ internal sealed class OutputView : UserControl
                 var to = i == s.Last ? s.LastChar : line.Text.Length;
                 if (to > from)
                 {
-                    foreach (var region in layout.GetCharacterRegions(from, to - from)) ds.FillRectangle(Offset(region.LayoutBounds, Pad, y), highlight);
+                    foreach (var region in layout.GetCharacterRegions(from, to - from)) ds.FillRectangle(Offset(region.LayoutBounds, x, y), highlight);
                 }
                 // The line break is part of the selection too.
                 if (i < s.Last)
                 {
                     var end = layout.GetCaretPosition(line.Text.Length, false);
-                    ds.FillRectangle(Pad + end.X, y + height - lineHeight, cellWidth * 0.6f, lineHeight, highlight);
+                    ds.FillRectangle(x + end.X, y + height - lineHeight, cellWidth * 0.6f, lineHeight, highlight);
                 }
             }
-            ds.DrawTextLayout(layout, new Vector2(Pad, y), AppState.Foreground);
-            visible.Add((i, y, height, layout));
+            if (line.Picture is null || height <= lineHeight + 1) ds.DrawTextLayout(layout, new Vector2(x, y), AppState.Foreground);
+            visible.Add((i, x, y, height, layout));
             y += height;
         }
 
@@ -347,7 +413,134 @@ internal sealed class OutputView : UserControl
         e.Handled = true;
     }
 
-    private void OnChanged() => canvas.Invalidate();
+    private void OnChanged()
+    {
+        findStale = true;
+        canvas.Invalidate();
+    }
+
+    // MARK: Find
+
+    private Border BuildFindBar()
+    {
+        Button Tool(string glyph, string tip, Action act)
+        {
+            var button = new Button { Content = new FontIcon { Glyph = glyph, FontSize = 14 }, Padding = new Thickness(6), Style = Form.Style("CommandBarFlyoutEllipsisButtonStyle"), Width = 32, Height = 32 };
+            ToolTipService.SetToolTip(button, tip);
+            Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(button, tip);
+            button.Click += (_, _) => act();
+            return button;
+        }
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(findBox, "Find in the output");
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 2 };
+        row.Children.Add(findBox);
+        row.Children.Add(findCount);
+        row.Children.Add(Tool("\uE70E", "Previous (Shift+Enter)", () => Step(-1)));
+        row.Children.Add(Tool("\uE70D", "Next (Enter)", () => Step(1)));
+        row.Children.Add(Tool("\uE711", "Close (Escape)", HideFind));
+        findBar.Child = row;
+        findBar.Background = Form.Brush("AcrylicInAppFillColorDefaultBrush");
+        findBar.BorderBrush = Form.Brush("SurfaceStrokeColorFlyoutBrush");
+        findBox.TextChanged += (_, _) =>
+        {
+            Search();
+            // The newest match is the one nearest what's being read.
+            currentMatch = matches.Count - 1;
+            ShowMatch();
+        };
+        findBox.KeyDown += (_, e) =>
+        {
+            if (e.Key == VirtualKey.Enter) Step(Keys.Shift ? -1 : 1);
+            else if (e.Key == VirtualKey.Escape) HideFind();
+            else return;
+            e.Handled = true;
+        };
+        return findBar;
+    }
+
+    /// <summary>Opens the find bar (Ctrl+F), or goes back to it.</summary>
+    public void ShowFind()
+    {
+        findBar.Visibility = Visibility.Visible;
+        findBox.Focus(FocusState.Programmatic);
+        findBox.SelectAll();
+        Search();
+        if (currentMatch < 0) currentMatch = matches.Count - 1;
+        ShowMatch();
+    }
+
+    public bool IsFinding => findBar.Visibility == Visibility.Visible;
+
+    /// <summary>Raised when the find bar closes, so the input box can have the keyboard back.</summary>
+    public event Action? FindClosed;
+
+    public void HideFind()
+    {
+        if (!IsFinding) return;
+        findBar.Visibility = Visibility.Collapsed;
+        matches.Clear();
+        found.Clear();
+        currentMatch = -1;
+        canvas.Invalidate();
+        FindClosed?.Invoke();
+    }
+
+    /// <summary>Finds every place the text appears, whatever its case.</summary>
+    private void Search()
+    {
+        var keep = currentMatch >= 0 && currentMatch < matches.Count ? matches[currentMatch] : ((Line Line, int Start, int Length)?)null;
+        matches.Clear();
+        found.Clear();
+        findStale = false;
+        var text = findBox.Text;
+        if (IsFinding && text.Length > 0)
+        {
+            foreach (var line in buffer.Lines)
+            {
+                List<(int, int)>? here = null;
+                for (var at = line.Text.IndexOf(text, StringComparison.CurrentCultureIgnoreCase); at >= 0; at = line.Text.IndexOf(text, at + text.Length, StringComparison.CurrentCultureIgnoreCase))
+                {
+                    (here ??= []).Add((at, text.Length));
+                    matches.Add((line, at, text.Length));
+                }
+                if (here is not null) found[line] = here;
+            }
+        }
+        // The current match stays the current one as lines arrive and old ones go.
+        currentMatch = keep is { } k ? matches.FindIndex(m => ReferenceEquals(m.Line, k.Line) && m.Start == k.Start) : -1;
+        Count();
+    }
+
+    private void Count()
+    {
+        findCount.Text = findBox.Text.Length == 0 ? "" : matches.Count == 0 ? "No results" : currentMatch >= 0 ? $"{currentMatch + 1} of {matches.Count}" : $"{matches.Count} found";
+    }
+
+    private void Step(int by)
+    {
+        if (findStale) Search();
+        if (matches.Count == 0) return;
+        currentMatch = currentMatch < 0 ? (by > 0 ? 0 : matches.Count - 1) : (currentMatch + by + matches.Count) % matches.Count;
+        ShowMatch();
+    }
+
+    /// <summary>Scrolls the current match into view, a few lines from the top.</summary>
+    private void ShowMatch()
+    {
+        Count();
+        if (currentMatch >= 0 && currentMatch < matches.Count && IndexOf(buffer.Lines, matches[currentMatch].Line) is var index and >= 0 && canvas.ReadyToDraw)
+        {
+            if (!visible.Any(v => v.Index == index && v.Y >= 0 && v.Y + v.Height <= canvas.ActualHeight))
+            {
+                follow = false;
+                topLine = Math.Max(0, index - 3);
+                topOffset = 0;
+                // Settles the position, and goes back to following if that's the bottom.
+                ScrollBy(0);
+            }
+        }
+        canvas.Invalidate();
+    }
 
     private void OnTrimmed(int count)
     {
@@ -373,13 +566,13 @@ internal sealed class OutputView : UserControl
     {
         if (visible.Count == 0) return null;
         var lines = buffer.Lines;
-        foreach (var (index, y, height, layout) in visible)
+        foreach (var (index, x, y, height, layout) in visible)
         {
             if (point.Y >= y + height && index != visible[^1].Index) continue;
             if (index >= lines.Count) return null;
             var line = lines[index];
             if (point.Y < y) return ((line, 0), false);
-            var inside = layout.HitTest((float)point.X - Pad, (float)point.Y - y, out var region, out var trailing);
+            var inside = layout.HitTest((float)point.X - x, (float)point.Y - y, out var region, out var trailing);
             var at = Math.Min(region.CharacterIndex + (trailing ? region.CharacterCount : 0), line.Text.Length);
             if (point.Y >= y + height) return ((line, line.Text.Length), false);
             return ((line, at), inside && line.Text.Length > 0);
@@ -389,10 +582,14 @@ internal sealed class OutputView : UserControl
 
     private string? LinkAt(Point point)
     {
-        foreach (var (index, y, height, layout) in visible)
+        foreach (var (box, link, _) in pictures)
+        {
+            if (box.Contains(point)) return link;
+        }
+        foreach (var (index, x, y, height, layout) in visible)
         {
             if (point.Y < y || point.Y >= y + height || index >= buffer.Lines.Count) continue;
-            if (!layout.HitTest((float)point.X - Pad, (float)point.Y - y, out var region)) return null;
+            if (!layout.HitTest((float)point.X - x, (float)point.Y - y, out var region)) return null;
             return buffer.Lines[index].LinkAt(region.CharacterIndex);
         }
         return null;
@@ -434,6 +631,13 @@ internal sealed class OutputView : UserControl
             return;
         }
         ProtectedCursor = InputSystemCursor.Create(LinkAt(point) is null ? InputSystemCursorShape.IBeam : InputSystemCursorShape.Hand);
+        // What an avatar or a thumbnail says when pointed at.
+        var over = pictures.FirstOrDefault(p => p.Box.Contains(point)).Tip;
+        if (over != tip)
+        {
+            tip = over;
+            ToolTipService.SetToolTip(this, over);
+        }
     }
 
     private void OnPointerReleased(object sender, PointerRoutedEventArgs e)
@@ -453,6 +657,8 @@ internal sealed class OutputView : UserControl
 
     private void OnKeyDown(object sender, KeyRoutedEventArgs e)
     {
+        // Keys from the find box are its own.
+        if (!ReferenceEquals(e.OriginalSource, this)) return;
         // Typing here belongs in the input box. Moving the focus there now, while the key is
         // still going down, means the character it makes is typed there like any other.
         if (!Keys.Ctrl && !Keys.Alt && Types(e.Key))

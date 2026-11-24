@@ -6,8 +6,25 @@ namespace Familiar;
 /// <summary>A run of one style within a line. Offsets count UTF-16 units, as .NET strings do.</summary>
 internal sealed record Span(int Start, int Length, Color Foreground, Color? Background = null, bool Bold = false, bool Italic = false, bool Underline = false, bool Strike = false, string? Link = null);
 
+/// <summary>A picture at the start of a line (BeipMU's avatars): who is speaking.</summary>
+internal sealed record Avatar(string? Id, string? Url, string? Hover, string? Link)
+{
+    public static Avatar From(JsonNode? avatar) => new(avatar.OptStr("id"), avatar.OptStr("url"), avatar.OptStr("hover"), avatar.OptStr("click_url") ?? avatar.OptStr("url"));
+}
+
 internal sealed class Line(string text, List<Span> spans)
 {
+    /// <summary>Shown before the text, if the line has one.</summary>
+    public Avatar? Avatar { get; private set; }
+    /// <summary>A line that is a picture rather than text: its address, which clicking it opens.</summary>
+    public string? Picture { get; init; }
+
+    public void SetAvatar(Avatar avatar)
+    {
+        Avatar = avatar;
+        Version++;
+    }
+
     public string Text { get; private set; } = text;
     public List<Span> Spans { get; } = spans;
     /// <summary>Bumped when the line's text changes, so a view knows to lay it out again.</summary>
@@ -38,6 +55,7 @@ internal sealed class OutputBuffer
 
     private readonly List<Line> lines = [];
     private PromptState prompt = PromptState.None;
+    private Avatar? nextAvatar;
     private int maxLines;
 
     private readonly Color foreground = AppState.Foreground;
@@ -104,6 +122,11 @@ internal sealed class OutputBuffer
     private void Append(Line line)
     {
         ClearPartial();
+        if (nextAvatar is not null)
+        {
+            line.SetAvatar(nextAvatar);
+            nextAvatar = null;
+        }
         lines.Add(line);
         Trim();
         LineAdded?.Invoke(line.Text);
@@ -139,11 +162,39 @@ internal sealed class OutputBuffer
         Changed?.Invoke();
     }
 
+    /// <summary>Puts an avatar at the start of the next line.</summary>
+    public void SetNextAvatar(JsonNode? avatar) => nextAvatar = Avatar.From(avatar);
+
+    /// <summary>The server changed an avatar (beip.ids): the ones already shown change too.</summary>
+    public void UpdateAvatar(JsonNode? avatar)
+    {
+        var updated = Avatar.From(avatar);
+        if (updated.Id is null) return;
+        var changed = false;
+        foreach (var line in lines)
+        {
+            if (line.Avatar?.Id != updated.Id) continue;
+            line.SetAvatar(updated);
+            changed = true;
+        }
+        if (changed) Changed?.Invoke();
+    }
+
+    /// <summary>A thumbnail on a line of its own that opens the picture when clicked.</summary>
+    public void AppendImage(string url)
+    {
+        ClearPartial();
+        lines.Add(new Line("", []) { Picture = url });
+        Trim();
+        Changed?.Invoke();
+    }
+
     public void Clear()
     {
         var count = lines.Count;
         lines.Clear();
         prompt = PromptState.None;
+        nextAvatar = null;
         if (count > 0) Trimmed?.Invoke(count);
         Changed?.Invoke();
     }

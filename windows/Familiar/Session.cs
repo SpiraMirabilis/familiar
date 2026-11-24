@@ -20,6 +20,9 @@ internal sealed partial class Session
     /// <summary>MCP status text, shown under the output.</summary>
     public string StatusText { get; private set; } = "";
     public bool Logging { get; private set; }
+    /// <summary>The connection ended (rather than never having started), and why, if the engine knows.</summary>
+    public bool Dropped { get; private set; }
+    public string? DropReason { get; private set; }
     /// <summary>New lines since this session's tab was last looked at.</summary>
     public bool Unread { get; private set; }
     public bool Important { get; private set; }
@@ -259,9 +262,9 @@ internal sealed partial class Session
                 case "gmcp" or "received" or "sent":
                     if (HasPages) ToView(o);
                     break;
-                // Still to come on Windows: avatars and inline images.
-                case "line_avatar" or "avatar_updated" or "inline_image":
-                    break;
+                case "line_avatar": Output.SetNextAvatar(o.Get("avatar")); break;
+                case "avatar_updated": Output.UpdateAvatar(o.Get("avatar")); break;
+                case "inline_image": Output.AppendImage(o.Str("url")); break;
                 default:
                     System.Diagnostics.Debug.WriteLine($"Familiar: an output this app doesn't know: {o?.ToJsonString()}");
                     break;
@@ -273,10 +276,18 @@ internal sealed partial class Session
     {
         switch (status.Str("state"))
         {
-            case "connecting": State = ConnectionState.Connecting; break;
-            case "connected": State = ConnectionState.Connected; break;
+            case "connecting":
+                State = ConnectionState.Connecting;
+                Dropped = false;
+                break;
+            case "connected":
+                State = ConnectionState.Connected;
+                Dropped = false;
+                break;
             default:
                 State = ConnectionState.Disconnected;
+                Dropped = true;
+                DropReason = status.OptStr("reason");
                 SaveMap();
                 break;
         }

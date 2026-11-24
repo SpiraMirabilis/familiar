@@ -26,7 +26,19 @@ public sealed partial class MainWindow : Window
         Root.Loaded += (_, _) =>
         {
             var scale = Root.XamlRoot.RasterizationScale;
-            AppWindow.Resize(new Windows.Graphics.SizeInt32((int)(1040 * scale), (int)(720 * scale)));
+            // Where it was last time, or a sensible size the first time.
+            if (!WindowPlacement.Restore(AppWindow)) AppWindow.Resize(new Windows.Graphics.SizeInt32((int)(1040 * scale), (int)(720 * scale)));
+            // Remembered a moment after it stops moving, so it survives however the app ends.
+            var settle = DispatcherQueue.CreateTimer();
+            settle.Interval = TimeSpan.FromMilliseconds(600);
+            settle.IsRepeating = false;
+            settle.Tick += (_, _) => WindowPlacement.Save(AppWindow);
+            AppWindow.Changed += (_, e) =>
+            {
+                if (!e.DidPositionChange && !e.DidSizeChange && !e.DidPresenterChange) return;
+                settle.Stop();
+                settle.Start();
+            };
             // Room for the minimise, maximise and close buttons, which sit over the tab strip.
             Footer.Padding = new Thickness(0, 0, AppWindow.TitleBar.RightInset / scale, 0);
         };
@@ -49,6 +61,7 @@ public sealed partial class MainWindow : Window
         Accelerator((VirtualKey)190, VirtualKeyModifiers.Control, () => Showing?.Session.StopSounds());
         Accelerator((VirtualKey)188, VirtualKeyModifiers.Control, () => OnSettings(this, new RoutedEventArgs()));
         Accelerator(VirtualKey.T, VirtualKeyModifiers.Control, () => OnRules(this, new RoutedEventArgs()));
+        Accelerator(VirtualKey.F, VirtualKeyModifiers.Control, () => ShownOutput?.ShowFind());
         Accelerator(VirtualKey.Tab, VirtualKeyModifiers.Control, () => NextTab(1));
         Accelerator(VirtualKey.Tab, VirtualKeyModifiers.Control | VirtualKeyModifiers.Shift, () => NextTab(-1));
         OpenConnect();
@@ -64,6 +77,14 @@ public sealed partial class MainWindow : Window
         };
         Root.KeyboardAccelerators.Add(accelerator);
     }
+
+    /// <summary>The output of the tab that's showing: a session's or a puppet's.</summary>
+    private OutputView? ShownOutput => (Tabs.SelectedItem as TabViewItem)?.Content switch
+    {
+        SessionView view => view.Output,
+        PuppetView puppet => puppet.Output,
+        _ => null,
+    };
 
     private SessionView? Showing => (Tabs.SelectedItem as TabViewItem)?.Content as SessionView;
 
@@ -173,6 +194,15 @@ public sealed partial class MainWindow : Window
             _ => "\uE774",
         };
         tab.IconSource = new FontIconSource { Glyph = glyph };
+        // The tab says what the icon only hints at.
+        var world = session.Info.Get("world");
+        var note = session.State switch
+        {
+            ConnectionState.Connecting => "Connecting…",
+            ConnectionState.Connected => session.Logging ? "Logging" : "Connected",
+            _ => session.DropReason is { } reason ? $"Disconnected: {reason}" : "Disconnected",
+        };
+        ToolTipService.SetToolTip(tab, $"{world.Str("host")}:{world.Int("port")} — {note}");
         if (ReferenceEquals(Tabs.SelectedItem, tab)) UpdateTitle();
     }
 
@@ -286,7 +316,7 @@ public sealed partial class MainWindow : Window
         (string Keys, string What)[] shortcuts =
         [
             ("Ctrl+O", "Connect to a world"), ("Ctrl+R", "Reconnect"), ("Ctrl+Shift+D", "Disconnect"), ("Ctrl+W", "Close the tab"),
-            ("Ctrl+Tab", "Next tab"), ("Ctrl+Shift+L", "Clear the output"), ("Ctrl+Shift+G", "Log to a file"), ("Ctrl+.", "Stop speaking"),
+            ("Ctrl+Tab", "Next tab"), ("Ctrl+F", "Find in the output"), ("Ctrl+Shift+L", "Clear the output"), ("Ctrl+Shift+G", "Log to a file"), ("Ctrl+.", "Stop speaking"),
             ("Ctrl+T", "Triggers, aliases and macros"), ("Ctrl+,", "Settings"), ("Up, Down", "Earlier and later commands"), ("Shift+Enter", "A new line in the input"),
             ("Page Up, Page Down", "Scroll the output"), ("Escape", "Clear the input"),
         ];
@@ -313,12 +343,14 @@ public sealed partial class MainWindow : Window
         ReconnectItem.IsEnabled = session is not null;
         DisconnectItem.IsEnabled = session?.IsConnected == true;
         ClearItem.IsEnabled = session is not null;
+        FindItem.IsEnabled = ShownOutput is not null;
         LogItem.IsEnabled = session is not null;
         LogItem.IsChecked = session?.Logging == true;
     }
 
     private void OnReconnect(object sender, RoutedEventArgs e) => Showing?.Session.Connect();
     private void OnDisconnect(object sender, RoutedEventArgs e) => Showing?.Session.Disconnect();
+    private void OnFind(object sender, RoutedEventArgs e) => ShownOutput?.ShowFind();
     private void OnClear(object sender, RoutedEventArgs e) => Showing?.Session.Output.Clear();
     private void OnToggleLog(object sender, RoutedEventArgs e) => Showing?.Session.ToggleLog();
     private void OnStopSpeaking(object sender, RoutedEventArgs e) => Core.Send("speech.stop");
@@ -356,6 +388,7 @@ public sealed partial class MainWindow : Window
     }
 
     internal SessionView? CurrentView => Showing;
+    internal OutputView? CurrentOutput => ShownOutput;
     internal void ShowSettings() => OnSettings(this, new RoutedEventArgs());
     internal RulesPage? ShowRules()
     {
