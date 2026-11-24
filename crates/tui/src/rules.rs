@@ -36,6 +36,8 @@ pub struct RulesView {
     pub form: Option<RuleForm>,
     /// Delete was pressed once on the selected row.
     pub delete_armed: bool,
+    /// What the last key did, said in place of the key hints until the next key.
+    pub notice: Option<String>,
 }
 
 fn trigger_summary(t: &Trigger) -> String {
@@ -90,7 +92,7 @@ impl RulesView {
             }
         }
         let scope = preferred.and_then(|p| scopes.iter().position(|s| s == p)).unwrap_or(0);
-        Self { scopes, scope, section: TRIGGERS, selected: 0, form: None, delete_armed: false }
+        Self { scopes, scope, section: TRIGGERS, selected: 0, form: None, delete_armed: false, notice: None }
     }
 
     pub fn scope(&self) -> &Scope {

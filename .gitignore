@@ -12,3 +12,6 @@ dist/
 .env
 
 /macos/.build*/
+
+/windows/**/bin/
+/windows/**/obj/

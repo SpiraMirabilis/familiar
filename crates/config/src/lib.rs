@@ -2,6 +2,7 @@
 
 mod address;
 pub mod directory;
+pub mod examples;
 pub mod paths;
 mod rules;
 

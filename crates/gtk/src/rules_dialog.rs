@@ -82,6 +82,13 @@ pub fn show(parent: &impl IsA<gtk::Widget>, state: Rc<AppState>, preferred: Opti
         .build();
     scope_bar.append(&gtk::Label::new(Some("Applies to")));
     scope_bar.append(&scope_dropdown);
+    let examples = gtk::Button::builder()
+        .label("Add Examples")
+        .tooltip_text("Adds a few triggers, aliases and macros to learn from and change. Triggers and aliases start switched off.")
+        .halign(gtk::Align::End)
+        .hexpand(true)
+        .build();
+    scope_bar.append(&examples);
 
     let toasts = adw::ToastOverlay::new();
     toasts.set_child(Some(&stack));
@@ -118,6 +125,17 @@ pub fn show(parent: &impl IsA<gtk::Widget>, state: Rc<AppState>, preferred: Opti
             this.scope.set(dd.selected() as usize);
             this.refresh();
         }
+    });
+
+    let weak = Rc::downgrade(&this);
+    examples.connect_clicked(move |_| {
+        let Some(this) = weak.upgrade() else { return };
+        let mut added = None;
+        this.update(|rules| added = Some(rules.add_examples()));
+        if let Some(added) = added {
+            this.toast(&added.describe());
+        }
+        this.refresh();
     });
 
     let keep = RefCell::new(Some(this.clone()));

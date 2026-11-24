@@ -3,7 +3,7 @@
 # Familiar
 
 A client for MUDs, MUSHes, MUCKs and MOOs, for Linux, Windows and macOS: a desktop app (GTK 4 on
-Linux and Windows, a native app on macOS) and a full-screen terminal app that share one engine,
+Linux, native apps on Windows and macOS) and a full-screen terminal app that share one engine,
 settings, scripts and maps.
 
 Familiar is inspired by [BeipMU](https://github.com/BeipDev/BeipMU), the Windows client, and can
@@ -29,8 +29,8 @@ isn't affiliated with BeipMU or its developers.
 ## Installing
 
 **Windows:** each release has an installer (`familiar-…-windows-setup.exe`) and a zip of the same
-files (unpack it anywhere and run `Familiar.cmd`). Both contain everything the app needs, GTK
-included, so there is nothing else to install. They also contain the terminal client,
+files (unpack it anywhere and run `Familiar.exe`). Both contain everything the app needs, so
+there is nothing else to install. They also contain the terminal client,
 `familiar-tui.exe`, which is available on its own too: one file with no dependencies, best run in
 Windows Terminal. Windows 10 or newer, 64-bit. See [Windows notes](#windows-notes) for what differs.
 
@@ -180,18 +180,21 @@ Then turn on **Connect through the bouncer** for a world (the world's settings i
 
 ### Windows notes
 
-- **Web views** aren't available (WebKitGTK doesn't exist for Windows). The client tells servers
-  so, and shows a web view's address for opening in a browser.
+The Windows app is written for Windows rather than being the GTK client: C# and WinUI 3, in
+[`windows/`](windows), on the same engine. It follows the system's light and dark modes and accent
+colour, and keeps its worlds in tabs in the title bar.
+
+- **Web views** use WebView2, which is part of Windows 11 and of nearly every Windows 10.
 - **Speech** uses the voice built into Windows instead of speech-dispatcher, and **sounds** play
   through Windows' own audio (WAV, Ogg Vorbis, MP3 and FLAC).
-- **Spell checking** comes with English (US and UK). For other languages, put Hunspell `.aff` and
-  `.dic` files in the `share\hunspell` folder next to the program.
+- **Spell checking** is Windows' own, in whichever languages Windows has installed.
 - **Terminal client:** use Windows Terminal. The console can't tell number pad keys from the main
   ones, so number pad macros only work in the GUI. Without `$EDITOR` set, editing opens Notepad.
   Pasting several lines puts them in the input box rather than sending each one.
-- **Building:** in an [MSYS2](https://www.msys2.org) UCRT64 shell, `packaging/windows/bundle.sh`
-  builds both clients and collects the self-contained folder and zip into `dist/` (the packages it
-  needs are listed at the top of the script). The terminal client alone builds with plain
+- **Building:** `packaging\windows\build.ps1` builds the app and the terminal client and collects
+  the self-contained folder and zip into `dist\`. It needs Rust and the .NET 10 SDK, not Visual
+  Studio. To work on the app, `cargo build -p familiar-bridge` and then `dotnet build
+  windows/Familiar -p:Platform=x64`. The terminal client alone builds with plain
   `cargo build --release -p familiar-tui`, with either the MSVC or the GNU toolchain.
 
 ### macOS notes
@@ -238,13 +241,13 @@ Then turn on **Connect through the bouncer** for a world (the world's settings i
 | `familiar-ansi` | ANSI parser. Supports SGR 16/256/truecolor in both `;` and `:` forms, OSC 8 hyperlinks, and swallows every other CSI/OSC/DCS sequence. Includes plain-URL detection and a palette resolver. |
 | `familiar-net` | Async TCP/TLS (rustls, verified against system certs, with an option to skip verification). Encodings: Auto (UTF-8 with a per-line Windows-1252 fallback, the default), UTF-8, Windows-1252, CP437. A session task turns raw bytes into line, prompt and GMCP events. |
 | `familiar-config` | Worlds, characters, settings and rules (triggers, aliases, macros, variables at global, world and character scope) in `~/.config/familiar/config.toml`, plus a built-in directory of 40 public worlds. |
-| `familiar-engine` | The UI-independent client: per-connection `Engine` that turns network events and input into render outputs. Triggers, aliases, keyboard macros, variables, `/` commands, input history, daily-rotating logs, GMCP (`Beip.Stats`, `Client.Media`, `WebView`), and MCP 2.1 (simpleedit, awns-status, awns-ping, vmoo-client). Shared by both frontends. |
+| `familiar-engine` | The UI-independent client: per-connection `Engine` that turns network events and input into render outputs. Triggers, aliases, keyboard macros, variables, `/` commands, input history, daily-rotating logs, GMCP (`Beip.Stats`, `Client.Media`, `WebView`), and MCP 2.1 (simpleedit, awns-status, awns-ping, vmoo-client). Shared by every frontend. |
 | `familiar-script` | JavaScript scripting with QuickJS: one isolated runtime per connection, a 2-second limit per call and a memory cap. Implements the engine's `ScriptHost` trait, so any frontend gets scripting. |
 | `familiar-map` | World maps: rooms, exits and areas, an automapper for GMCP `Room.Info` (IRE, Aardwolf and BeipMU styles), shortest-path walking, and tracking by room name. |
 | `familiar-import` | Reads BeipMU's `Config.txt` (worlds, characters, puppets, triggers, aliases, macros, variables) and `.atlas` maps (plain or zipped XML), reporting anything that can't be carried over. |
 | `familiar-speech` | Text to speech on a background thread: speech-dispatcher on Linux, the built-in voice on Windows and macOS. |
 | `familiar-platform` | Sounds, notifications, opening links and finding an editor, done each system's way. |
-| `familiar-bridge` | The engine behind a small C interface (a method name and JSON in, JSON out), as a static library. The macOS app, in [`macos/`](macos), is Swift on top of it. |
+| `familiar-bridge` | The engine behind a small C interface (a method name and JSON in, JSON out), as a static library or a DLL. The macOS app, in [`macos/`](macos), is Swift on top of it; the Windows app, in [`windows/`](windows), is C#. |
 | `familiar-code` | Editing support shared by frontends: block-aware auto-indentation for MOO, MUF and Lua. |
 | `familiar-gtk` | GTK4/libadwaita client: a tab per connection, ANSI and full Unicode output with clickable links, a side dock with spawn windows and GMCP stat panes, input with history, password mode, NAWS, logging, sounds (trigger and server-driven), notifications, an MCP status line and text editor, web views, and a rules editor. |
 | `familiar-tui` | Full-screen terminal client (ratatui) on the same engine: tabs, a sidebar with the map, stat bars and spawn windows, a command palette and fuzzy pickers, `/` completion, and `$EDITOR` for MCP editing. |

@@ -30,6 +30,7 @@ impl App {
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
         let count = view.rows(&self.config).len();
         let armed = std::mem::take(&mut view.delete_armed);
+        view.notice = None;
         let rules = self.config.rules_mut(&view.scopes[view.scope]);
         let changed = match key.code {
             KeyCode::Esc => {
@@ -87,6 +88,12 @@ impl App {
                 false
             }
             KeyCode::Char(' ') => rules.is_some_and(|r| view.toggle(r)),
+            // Examples of every kind, to read and change. Triggers and aliases come switched off.
+            KeyCode::Char('x') => rules.is_some_and(|r| {
+                let added = r.add_examples();
+                view.notice = Some(added.describe());
+                added.total() > 0
+            }),
             KeyCode::Char('d') | KeyCode::Delete if armed => rules.is_some_and(|r| view.delete(r)),
             KeyCode::Char('d') | KeyCode::Delete => {
                 view.delete_armed = count > 0;

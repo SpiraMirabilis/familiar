@@ -1,4 +1,5 @@
-//! Familiar's engine behind a C interface, for the macOS app (which is written in Swift).
+//! Familiar's engine behind a C interface, for the apps that aren't written in Rust: the macOS
+//! app (Swift) and the Windows app (C#).
 //!
 //! There is one entry point, [`familiar_call`]: a method name and JSON arguments in, JSON out.
 //! The engine isn't thread-safe and doesn't need to be: every call is made on the main thread,
@@ -9,6 +10,8 @@
 //! Methods that may be called from any thread are marked "(any thread)" in [`call`].
 
 mod json;
+#[cfg(windows)]
+mod windows;
 
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
@@ -389,6 +392,17 @@ impl State {
         }
     }
 
+    fn add_examples(&mut self, args: &Value) -> Reply {
+        let scope = args.get("scope").and_then(json::parse_scope).ok_or("bad \"scope\"")?;
+        let rules = self.config.rules_mut(&scope).ok_or_else(|| format!("{} isn't saved, so it has no rules of its own", scope.label()))?;
+        let added = rules.add_examples();
+        if added.total() > 0 {
+            self.save()?;
+            self.reload_sessions();
+        }
+        Ok(json!({ "added": added.total(), "message": added.describe() }))
+    }
+
     fn call(&mut self, method: &str, args: &Value) -> Reply {
         match method {
             // What the app needs to start: the config, where things are, the colours.
@@ -419,6 +433,10 @@ impl State {
             // Saves the config and has every open session pick it up.
             "config.set" => self.set_config(args),
             "import.beipmu" => self.import_beipmu(args),
+            // Adds the example triggers, aliases, macros and variable that a set of rules doesn't
+            // have yet. "scope" says whose: {"kind": "global"}, or "world" with "world", or
+            // "character" with "world" and "character".
+            "rules.add_examples" => self.add_examples(args),
 
             "session.open" => self.open(args),
             "session.info" => {
@@ -643,6 +661,10 @@ pub fn call(method: &str, args: &Value) -> Reply {
     if MAIN_THREAD.get_or_init(|| std::thread::current().id()) != &std::thread::current().id() {
         return Err(format!("{method} must be called on the main thread"));
     }
+    #[cfg(windows)]
+    if let Some(reply) = windows::call(method, args) {
+        return reply;
+    }
     STATE.with(|state| {
         let mut state = state.try_borrow_mut().map_err(|_| format!("{method} was called from inside another call"))?;
         state.get_or_insert_with(State::new).call(method, args)
@@ -694,6 +716,15 @@ pub unsafe extern "C" fn familiar_free(reply: *mut c_char) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scopes_read_back_as_written() {
+        use familiar_config::Scope;
+        for scope in [Scope::Global, Scope::World { world: "Vale".into() }, Scope::Character { world: "Vale".into(), character: "Mara".into() }] {
+            assert_eq!(json::parse_scope(&json::scope(&scope)), Some(scope));
+        }
+        assert_eq!(json::parse_scope(&json!({ "kind": "world" })), None);
+    }
 
     #[test]
     fn stateless_methods() {

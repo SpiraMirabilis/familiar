@@ -1,0 +1,60 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
+    <RootNamespace>Familiar</RootNamespace>
+    <AssemblyName>Familiar</AssemblyName>
+    <Platforms>x64</Platforms>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>..\..\packaging\windows\familiar.ico</ApplicationIcon>
+    <UseWinUI>true</UseWinUI>
+    <!-- No MSIX: a plain folder of files, with .NET and the Windows App SDK inside it, so
+         there is nothing for the user to install first. -->
+    <WindowsPackageType>None</WindowsPackageType>
+    <!-- Without this, "dotnet publish" leaves out Familiar.pri (the compiled XAML and its
+         resources), and the published app dies as it starts. -->
+    <EnableMsixTooling>true</EnableMsixTooling>
+    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+    <SelfContained>true</SelfContained>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <LangVersion>latest</LangVersion>
+    <Product>Familiar</Product>
+    <Description>Familiar</Description>
+    <!-- Program.cs has the entry point, so starting Familiar twice gives one window. -->
+    <DefineConstants>$(DefineConstants);DISABLE_XAML_GENERATED_MAIN</DefineConstants>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.7.0" />
+    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.28000.2957" />
+    <PackageReference Include="Microsoft.Graphics.Win2D" Version="1.4.0" />
+    <PackageReference Include="CommunityToolkit.WinUI.Controls.SettingsControls" Version="8.2.251219" />
+    <PackageReference Include="CommunityToolkit.WinUI.Controls.Sizers" Version="8.2.251219" />
+    <PackageReference Include="TextControlBox.WinUI.JuliusKirsch" Version="1.7.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The code editor's highlighting is made from the GTK client's language files. -->
+    <EmbeddedResource Include="..\..\crates\gtk\data\language-specs\*.lang" LogicalName="%(Filename).lang" />
+    <Content Include="..\..\packaging\windows\familiar.ico" Link="familiar.ico" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <!-- The Rust engine. Build it first: cargo build [-r] -p familiar-bridge -->
+  <PropertyGroup>
+    <BridgeProfile Condition="'$(Configuration)' == 'Release'">release</BridgeProfile>
+    <BridgeProfile Condition="'$(BridgeProfile)' == ''">debug</BridgeProfile>
+    <BridgeDll Condition="'$(BridgeDll)' == ''">..\..\target\$(BridgeProfile)\familiar_bridge.dll</BridgeDll>
+  </PropertyGroup>
+  <ItemGroup>
+    <None Include="$(BridgeDll)" Link="familiar_bridge.dll" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+  <Target Name="CheckBridge" BeforeTargets="BeforeBuild">
+    <Error Condition="!Exists('$(BridgeDll)')" Text="$(BridgeDll) is missing. Run: cargo build -p familiar-bridge (add --release for a Release build)." />
+  </Target>
+
+</Project>

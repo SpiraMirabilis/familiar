@@ -1,4 +1,4 @@
-; Installer for Familiar. Build the bundle first (packaging/windows/bundle.sh), then:
+; Installer for Familiar. Build the app first (packaging\windows\build.ps1), then:
 ;   iscc /DAppVersion=0.1.0 packaging\windows\familiar.iss
 ; The installer lands in dist\.
 
@@ -23,7 +23,7 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 LicenseFile=..\..\LICENSE
 SetupIconFile=familiar.ico
-UninstallDisplayIcon={app}\bin\familiar.exe
+UninstallDisplayIcon={app}\Familiar.exe
 OutputDir=..\..\dist
 OutputBaseFilename=familiar-{#AppVersion}-x86_64-windows-setup
 Compression=lzma2
@@ -33,34 +33,22 @@ WizardStyle=modern
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; Flags: unchecked
 
+; Before 0.4 the Windows app was the GTK client, in bin, lib and share folders of its own.
+; An upgrade clears those out.
+[InstallDelete]
+Type: filesandordirs; Name: "{app}\bin"
+Type: filesandordirs; Name: "{app}\lib"
+Type: filesandordirs; Name: "{app}\share"
+Type: files; Name: "{app}\Familiar.cmd"
+
 [Files]
 Source: "..\..\dist\familiar\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
 
 [Icons]
 ; The app id ties the shortcut to the program's notifications.
-Name: "{group}\Familiar"; Filename: "{app}\bin\familiar.exe"; AppUserModelID: "io.github.SpiraMirabilis.Familiar"
+Name: "{group}\Familiar"; Filename: "{app}\Familiar.exe"; AppUserModelID: "io.github.SpiraMirabilis.Familiar"
 Name: "{group}\Familiar (terminal)"; Filename: "{app}\familiar-tui.exe"
-Name: "{autodesktop}\Familiar"; Filename: "{app}\bin\familiar.exe"; Tasks: desktopicon; AppUserModelID: "io.github.SpiraMirabilis.Familiar"
+Name: "{autodesktop}\Familiar"; Filename: "{app}\Familiar.exe"; Tasks: desktopicon; AppUserModelID: "io.github.SpiraMirabilis.Familiar"
 
 [Run]
-Filename: "{app}\bin\familiar.exe"; Description: "{cm:LaunchProgram,Familiar}"; Flags: nowait postinstall skipifsilent
-
-[Code]
-// GLib starts a small helper (gdbus.exe, from our bin folder) that outlives the app by a few
-// seconds. While it runs, Windows won't let its files be removed, so uninstalling right after
-// closing Familiar would leave files behind. Stop ours (and only ours) first. Upgrades need
-// nothing: Setup closes programs that are using the files it replaces.
-procedure StopHelper();
-var
-  ResultCode: Integer;
-begin
-  Exec('powershell.exe',
-    '-NoProfile -Command "Get-Process gdbus -ErrorAction SilentlyContinue | Where-Object { $_.Path -like ''' + ExpandConstant('{app}') + '\*'' } | Stop-Process -Force"',
-    '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-end;
-
-procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
-begin
-  if CurUninstallStep = usUninstall then
-    StopHelper();
-end;
+Filename: "{app}\Familiar.exe"; Description: "{cm:LaunchProgram,Familiar}"; Flags: nowait postinstall skipifsilent

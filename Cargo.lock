@@ -763,11 +763,11 @@ checksum = "af9673d8203fcb076b19dfd17e38b3d4ae9f44959416ea532ce72415a6020365"
 
 [[package]]
 name = "familiar-ansi"
-version = "0.3.1"
+version = "0.4.0"
 
 [[package]]
 name = "familiar-bridge"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "familiar-ansi",
  "familiar-code",
@@ -776,7 +776,9 @@ dependencies = [
  "familiar-import",
  "familiar-map",
  "familiar-net",
+ "familiar-platform",
  "familiar-script",
+ "familiar-speech",
  "serde",
  "serde_json",
  "tokio",
@@ -784,7 +786,7 @@ dependencies = [
 
 [[package]]
 name = "familiar-cli"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -797,11 +799,11 @@ dependencies = [
 
 [[package]]
 name = "familiar-code"
-version = "0.3.1"
+version = "0.4.0"
 
 [[package]]
 name = "familiar-config"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "dirs 7.0.0",
  "quick-xml",
@@ -812,7 +814,7 @@ dependencies = [
 
 [[package]]
 name = "familiar-engine"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "base64 0.23.1",
  "chrono",
@@ -831,7 +833,7 @@ dependencies = [
 
 [[package]]
 name = "familiar-gtk"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "familiar-ansi",
  "familiar-code",
@@ -840,7 +842,6 @@ dependencies = [
  "familiar-import",
  "familiar-map",
  "familiar-net",
- "familiar-platform",
  "familiar-script",
  "familiar-speech",
  "gtk4",
@@ -851,12 +852,11 @@ dependencies = [
  "sourceview5",
  "tokio",
  "webkit6",
- "winresource",
 ]
 
 [[package]]
 name = "familiar-import"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "familiar-config",
  "familiar-map",
@@ -867,7 +867,7 @@ dependencies = [
 
 [[package]]
 name = "familiar-map"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "familiar-config",
  "serde",
@@ -876,7 +876,7 @@ dependencies = [
 
 [[package]]
 name = "familiar-net"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "chrono",
  "encoding_rs",
@@ -893,7 +893,7 @@ dependencies = [
 
 [[package]]
 name = "familiar-platform"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "rodio",
  "tauri-winrt-notification",
@@ -901,7 +901,7 @@ dependencies = [
 
 [[package]]
 name = "familiar-script"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "familiar-config",
  "familiar-engine",
@@ -913,7 +913,7 @@ dependencies = [
 
 [[package]]
 name = "familiar-speech"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "ssip-client",
  "windows",
@@ -921,7 +921,7 @@ dependencies = [
 
 [[package]]
 name = "familiar-telnet"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "flate2",
  "serde_json",
@@ -929,7 +929,7 @@ dependencies = [
 
 [[package]]
 name = "familiar-tui"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "clap",
  "familiar-ansi",
@@ -4262,16 +4262,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "80d0f4e272c85def139476380b12f9ac60926689dd2e01d4923222f40580869d"
 dependencies = [
  "winapi",
-]
-
-[[package]]
-name = "winresource"
-version = "0.1.34"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a2bc6d36480b829272a5bdabf08e6dca8004761c1da7e35efef800540c66221b"
-dependencies = [
- "toml",
- "version_check",
 ]
 
 [[package]]

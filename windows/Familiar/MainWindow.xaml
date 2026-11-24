@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Window
+    x:Class="Familiar.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    Title="Familiar">
+    <Window.SystemBackdrop>
+        <MicaBackdrop />
+    </Window.SystemBackdrop>
+    <Grid x:Name="Root">
+        <TabView
+            x:Name="Tabs"
+            VerticalAlignment="Stretch"
+            AddTabButtonClick="OnAddTab"
+            TabCloseRequested="OnTabCloseRequested"
+            SelectionChanged="OnTabSelected"
+            CanReorderTabs="True"
+            CloseButtonOverlayMode="OnPointerOver">
+            <TabView.TabStripHeader>
+                <Image Source="familiar.ico" Width="16" Height="16" Margin="12,0,4,0" VerticalAlignment="Center" />
+            </TabView.TabStripHeader>
+            <TabView.TabStripFooter>
+                <Grid x:Name="Footer" ColumnDefinitions="*,Auto">
+                    <Grid x:Name="DragRegion" Background="Transparent" MinWidth="48" />
+                    <Button
+                        x:Name="MenuButton"
+                        Grid.Column="1"
+                        Style="{ThemeResource CommandBarFlyoutEllipsisButtonStyle}"
+                        Width="40"
+                        Height="32"
+                        VerticalAlignment="Center"
+                        AutomationProperties.Name="Menu"
+                        ToolTipService.ToolTip="Menu">
+                        <FontIcon Glyph="&#xE712;" FontSize="16" />
+                        <Button.Flyout>
+                            <MenuFlyout Placement="BottomEdgeAlignedRight" Opening="OnMenuOpening">
+                                <MenuFlyoutItem Text="Connect…" Click="OnConnect" KeyboardAcceleratorTextOverride="Ctrl+O">
+                                    <MenuFlyoutItem.Icon><FontIcon Glyph="&#xE774;" /></MenuFlyoutItem.Icon>
+                                </MenuFlyoutItem>
+                                <MenuFlyoutItem x:Name="ReconnectItem" Text="Reconnect" Click="OnReconnect" KeyboardAcceleratorTextOverride="Ctrl+R">
+                                    <MenuFlyoutItem.Icon><FontIcon Glyph="&#xE72C;" /></MenuFlyoutItem.Icon>
+                                </MenuFlyoutItem>
+                                <MenuFlyoutItem x:Name="DisconnectItem" Text="Disconnect" Click="OnDisconnect" KeyboardAcceleratorTextOverride="Ctrl+Shift+D">
+                                    <MenuFlyoutItem.Icon><FontIcon Glyph="&#xF384;" /></MenuFlyoutItem.Icon>
+                                </MenuFlyoutItem>
+                                <MenuFlyoutSeparator />
+                                <MenuFlyoutItem x:Name="FindItem" Text="Find…" Click="OnFind" KeyboardAcceleratorTextOverride="Ctrl+F">
+                                    <MenuFlyoutItem.Icon><FontIcon Glyph="&#xE721;" /></MenuFlyoutItem.Icon>
+                                </MenuFlyoutItem>
+                                <MenuFlyoutItem x:Name="ClearItem" Text="Clear Output" Click="OnClear" KeyboardAcceleratorTextOverride="Ctrl+Shift+L">
+                                    <MenuFlyoutItem.Icon><FontIcon Glyph="&#xE894;" /></MenuFlyoutItem.Icon>
+                                </MenuFlyoutItem>
+                                <ToggleMenuFlyoutItem x:Name="LogItem" Text="Log to File" Click="OnToggleLog" KeyboardAcceleratorTextOverride="Ctrl+Shift+G" />
+                                <MenuFlyoutItem Text="Open Log Folder" Click="OnOpenLogFolder">
+                                    <MenuFlyoutItem.Icon><FontIcon Glyph="&#xE838;" /></MenuFlyoutItem.Icon>
+                                </MenuFlyoutItem>
+                                <MenuFlyoutItem Text="Stop Speaking" Click="OnStopSpeaking" KeyboardAcceleratorTextOverride="Ctrl+.">
+                                    <MenuFlyoutItem.Icon><FontIcon Glyph="&#xE74F;" /></MenuFlyoutItem.Icon>
+                                </MenuFlyoutItem>
+                                <MenuFlyoutSeparator />
+                                <MenuFlyoutItem Text="Triggers, Aliases &amp; Macros" Click="OnRules" KeyboardAcceleratorTextOverride="Ctrl+T">
+                                    <MenuFlyoutItem.Icon><FontIcon Glyph="&#xE945;" /></MenuFlyoutItem.Icon>
+                                </MenuFlyoutItem>
+                                <MenuFlyoutItem Text="Settings" Click="OnSettings" KeyboardAcceleratorTextOverride="Ctrl+,">
+                                    <MenuFlyoutItem.Icon><FontIcon Glyph="&#xE713;" /></MenuFlyoutItem.Icon>
+                                </MenuFlyoutItem>
+                                <MenuFlyoutItem Text="Import from BeipMU…" Click="OnImport">
+                                    <MenuFlyoutItem.Icon><FontIcon Glyph="&#xE8B5;" /></MenuFlyoutItem.Icon>
+                                </MenuFlyoutItem>
+                                <MenuFlyoutItem Text="Keyboard Shortcuts" Click="OnShortcuts">
+                                    <MenuFlyoutItem.Icon><FontIcon Glyph="&#xE765;" /></MenuFlyoutItem.Icon>
+                                </MenuFlyoutItem>
+                                <MenuFlyoutItem Text="About Familiar" Click="OnAbout">
+                                    <MenuFlyoutItem.Icon><FontIcon Glyph="&#xE946;" /></MenuFlyoutItem.Icon>
+                                </MenuFlyoutItem>
+                            </MenuFlyout>
+                        </Button.Flyout>
+                    </Button>
+                </Grid>
+            </TabView.TabStripFooter>
+        </TabView>
+
+    </Grid>
+</Window>

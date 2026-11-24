@@ -1,7 +1,18 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 (2026-11-24)
 
+- Every client: the triggers, aliases and macros editor can add a set of examples to learn
+  from ("Add Examples"; `x` in the terminal client). They aren't for any one game: each shows
+  one thing, from highlighting a word to answering with what a regular expression matched,
+  aliases with `$1` and `$*`, and a macro that types into the input box. Triggers and aliases
+  arrive switched off, and nothing already there is replaced.
+- Windows: a native app, written for Windows 11 (C# and WinUI 3) on the same engine, in place
+  of the GTK client. It follows the system's light and dark modes, keeps worlds in title-bar
+  tabs, and has what the GTK client lacked there: web views (through WebView2) and spell
+  checking in every language Windows has. Ctrl+F finds text in the output, a bar says why a
+  connection ended and offers to reconnect, and the window opens where it was last time. The
+  installer upgrades an older install in place.
 - Terminal client: `/editor syntax` installs MOO highlighting for `$EDITOR`: a syntax file for
   micro, a `moo-mode` for Emacs (which also indents blocks, and needs one line in your init
   file, which it shows), or for Vim and Neovim, a fuller one than they ship (Stunt's
