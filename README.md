@@ -134,7 +134,7 @@ A puppet is a second character you control through your main connection, such as
 
 ### Bouncer
 
-Familiar can connect through mbnc, a bouncer for M*s: it stays connected to the world while you're away, logs back in if the world drops you, and replays what you missed, with timestamps, when you come back. Set it up once in `config.toml`:
+Familiar can connect through mbnc (https://github.com/SpiraMirabilis/moo-bnc), a bouncer for M*s: it stays connected to the world while you're away, logs back in if the world drops you, and replays what you missed, with timestamps, when you come back. Set it up once in `config.toml`:
 
 ```toml
 [bouncer]
