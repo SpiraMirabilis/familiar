@@ -1,4 +1,5 @@
-//! Familiar's engine behind a C interface, for the macOS app (which is written in Swift).
+//! Familiar's engine behind a C interface, for the apps that aren't written in Rust: the macOS
+//! app (Swift) and the Windows app (C#).
 //!
 //! There is one entry point, [`familiar_call`]: a method name and JSON arguments in, JSON out.
 //! The engine isn't thread-safe and doesn't need to be: every call is made on the main thread,
@@ -9,6 +10,8 @@
 //! Methods that may be called from any thread are marked "(any thread)" in [`call`].
 
 mod json;
+#[cfg(windows)]
+mod windows;
 
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
@@ -642,6 +645,10 @@ pub fn call(method: &str, args: &Value) -> Reply {
     }
     if MAIN_THREAD.get_or_init(|| std::thread::current().id()) != &std::thread::current().id() {
         return Err(format!("{method} must be called on the main thread"));
+    }
+    #[cfg(windows)]
+    if let Some(reply) = windows::call(method, args) {
+        return reply;
     }
     STATE.with(|state| {
         let mut state = state.try_borrow_mut().map_err(|_| format!("{method} was called from inside another call"))?;

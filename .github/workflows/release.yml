@@ -47,35 +47,30 @@ jobs:
           manifest-path: packaging/flatpak/io.github.SpiraMirabilis.Familiar.yml
           cache-key: flatpak-builder-${{ github.sha }}
 
-  # The GTK client with everything it needs (zip and installer), and the terminal client alone.
+  # The Windows app with everything it needs (zip and installer), and the terminal client alone.
   windows:
     runs-on: windows-latest
     defaults:
       run:
-        shell: msys2 {0}
+        shell: pwsh
     steps:
       - uses: actions/checkout@v7
-      - uses: msys2/setup-msys2@v2
+      - uses: actions/setup-dotnet@v5
         with:
-          msystem: UCRT64
-          update: true
-          install: >-
-            zip mingw-w64-ucrt-x86_64-gtk4 mingw-w64-ucrt-x86_64-libadwaita mingw-w64-ucrt-x86_64-gtksourceview5
-            mingw-w64-ucrt-x86_64-libspelling mingw-w64-ucrt-x86_64-librsvg mingw-w64-ucrt-x86_64-pkgconf
-            mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-rust mingw-w64-ucrt-x86_64-hunspell-en
-            mingw-w64-ucrt-x86_64-adwaita-icon-theme mingw-w64-ucrt-x86_64-ntldd
-      - name: Build and bundle
-        run: packaging/windows/bundle.sh
+          dotnet-version: 10.0.x
+      - name: Build
+        run: packaging\windows\build.ps1
       - name: Installer
-        shell: pwsh
         run: |
           choco install innosetup --no-progress -y
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /Q "/DAppVersion=$($env:GITHUB_REF_NAME.TrimStart('v'))" packaging\windows\familiar.iss
       - name: Terminal client and checksums
         run: |
-          cd dist
-          cp familiar/familiar-tui.exe "familiar-tui-${GITHUB_REF_NAME#v}-x86_64-windows.exe"
-          for file in familiar-*-windows*.zip familiar-*-windows*.exe; do sha256sum "$file" > "$file.sha256"; done
+          Set-Location dist
+          Copy-Item familiar\familiar-tui.exe "familiar-tui-$($env:GITHUB_REF_NAME.TrimStart('v'))-x86_64-windows.exe"
+          Get-ChildItem familiar-*-windows*.zip, familiar-*-windows*.exe | ForEach-Object {
+            "$((Get-FileHash $_ -Algorithm SHA256).Hash.ToLower())  $($_.Name)" | Set-Content -NoNewline "$($_.Name).sha256"
+          }
       - uses: actions/upload-artifact@v7
         with:
           name: windows

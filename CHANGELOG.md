@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Windows: a native app, written for Windows 11 (C# and WinUI 3) on the same engine, in place
+  of the GTK client. It follows the system's light and dark modes, keeps worlds in title-bar
+  tabs, and has what the GTK client lacked there: web views (through WebView2) and spell
+  checking in every language Windows has. The installer upgrades an older install in place.
+  Avatars and pictures under links aren't shown yet.
 - Terminal client: `/editor syntax` installs MOO highlighting for `$EDITOR`: a syntax file for
   micro, a `moo-mode` for Emacs (which also indents blocks, and needs one line in your init
   file, which it shows), or for Vim and Neovim, a fuller one than they ship (Stunt's

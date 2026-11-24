@@ -41,13 +41,11 @@ separate from a native install. Text to speech uses the host's speech-dispatcher
 
 ## Windows (`windows/`)
 
-`bundle.sh` runs in an MSYS2 UCRT64 shell. It builds the GTK client (without web views, which need
-WebKitGTK) and the terminal client, then copies them into `dist/familiar/` with every DLL they load
-and the data GTK needs at runtime: icon themes, GSettings schemas, GtkSourceView's languages and
-styles, the image loaders, and the spell checker's Hunspell provider with English dictionaries.
-The layout mirrors MSYS2's (`bin/`, `lib/`, `share/`) because the libraries find their data relative
-to the `bin` folder their DLLs are in; a flat folder breaks the spell checker. Sound doesn't go
-through GStreamer on Windows, so none of its plugins are shipped.
+`build.ps1` builds the engine as a DLL (`familiar_bridge.dll`) and the terminal client with Cargo,
+then publishes the app in [`windows/`](../windows) (C#, WinUI 3) on top of them into
+`dist\familiar\`, and zips it. It needs Rust and the .NET 10 SDK; Visual Studio isn't needed. The
+folder is self-contained: .NET and the Windows App SDK are in it, so a PC needs nothing installed
+first. Web views use WebView2, which Windows already has.
 
 `familiar.iss` turns that folder into an installer with [Inno Setup](https://jrsoftware.org/isinfo.php):
 `iscc /DAppVersion=X.Y.Z packaging\windows\familiar.iss`. It installs per user without
@@ -58,8 +56,8 @@ magick -background none -density 384 data/io.github.SpiraMirabilis.Familiar.svg 
   -define icon:auto-resize=256,128,64,48,32,24,16 packaging/windows/familiar.ico
 ```
 
-Test a bundle on a Windows without MSYS2 on `PATH`, since a missing DLL or data file only shows
-there. The files aren't code-signed, so Windows SmartScreen warns on first run.
+The script stops if the engine's DLL needs MinGW's runtime libraries, which only the PC that built
+it would have. The files aren't code-signed, so Windows SmartScreen warns on first run.
 
 ## macOS (`macos/`)
 

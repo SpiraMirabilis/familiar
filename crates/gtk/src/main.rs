@@ -1,7 +1,5 @@
 //! GTK4 MU* client.
 
-// A release build on Windows is a GUI program: no console window opens behind it.
-#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 // Optional callback slots (`RefCell<Option<Box<dyn Fn(..)>>>`) are the norm in GTK code.
 #![allow(clippy::type_complexity)]
 

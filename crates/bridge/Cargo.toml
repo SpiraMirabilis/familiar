@@ -3,7 +3,7 @@ name = "familiar-bridge"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Familiar's engine behind a small C interface, for front ends that aren't written in Rust (the macOS app)"
+description = "Familiar's engine behind a small C interface, for front ends that aren't written in Rust (the macOS and Windows apps)"
 authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
@@ -11,7 +11,7 @@ rust-version.workspace = true
 publish = false
 
 [lib]
-crate-type = ["staticlib", "rlib"]
+crate-type = ["staticlib", "cdylib", "rlib"]
 
 [dependencies]
 familiar-ansi = { version = "0.3.1", path = "../ansi" }
@@ -25,3 +25,8 @@ familiar-script = { version = "0.3.1", path = "../script" }
 serde = "1.0.229"
 serde_json = { version = "1.0.154", features = ["preserve_order"] }
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "net", "time", "sync"] }
+
+# Sounds, speech and notifications for the Windows app, which leaves them to us.
+[target.'cfg(windows)'.dependencies]
+familiar-platform = { version = "0.3.1", path = "../platform" }
+familiar-speech = { version = "0.3.1", path = "../speech" }

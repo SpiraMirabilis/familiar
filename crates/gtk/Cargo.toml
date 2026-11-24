@@ -26,7 +26,6 @@ familiar-config = { version = "0.3.1", path = "../config" }
 familiar-engine = { version = "0.3.1", path = "../engine" }
 familiar-import = { version = "0.3.1", path = "../import" }
 familiar-map = { version = "0.3.1", path = "../map" }
-familiar-platform = { version = "0.3.1", path = "../platform" }
 familiar-net = { version = "0.3.1", path = "../net" }
 familiar-script = { version = "0.3.1", path = "../script" }
 familiar-speech = { version = "0.3.1", path = "../speech" }
@@ -42,7 +41,3 @@ default = ["webview", "spelling"]
 spelling = ["dep:libspelling"]
 # Embedded web views (GMCP webview.open, /webview). Needs WebKitGTK 6 (webkitgtk-6.0).
 webview = ["dep:webkit6", "dep:serde_json"]
-
-# The .exe's icon and version details.
-[target.'cfg(windows)'.build-dependencies]
-winresource = "0.1"

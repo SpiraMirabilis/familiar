@@ -411,10 +411,6 @@ impl SessionView {
                 Output::PasswordMode(on) => self.input.set_password_mode(on),
                 Output::Status(status) => self.set_status(&status),
                 Output::Activity { important } => self.mark_activity(important),
-                // GLib has no notification backend on Windows.
-                #[cfg(windows)]
-                Output::Notify { title, body } => familiar_platform::notify(crate::APP_NAME, &title, &body),
-                #[cfg(not(windows))]
                 Output::Notify { title, body } => {
                     let notification = gio::Notification::new(&title);
                     notification.set_body(Some(&body));
@@ -934,8 +930,7 @@ impl SessionView {
         let WebViewCommand::Open(open) = command else { return };
         let who = if open.from_server { "The server wants" } else { "You asked" };
         self.output.notice(&format!(
-            "{who} to open a web view, but this build doesn't include them{}.",
-            if cfg!(windows) { " (they aren't available on Windows)" } else { ". Install webkitgtk-6.0 and build with --features webview" }
+            "{who} to open a web view, but this build doesn't include them. Install webkitgtk-6.0 and build with --features webview."
         ));
         if let Some(url) = open.url {
             let mut line = familiar_ansi::StyledLine::plain(format!("Open {url} in your browser instead"));

@@ -9,13 +9,11 @@ use gtk::glib;
 use gtk::prelude::*;
 use familiar_engine::media::{MediaCommand, fetch};
 
-#[cfg(not(windows))]
 /// A one-line explanation of a playback error. GStreamer's own messages are long and technical.
 pub fn describe_error(name: &str, error: &glib::Error) -> String {
     let message = error.message();
     if message.contains("missing a plug-in") || message.contains("No suitable plugins") {
-        let fix = if cfg!(windows) { "" } else { " Installing gst-plugins-good (WAV, MP3 and audio output) usually fixes this." };
-        format!("Couldn't play {name}: GStreamer has no decoder or audio output for it.{fix}")
+        format!("Couldn't play {name}: GStreamer has no decoder or audio output for it. Installing gst-plugins-good (WAV, MP3 and audio output) usually fixes this.")
     } else {
         format!("Couldn't play {name}: {}", message.lines().next().unwrap_or(message))
     }
@@ -89,12 +87,9 @@ impl MediaPlayer {
     }
 }
 
-/// One playing sound. GTK's media support (GStreamer) does the work on Linux; on Windows that
-/// would mean shipping GStreamer and its plugins, so sounds go through the platform player.
-#[cfg(not(windows))]
+/// One playing sound, played by GTK's media support (GStreamer).
 pub struct Clip(gtk::MediaFile);
 
-#[cfg(not(windows))]
 impl Clip {
     /// Starts playing. `loops` below zero repeats until stopped. `notice` reports problems.
     pub fn play(name: &str, path: &std::path::Path, volume: f64, loops: i32, notice: Rc<dyn Fn(String)>) -> Option<Self> {
@@ -132,43 +127,5 @@ impl Clip {
 
     pub fn is_finished(&self) -> bool {
         self.0.is_ended() || self.0.error().is_some()
-    }
-}
-
-#[cfg(windows)]
-pub struct Clip(String);
-
-#[cfg(windows)]
-fn player() -> &'static familiar_platform::SoundPlayer {
-    static PLAYER: std::sync::OnceLock<familiar_platform::SoundPlayer> = std::sync::OnceLock::new();
-    PLAYER.get_or_init(familiar_platform::SoundPlayer::new)
-}
-
-#[cfg(windows)]
-impl Clip {
-    /// Starts playing. `loops` below zero repeats until stopped. `notice` reports problems.
-    pub fn play(name: &str, path: &std::path::Path, volume: f64, loops: i32, notice: Rc<dyn Fn(String)>) -> Option<Self> {
-        // Each clip gets a key of its own, so stopping one never stops another of the same name.
-        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let key = format!("{name}#{}", NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
-        match player().play_loops(&key, path, volume, loops) {
-            Ok(()) => Some(Self(key)),
-            Err(e) => {
-                notice(e);
-                None
-            }
-        }
-    }
-
-    pub fn stop(&self) {
-        player().stop(Some(&self.0));
-    }
-
-    pub fn is_playing(&self) -> bool {
-        player().is_playing(&self.0)
-    }
-
-    pub fn is_finished(&self) -> bool {
-        !self.is_playing()
     }
 }
