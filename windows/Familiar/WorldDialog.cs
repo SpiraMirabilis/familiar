@@ -37,7 +37,7 @@ internal static class WorldDialog
         form.Children.Add(encoding);
 
         form.Children.Add(Form.Heading("Programs and scripts"));
-        var language = Form.Choice("Program language", [("MOO", ""), ("MUF", "muf"), ("Lua", "lua")], draft.Str("program_language"), v => draft["program_language"] = v);
+        var language = Form.Choice("Program language", new[] { ("MOO", ""), ("MUF", "muf"), ("Lua", "lua") }, draft.Str("program_language"), v => draft["program_language"] = v);
         ToolTipService.SetToolTip(language, "For the code editor (MCP simpleedit and /edit)");
         form.Children.Add(language);
         var script = Form.Text(draft, "script", "Script file", "Optional");
@@ -54,7 +54,7 @@ internal static class WorldDialog
         scriptRow.Children.Add(choose);
         form.Children.Add(scriptRow);
         var web = draft.IsNull("allow_webviews") ? "ask" : draft.Bool("allow_webviews") ? "allow" : "block";
-        form.Children.Add(Form.Choice("Web views from the server", [("Ask", "ask"), ("Allow", "allow"), ("Block", "block")], web, v =>
+        form.Children.Add(Form.Choice("Web views from the server", new[] { ("Ask", "ask"), ("Allow", "allow"), ("Block", "block") }, web, v =>
         {
             if (v == "ask") draft.Remove("allow_webviews");
             else draft["allow_webviews"] = v == "allow";
