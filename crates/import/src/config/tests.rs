@@ -112,6 +112,8 @@ Connections
         {
           Name="Bob"
           Connect="connect %NAME% %PASSWORD%"
+          LogFileName="d:\\logfiles\\StH.log"
+          LogFileNameTimeFormat=1
           Variables
           {
             {
@@ -183,6 +185,9 @@ Connections
     let bob = &w.characters[0];
     assert_eq!((bob.name.as_str(), bob.login.as_str()), ("Bob", "connect Bob %PASSWORD%"), "no password: left as it is");
     assert_eq!(bob.rules.variables.get("target").map(String::as_str), Some("orc"));
+    let log = if cfg!(windows) { r"d:\logfiles\StH.log" } else { "StH.log" };
+    assert_eq!((bob.log_file.as_str(), bob.log_date, bob.restore_log), (log, true, true), "RestoreLog is on unless it was switched off");
+    assert_eq!(imported.warnings.iter().any(|w| w.contains("logs to StH.log in the logs folder")), !cfg!(windows));
     let zed = &bob.puppets[0];
     assert_eq!((zed.name.as_str(), zed.receive_prefix.as_str(), zed.regex, zed.auto_open), ("Zed", "^Zed> ", true, false));
     assert!(imported.warnings.iter().any(|w| w.contains("Puppet \"Zed\"")));

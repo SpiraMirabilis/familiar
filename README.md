@@ -130,11 +130,15 @@ The map tab appears in the side dock once a world has rooms. If the game sends G
 
 ### Importing from BeipMU
 
-Main menu → **Import from BeipMU…** and choose BeipMU's `Config.txt` (BeipMU keeps it in `%APPDATA%\BeipMU`, which under Wine is `~/.wine/drive_c/users/$USER/AppData/Roaming/BeipMU/`, or next to `BeipMU.exe`). Worlds, characters (logins with `%NAME%`/`%PASSWORD%` filled in), puppets, triggers, aliases, keyboard macros and character variables are added; worlds you already have are skipped, so importing again is safe. BeipMU's startup script is copied to `startup.js` if it's next to `Config.txt` and you don't have one. A list at the end says what couldn't be carried over: nested triggers become flat (and say so), "away" triggers come in switched off, Windows sound paths need changing, and hash colours, paragraph styling, stat updates, multi-line captures and per-puppet rules have no equivalent.
+Main menu → **Import from BeipMU…** and choose BeipMU's `Config.txt` (BeipMU keeps it in `%APPDATA%\BeipMU`, which under Wine is `~/.wine/drive_c/users/$USER/AppData/Roaming/BeipMU/`, or next to `BeipMU.exe`). Worlds, characters (logins with `%NAME%`/`%PASSWORD%` filled in, and their log files), puppets, triggers, aliases, keyboard macros and character variables are added; worlds you already have are skipped, so importing again is safe. BeipMU's startup script is copied to `startup.js` if it's next to `Config.txt` and you don't have one. A list at the end says what couldn't be carried over: nested triggers become flat (and say so), "away" triggers come in switched off, Windows sound and log paths need changing (a log file keeps its name, in the logs folder), and hash colours, paragraph styling, stat updates, multi-line captures and per-puppet rules have no equivalent.
 
 ### Puppets
 
 A puppet is a second character you control through your main connection, such as a MUCK zombie or a MUSH puppet, with its own tab (as in BeipMU). Add puppets to a character in the Connect dialog (edit the world). Lines starting with the puppet's receive prefix (plain text, or a regex whose group is the part to hide) go to its tab instead of the main window, and what you type there is sent with its send prefix, such as `z1 `. Tabs open when the puppet hears something, when the character connects, or with `/puppet name`, and they close with the character.
+
+### Logs
+
+Ctrl+Shift+G (or `/log`) starts and stops a log in the logs folder, one file per world per day. A character can also log by itself, as in BeipMU: give it a **log file** in the Connect dialog (edit the world), and it logs there whenever it connects, unless a log is already running. A name without a folder goes in the logs folder, and `~` is your home folder. **Put the date in the log's name** makes `Bob.log` into `Bob-2024-12-09.log`, with a new file each day. **Restore the log** keeps the end of the character's output (256 KB, with its colours) and shows it again when the character's tab opens, so you can see where you left off. In `config.toml` these are `log_file`, `log_date` and `restore_log` under `[[world.character]]`.
 
 ### Bouncer
 
@@ -236,8 +240,11 @@ colour, and keeps its worlds in tabs in the title bar.
 - **Option as Alt in the terminal client:** macOS terminals type symbols with Option (Option+1
   is `¡`) unless told to send it as Alt, so the Alt shortcuts need a setting: "Use Option as
   Meta key" in Terminal.app's profile, "Esc+" for the Option keys in iTerm2's profile, or
-  `macos-option-as-alt = true` in Ghostty's config. Option+← and → usually stay the terminal's
-  own word movement even then; Ctrl+PgUp and Ctrl+PgDn (or Alt+1…9) switch tabs.
+  `macos-option-as-alt = true` in Ghostty's config. Option+← and → switch tabs with or without
+  that setting. (Mac terminals send them as Esc b and Esc f, readline's word movement, so Alt+B
+  and Alt+F switch tabs too on a Mac, and the input moves by word with Ctrl+← and →.) In a
+  program editor's tab, Option+← and → are the editor's; Ctrl+PgUp and Ctrl+PgDn (or Alt+1…9)
+  switch tabs from there.
 - The **terminal client** needs nothing installed. Its sounds play through `afplay`, once each.
   Terminal.app before macOS 26 only shows 256 colours; iTerm2, Ghostty, kitty and WezTerm show
   them all, and report Shift+Enter and number pad keys separately.

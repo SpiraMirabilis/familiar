@@ -64,6 +64,15 @@ public sealed partial class MainWindow : Window
         Accelerator(VirtualKey.F, VirtualKeyModifiers.Control, () => ShownOutput?.ShowFind());
         Accelerator(VirtualKey.Tab, VirtualKeyModifiers.Control, () => NextTab(1));
         Accelerator(VirtualKey.Tab, VirtualKeyModifiers.Control | VirtualKeyModifiers.Shift, () => NextTab(-1));
+        // Alt+← and → switch tabs, as in the terminal client. They're caught on the way down,
+        // before the tab strip (which moves between tabs' buttons with the arrow keys) or
+        // anything else can take them; unused, Windows only beeps at them.
+        Root.PreviewKeyDown += (_, e) =>
+        {
+            if (e.Key is not (VirtualKey.Left or VirtualKey.Right) || !(Keys.Alt || e.KeyStatus.IsMenuKeyDown) || Keys.Ctrl || Keys.Shift) return;
+            NextTab(e.Key == VirtualKey.Right ? 1 : -1);
+            e.Handled = true;
+        };
         OpenConnect();
     }
 
