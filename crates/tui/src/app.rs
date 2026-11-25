@@ -20,7 +20,7 @@ use crate::syntax::{Editor, Installed};
 use crate::rules::RulesView;
 use crate::term::{PtyEvent, PtySender, Term};
 use crate::form::{FieldKind, WorldForm};
-use crate::fuzzy;
+use familiar_engine::fuzzy;
 use crate::keyboard::KeysView;
 use crate::input::Input;
 use crate::session::{Effect, Panel, Session};

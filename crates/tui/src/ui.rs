@@ -1036,11 +1036,12 @@ fn draw_find(f: &mut Frame, app: &App, find: &Find, area: Rect) {
         (false, 0) => Span::styled(" no matches ", Style::new().fg(BAD)),
         (false, _) => Span::styled(format!(" {n} of {total} "), theme::muted()),
     };
-    let mut right = vec![count, key_hint("Enter ↑"), Span::styled(" older  ", theme::faint()), key_hint("↓"), Span::styled(" newer  ", theme::faint())];
-    if let Some(key) = app.key_for("find-next") {
-        right.extend([key_hint_owned(key), Span::styled(" next  ", theme::faint())]);
-    }
-    right.extend([key_hint("Esc"), Span::styled(" close ", theme::faint())]);
+    // Find Next goes to newer matches, as ↓ does.
+    let newer = match app.key_for("find-next") {
+        Some(key) => key_hint_owned(format!("↓ {key}")),
+        None => key_hint("↓"),
+    };
+    let right = vec![count, key_hint("Enter ↑"), Span::styled(" older  ", theme::faint()), newer, Span::styled(" newer  ", theme::faint()), key_hint("Esc"), Span::styled(" close ", theme::faint())];
     let right = Line::from(right);
     let [l, r] = Layout::horizontal([Constraint::Min(10), Constraint::Length(right.width() as u16)]).areas(area);
     let label = " Find in the output: ";

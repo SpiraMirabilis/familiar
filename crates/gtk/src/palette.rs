@@ -7,7 +7,7 @@ use std::rc::Rc;
 use adw::prelude::*;
 use gtk::{gdk, glib};
 
-use crate::fuzzy;
+use familiar_engine::fuzzy;
 
 /// The most rows shown at once. The history can hold far more than anyone scrolls through.
 const MAX_ROWS: usize = 300;

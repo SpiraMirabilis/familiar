@@ -8,7 +8,6 @@ mod code_editor;
 mod connect_dialog;
 mod find_bar;
 mod font_row;
-mod fuzzy;
 mod images;
 mod import;
 mod input;

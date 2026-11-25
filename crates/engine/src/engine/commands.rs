@@ -35,7 +35,7 @@ impl Engine {
     pub fn submit(&mut self, text: &str, secret: bool) -> Vec<Output> {
         let mut out = Vec::new();
         if !self.is_connected() && !text.starts_with('/') {
-            out.push(Output::Notice("Not connected. Press Ctrl+R or type /reconnect to reconnect.".into()));
+            out.push(Output::Notice(format!("Not connected. {}", self.reconnect_hint())));
             return out;
         }
         if secret {
@@ -92,7 +92,7 @@ impl Engine {
                 out.push(Output::Echo(command.to_string()));
             }
         } else {
-            out.push(Output::Notice("Not connected. Press Ctrl+R or type /reconnect to reconnect.".into()));
+            out.push(Output::Notice(format!("Not connected. {}", self.reconnect_hint())));
         }
     }
 

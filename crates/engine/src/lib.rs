@@ -4,6 +4,7 @@
 
 mod engine;
 pub mod expand;
+pub mod fuzzy;
 pub mod history;
 mod keys;
 pub mod keymap;

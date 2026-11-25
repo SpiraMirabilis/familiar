@@ -5,7 +5,6 @@ mod buffer;
 mod clipboard;
 mod editor;
 mod form;
-mod fuzzy;
 mod input;
 mod keyboard;
 mod keys;

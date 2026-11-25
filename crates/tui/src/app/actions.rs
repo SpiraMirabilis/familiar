@@ -45,8 +45,10 @@ impl App {
             "next-tab" if !self.tabs.is_empty() => self.switch_to((self.active + 1) % self.tabs.len()),
             "prev-tab" if !self.tabs.is_empty() => self.switch_to((self.active + self.tabs.len() - 1) % self.tabs.len()),
             "find" => self.open_find(),
-            "find-next" => self.find_again(true),
-            "find-previous" => self.find_again(false),
+            // A search starts at the newest match, so Find Next goes on to newer ones and Find
+            // Previous back to older ones, as in the desktop apps.
+            "find-next" => self.find_again(false),
+            "find-previous" => self.find_again(true),
             "clear" => {
                 if let Some(b) = self.current_buffer() {
                     b.clear();
@@ -151,7 +153,7 @@ impl App {
         }
     }
 
-    /// Find Next (older) or Previous (newer), reopening the last search if the bar is closed.
+    /// Find Previous (`older`) or Next, reopening the last search if the bar is closed.
     fn find_again(&mut self, older: bool) {
         if !matches!(self.overlay, Some(Overlay::Find(_))) {
             let buffer = self.current_buffer().map(|b| b.id);
@@ -232,8 +234,8 @@ impl App {
                 // Find Next and Previous step through the matches; another shortcut closes the
                 // bar and does what it does.
                 match chord(&key).and_then(|c| self.keymap.lookup(Scope::Window, &c)) {
-                    Some("find-next") => self.find_step(Some(true)),
-                    Some("find-previous") => self.find_step(Some(false)),
+                    Some("find-next") => self.find_step(Some(false)),
+                    Some("find-previous") => self.find_step(Some(true)),
                     Some("find") => {}
                     Some(_) => {
                         self.close_find();
