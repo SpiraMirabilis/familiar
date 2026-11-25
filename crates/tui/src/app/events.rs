@@ -2,9 +2,6 @@
 
 use super::*;
 
-/// Option+← and → reach the terminal client on a Mac as Alt+B and Alt+F.
-const MAC_OPTION_ARROWS: bool = cfg!(target_os = "macos");
-
 impl App {
     pub fn on_event(&mut self, event: Event) {
         match event {
@@ -21,6 +18,9 @@ impl App {
                     self.picker_query_changed();
                 } else if let Some(Overlay::Rules(view)) = &mut self.overlay {
                     view.paste(&text);
+                } else if let Some(Overlay::Find(find)) = &mut self.overlay {
+                    find.query.insert(&text.replace(['\r', '\n'], " "));
+                    self.find_step(None);
                 } else if self.overlay.is_some() {
                 } else if let Some(editor) = self.focused_editor() {
                     editor.term.paste(&text);
@@ -42,19 +42,14 @@ impl App {
         if self.overlay.is_some() {
             return self.on_overlay_key(key);
         }
+        let pressed = chord(&key);
+        let action = pressed.as_ref().and_then(|c| self.keymap.lookup(Scope::Window, c));
         // An editor gets every key but the ones that switch tabs, the one that moves it and
         // (beside a world) the ones that go back to the world.
         if let Some((id, docked)) = self.focused_editor().map(|e| (e.id, e.docked.is_some())) {
-            match key.code {
-                KeyCode::F(7) => self.move_editor(),
-                KeyCode::F(6) if docked => self.toggle_editor_focus(),
-                KeyCode::Char('0') if alt && docked => self.toggle_editor_focus(),
-                KeyCode::Char(c @ '1'..='9') if alt => self.switch_to(c as usize - '1' as usize),
-                KeyCode::Right if alt => self.run(Cmd::NextTab),
-                KeyCode::Left if alt => self.run(Cmd::PrevTab),
-                KeyCode::PageDown if ctrl => self.run(Cmd::NextTab),
-                KeyCode::PageUp if ctrl => self.run(Cmd::PrevTab),
-                _ => {
+            match action.filter(|a| pressed.as_ref().is_some_and(|c| reaches_past_editor(a, c, docked))) {
+                Some(action) => self.run(action),
+                None => {
                     if let Some(editor) = self.editors.iter_mut().find(|e| e.id == id) {
                         editor.term.key(key);
                     }
@@ -62,60 +57,27 @@ impl App {
             }
             return;
         }
-        // Keys that work everywhere.
-        match key.code {
-            KeyCode::Char('c') if ctrl => {
-                match self.current_input() {
-                    Some(input) if !input.is_empty() => {
-                        input.take(false);
-                    }
-                    _ => self.arm_quit(),
+        // Ctrl+C clears the input, or (pressed twice) quits. It can't be a shortcut.
+        if key.code == KeyCode::Char('c') && ctrl {
+            match self.current_input() {
+                Some(input) if !input.is_empty() => {
+                    input.take(false);
                 }
-                return;
+                _ => self.arm_quit(),
             }
-            KeyCode::Char('d') if ctrl && self.current_input().is_none_or(|i| i.is_empty()) => return self.arm_quit(),
-            KeyCode::Char('o') if ctrl => return self.open_connect_picker(),
-            KeyCode::Char('k') if ctrl && self.current_input().is_none_or(|i| i.is_empty()) => return self.open_palette(),
-            KeyCode::Char('p') if ctrl => return self.open_palette(),
-            KeyCode::Char('r') if ctrl => return self.open_history(),
-            KeyCode::Char('b') if ctrl => return self.run(Cmd::ToggleSidebar),
-            KeyCode::Char('g') if ctrl => return self.run(Cmd::EditInput),
-            KeyCode::F(1) => return self.run(Cmd::Help),
-            KeyCode::F(2) => return self.run(Cmd::Rules),
-            KeyCode::F(6) => return self.run(Cmd::EditorFocus),
-            KeyCode::F(7) => return self.run(Cmd::MoveEditor),
-            KeyCode::Char('0') if alt => return self.run(Cmd::EditorFocus),
-            KeyCode::Char(c @ '1'..='9') if alt => return self.switch_to(c as usize - '1' as usize),
-            KeyCode::Right if alt => return self.run(Cmd::NextTab),
-            KeyCode::Left if alt => return self.run(Cmd::PrevTab),
-            // Terminal.app, iTerm2 and Ghostty send Option+→ and ← as Esc f and Esc b (readline's
-            // word movement), which arrive as Alt+F and Alt+B; on a Mac those switch tabs too.
-            // Not in an editor (above), where Esc then b typed quickly is Vim's word movement.
-            KeyCode::Char('f') if alt && !ctrl && MAC_OPTION_ARROWS => return self.run(Cmd::NextTab),
-            KeyCode::Char('b') if alt && !ctrl && MAC_OPTION_ARROWS => return self.run(Cmd::PrevTab),
-            KeyCode::PageDown if ctrl => return self.run(Cmd::NextTab),
-            KeyCode::PageUp if ctrl => return self.run(Cmd::PrevTab),
-            KeyCode::Char(']') if alt => return self.run(Cmd::NextPanel),
-            KeyCode::Char('e') if alt => {
-                // Reopen the last program sent from the editor, at its first error.
-                if let Some((i, _)) = self.current()
-                    && let Some((request, line)) = self.sessions[i].last_edit.clone()
-                {
-                    self.edit(External::Edit { session: self.sessions[i].id, request, line });
-                } else {
-                    self.toast("Nothing to reopen: no program has been edited here yet");
-                }
-                return;
+            return;
+        }
+        // The shortcuts. A readline key that's also one (Ctrl+K: kill to the end of the line, or
+        // the command palette) is the shortcut only when there's nothing typed.
+        if let Some(action) = action {
+            let typed = self.current_input().is_some_and(|i| !i.is_empty());
+            if !(typed && pressed.as_ref().is_some_and(is_readline_key)) {
+                // Quit from a key works like Ctrl+C on an empty line: press it twice.
+                return if action == "quit" { self.arm_quit() } else { self.run(action) };
             }
-            KeyCode::Char('[') if alt => {
-                if let Some((i, _)) = self.current() {
-                    let s = &mut self.sessions[i];
-                    let n = s.panels().len().max(1);
-                    s.panel = (s.panel + n - 1) % n;
-                }
-                return;
-            }
-            _ => {}
+        }
+        if key.code == KeyCode::Char('d') && ctrl && self.current_input().is_none_or(|i| i.is_empty()) {
+            return self.arm_quit();
         }
         let Some((idx, puppet)) = self.current() else { return };
 
@@ -126,8 +88,7 @@ impl App {
             || (matches!(key.code, KeyCode::Up | KeyCode::Down | KeyCode::PageUp | KeyCode::PageDown) && !key.state.contains(KeyEventState::KEYPAD));
         if (!reserved || key.state.contains(KeyEventState::KEYPAD))
             && puppet.is_none()
-            && let Some(chord) = chord(&key)
-            && let Some(out) = self.sessions[idx].engine.run_macro(&chord)
+            && let Some(out) = self.run_macro(idx, &key)
         {
             self.sessions[idx].output.scroll_to_bottom();
             self.apply(idx, out);
@@ -305,6 +266,12 @@ impl App {
         }
         if matches!(self.overlay, Some(Overlay::Rules(_))) {
             return self.on_rules_key(key);
+        }
+        if matches!(self.overlay, Some(Overlay::Keys(_))) {
+            return self.on_keys_key(key);
+        }
+        if matches!(self.overlay, Some(Overlay::Find(_))) {
+            return self.on_find_key(key);
         }
         // In the world picker: Ctrl+N adds a world, Ctrl+E edits the selected one and Ctrl+D
         // (twice) deletes it.
@@ -501,10 +468,11 @@ impl App {
             "connect" => self.connect_command(args),
             "close" => self.close_tab(),
             "quit" | "exit" => self.quit = true,
-            "sidebar" => self.run(Cmd::ToggleSidebar),
-            "world" | "worlds" => self.run(Cmd::EditWorld),
-            "config" => self.run(Cmd::EditConfig),
-            "rules" | "triggers" | "aliases" | "macros" => self.run(Cmd::Rules),
+            "sidebar" => self.run("toggle-sidebar"),
+            "world" | "worlds" => self.run("edit-world"),
+            "config" => self.run("preferences"),
+            "rules" | "triggers" | "aliases" | "macros" => self.run("rules"),
+            "import" => self.import_command(args),
             "agent" | "agents" => self.agent_command(args),
             "editor" => {
                 let settings = &mut self.config.settings;
@@ -553,7 +521,7 @@ impl App {
                 }
                 self.toast(if themed { "Basic colours: the terminal's theme" } else { "Basic colours: standard" });
             }
-            "keys" | "shortcuts" => self.run(Cmd::Help),
+            "keys" | "shortcuts" => self.run("keyboard"),
             _ => return false,
         }
         true
@@ -588,6 +556,13 @@ impl App {
             // The wheel moves through the list.
             if view.form.is_none() && matches!(mouse.kind, MouseEventKind::ScrollUp | MouseEventKind::ScrollDown) {
                 let count = view.rows(&self.config).len();
+                view.select(if mouse.kind == MouseEventKind::ScrollUp { -1 } else { 1 }, count);
+            }
+            return;
+        }
+        if let Some(Overlay::Keys(view)) = &mut self.overlay {
+            if !view.recording && matches!(mouse.kind, MouseEventKind::ScrollUp | MouseEventKind::ScrollDown) {
+                let count = self.keymap.describe(&self.config).len();
                 view.select(if mouse.kind == MouseEventKind::ScrollUp { -1 } else { 1 }, count);
             }
             return;
@@ -747,14 +722,14 @@ impl App {
         self.drag = Some((at, scrolled));
     }
 
-    fn buffer_mut(&mut self, id: u64) -> Option<&mut Buffer> {
+    pub(super) fn buffer_mut(&mut self, id: u64) -> Option<&mut Buffer> {
         self.sessions
             .iter_mut()
             .flat_map(|s| std::iter::once(&mut s.output).chain(s.puppets.iter_mut().map(|p| &mut p.buffer)).chain(s.spawns.iter_mut().map(|p| &mut p.buffer)))
             .find(|b| b.id == id)
     }
 
-    fn buffer(&self, id: u64) -> Option<&Buffer> {
+    pub(super) fn buffer(&self, id: u64) -> Option<&Buffer> {
         self.sessions.iter().flat_map(|s| std::iter::once(&s.output).chain(s.puppets.iter().map(|p| &p.buffer)).chain(s.spawns.iter().map(|p| &p.buffer))).find(|b| b.id == id)
     }
 
@@ -776,7 +751,39 @@ pub(super) fn parse_address(text: &str) -> Option<World> {
     (address.host.contains(['.', ':']) || address.host == "localhost").then(|| address.into_world(0))
 }
 
-/// A key as a macro chord, in the GTK client's naming (GDK key names).
+/// Whether a shortcut reaches Familiar from an editor running in a tab or beside a world, which
+/// gets every other key: switching tabs, moving the editor, and (beside a world) going back to
+/// the world. Alt+B and Alt+F stay the editor's even where they switch tabs (Option+← and → on
+/// a Mac send them): Esc then b typed quickly in Vim arrives as Alt+B.
+pub(super) fn reaches_past_editor(action: &str, chord: &KeyChord, docked: bool) -> bool {
+    let word_movement = chord.alt && !chord.ctrl && !chord.shift && matches!(chord.key.as_str(), "B" | "F");
+    let allowed = matches!(action, "next-tab" | "prev-tab" | "move-editor") || action.starts_with("tab-") || (action == "editor-focus" && docked);
+    allowed && !word_movement
+}
+
+/// The readline keys the input box has (Ctrl+A, E, U, K, W, Y). As a shortcut, one of these
+/// works only while nothing is typed.
+pub(super) fn is_readline_key(chord: &KeyChord) -> bool {
+    chord.ctrl && !chord.alt && !chord.shift && !chord.cmd && matches!(chord.key.as_str(), "A" | "E" | "U" | "K" | "W" | "Y")
+}
+
+impl App {
+    /// Runs the keyboard macro on this key, if there is one. Macros recorded before punctuation
+    /// keys had GDK's names ("Alt+]" rather than "Alt+bracketright") still work.
+    fn run_macro(&mut self, idx: usize, key: &KeyEvent) -> Option<Vec<Output>> {
+        let pressed = chord(key)?;
+        let engine = &mut self.sessions[idx].engine;
+        if let Some(out) = engine.run_macro(&pressed) {
+            return Some(out);
+        }
+        match key.code {
+            KeyCode::Char(c) if crate::keys::punctuation_name(c).is_some() => engine.run_macro(&KeyChord { key: c.to_string(), ..pressed }),
+            _ => None,
+        }
+    }
+}
+
+/// A key as a shortcut or macro chord, in the GTK client's naming (GDK key names).
 pub(super) fn chord(key: &KeyEvent) -> Option<KeyChord> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
@@ -796,7 +803,7 @@ pub(super) fn chord(key: &KeyEvent) -> Option<KeyChord> {
         KeyCode::Char(c) => {
             // Shifted characters already say so.
             shift &= ctrl || alt;
-            c.to_uppercase().to_string()
+            crate::keys::punctuation_name(c).map_or_else(|| c.to_uppercase().to_string(), str::to_string)
         }
         KeyCode::Enter if keypad => "KP_Enter".into(),
         KeyCode::Up if keypad => "KP_8".into(),

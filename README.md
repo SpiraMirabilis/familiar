@@ -80,20 +80,28 @@ applies to that world's tabs straight away.
 
 ## Using Familiar
 
-### GUI keys
+### Keyboard shortcuts
 
-| Key | Action |
+Every command has a shortcut you can change: Preferences → **Keyboard** (F1 opens it; ⌘⌥/ on a Mac) lists them by group. Click a command to add a key (press it; Esc cancels), remove one, or put the command back to its usual keys, and **Reset All** undoes every change. A command can have several keys. A key that two commands share, or that a keyboard macro uses, is marked: the shortcut wins, and the macro doesn't run while the shortcut has its key. Changes are saved as you make them, in `config.toml` under `[settings.keys]` (only the keys you changed, for example `next-tab = ["Alt+Right", "Ctrl+Tab"]`). The terminal client has its own set, under `[settings.terminal_keys]`.
+
+The usual keys on Linux and Windows (the Mac uses ⌘; see [macOS notes](#macos-notes)):
+
+| Key | Command |
 |---|---|
-| Ctrl+O | Connect (saved worlds, quick connect, directory) |
-| Ctrl+R / Ctrl+Shift+D | Reconnect / disconnect |
-| Ctrl+W | Close tab |
-| Ctrl+Shift+G | Toggle logging |
-| Ctrl+Shift+L | Clear output |
-| Ctrl+T | Triggers, aliases, macros and variables |
-| Ctrl+. | Stop speaking |
-| Enter / Shift+Enter | Send / new line |
-| Up, Down | History (Ctrl+Up/Down in multi-line input) |
-| Page Up / Page Down | Scroll output |
+| Ctrl+O · Ctrl+Shift+N · Ctrl+Shift+E | Connect · new world · edit this tab's world |
+| Ctrl+R · Ctrl+Shift+D · Ctrl+W | Reconnect · disconnect · close tab |
+| Alt+← → · Ctrl+Tab · Ctrl+PgUp/PgDn · Alt+1…9 | Switch tabs |
+| Ctrl+K or Ctrl+Shift+P | Command palette: every command, saved world and client command, searched as you type |
+| Ctrl+Shift+R | Search what you've typed in this tab |
+| Ctrl+F · F3 · Shift+F3 | Find in the output (from the newest match) · next (newer) · previous (older) |
+| Ctrl+Shift+L · Ctrl+Shift+G | Clear output · log to a file |
+| Ctrl+B · Alt+[ ] · Ctrl+Shift+M | Show or hide the side dock · its tabs · the map |
+| Ctrl+T · Ctrl+, · F1 | Triggers, aliases and macros · preferences · keyboard shortcuts |
+| Alt+E | Reopen the last program sent from the editor, at its first error |
+| Ctrl+. | Stop sounds and speech |
+| Ctrl+S · Ctrl+F · Ctrl+Shift+I | In the program editor: send · find · re-indent |
+
+The input box's own keys don't change: Enter sends and Shift+Enter starts a new line, Up and Down go through what you typed (Ctrl+Up/Down in a multi-line input), Page Up and Page Down scroll the output, and Escape clears the input.
 
 Links work in OSC 8 output and in plain URLs. `send:` links send a command and `prompt:` links fill the input.
 
@@ -175,7 +183,7 @@ Then turn on **Connect through the bouncer** for a world (the world's settings i
 - **Layout:** tabs across the top, with unread counts, ★ for trigger-marked activity and puppets as `↳ Name` tabs. Below them the output, and a sidebar (Ctrl+B) with the map, Beip.Stats bars and spawn windows (Alt+[ and Alt+] switch). Then the input box, which carries the server's prompt on its border, and a status line.
 - **Reading back:** PgUp, Shift+↑ or the mouse wheel scrolls; once scrolled, the view splits so the live tail stays visible underneath. Esc jumps back. Links, tabs and map rooms are clickable (a room walks you there). Drag over the output to select text; it's copied when you let go (through the terminal, with OSC 52, and `wl-copy`, `xclip`, `xsel` or `pbcopy` if there is one). Shift+drag is still the terminal's own selection.
 - **Typing:** Enter sends; an empty Enter reconnects a dropped connection. Shift+Enter, Alt+Enter or Ctrl+J add a line. ↑↓ and Ctrl+R are history and history search, Tab completes names seen in the output, readline keys work, and Ctrl+C or Esc Esc clears the line. Typing `/` lists client commands with descriptions, and completes world names, puppets and map rooms as arguments.
-- **Everything else:** Ctrl+K opens the command palette and Ctrl+O the world picker; Alt+1…9 switches tabs; F1 shows the shortcuts. `/connect`, `/world`, `/close`, `/sidebar`, `/config`, `/rules`, `/editor`, `/agent` and `/quit` are terminal-only commands.
+- **Everything else:** Ctrl+K opens the command palette and Ctrl+O the world picker; Alt+1…9 switches tabs; Ctrl+F finds in the output, starting at the newest match (Enter or ↑ for an older one, ↓ or F3 for a newer one, Esc closes). F1 (or `/keys`) opens the key editor, where every shortcut can be changed: ↑↓ pick a command, a or Enter records a key for it, d removes the selected key, r resets the command and R twice resets them all; `?` there shows the help screen. `/import path/to/Config.txt` brings in BeipMU settings. `/connect`, `/world`, `/close`, `/sidebar`, `/config`, `/rules`, `/editor`, `/agent` and `/quit` are terminal-only commands.
 - **Triggers, aliases and macros:** F2 (or `/rules`) opens the same editor the GUI has: a list each for triggers, aliases, keyboard macros and variables, for all worlds, one world or one character (`[` and `]` change which). Enter edits, `n` adds, Space switches one on or off, `d` twice deletes and Shift+↑↓ reorders. The trigger and alias forms have a line to try the rule on, and a macro's key is recorded with Ctrl+T. Changes apply to open tabs straight away.
 - **Editors:** MCP simpleedit opens in `$VISUAL`/`$EDITOR` with the right file extension (`.moo`, `.muf`) so your editor highlights it (`/editor syntax` installs MOO highlighting for micro and Emacs, which have none, or fuller highlighting than Vim and Neovim's own, with Stunt's additions; it never replaces a file that's there unless you add `force`. Emacs also needs one line in your init file, which `/editor syntax` shows you; its `moo-mode` indents blocks too. The files are [`crates/tui/data/micro/moo.yaml`](crates/tui/data/micro/moo.yaml), [`crates/tui/data/vim/moo.vim`](crates/tui/data/vim/moo.vim) and [`crates/tui/data/emacs/moo-mode.el`](crates/tui/data/emacs/moo-mode.el). After your first MOO edit in one of those editors without it, Familiar mentions this once), and saving and quitting sends it back. If the server reports compile errors, Alt+E reopens it at the first one. Ctrl+G edits the input line in `$EDITOR`. The editor opens in a tab of its own, so the world keeps scrolling in its tab and you can switch back to check something (Alt+←/→, Alt+1…9 and Ctrl+PgUp/PgDn stay with Familiar; every other key is the editor's). Quitting the editor closes the tab; middle-clicking the tab closes it without saving. `/editor sidebar` puts the editor beside the world instead, where the sidebar goes, so you can see both at once: F6 (or Alt+0, or a click) moves the keyboard between the editor and the world. That happens when the world has nothing in its sidebar (no map, stats or spawn windows) and the terminal is at least 90 columns wide; otherwise the editor gets a tab as usual. F7 (or `/editor move`) moves an open editor between the two places, from the editor or from the world's tab. `/editor fullscreen` gives the editor the whole terminal instead, as before, which is also what happens if the tab can't be opened. `/editor tab` goes back to tabs (these are the `editor_in_tab` and `editor_in_sidebar` settings).
 - **LLM agents:**
@@ -223,10 +231,12 @@ colour, and keeps its worlds in tabs in the title bar.
 
 - The app is written for the Mac rather than being the GTK client: worlds open as window tabs
   (drag one out for its own window), settings are under Familiar → Settings (⌘,), and the menu
-  bar has the rest. The shortcuts use ⌘: ⌘N connect, ⌘R reconnect, ⇧⌘D disconnect, ⌘K clear the
-  output, ⇧⌘T triggers, aliases and macros, ⇧⌘L log, ⌘F find in the output, ⌘. stop sounds.
-- Keyboard macros are written the same way as on Linux ("Ctrl+F5", "Alt+KP_8"), so a config can
-  move between systems. Alt is the Option key. ⌘ is never part of a macro.
+  bar has the rest, each item showing its current key. The shortcuts use ⌘: ⌘N connect, ⌘R
+  reconnect, ⇧⌘D disconnect, ⌘K clear the output, ⇧⌘T triggers, aliases and macros, ⇧⌘L log,
+  ⌘F find in the output, ⇧⌘P the command palette, ⇧⌘R history search, ⌃⇥ or ⇧⌘] and ⇧⌘[ (or
+  ⌘1…9) switch tabs, ⌘. stop sounds. Change them in Settings → Keyboard.
+- Keyboard macros and shortcuts are written the same way as on Linux ("Ctrl+F5", "Alt+KP_8"), so
+  a config can move between systems. Alt is the Option key and Cmd is ⌘ ("Cmd+Shift+F5").
 - **Web views** work (they use the system's WebKit), unlike on Windows.
 - **LLM agents** (`/agent`) run in a terminal (SwiftTerm) in the side dock, as in the GTK client;
   ⌘C and ⌘V copy and paste there. The app looks for the agents' programs on the PATH your login

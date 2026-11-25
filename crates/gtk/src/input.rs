@@ -7,7 +7,7 @@ use std::rc::Rc;
 use gtk::gdk;
 use gtk::glib;
 use gtk::prelude::*;
-use familiar_engine::History;
+use familiar_engine::{History, KeyChord};
 
 pub struct InputView {
     pub root: gtk::Stack,
@@ -20,7 +20,7 @@ pub struct InputView {
     history: RefCell<History>,
     on_submit: RefCell<Option<Box<dyn Fn(String, bool)>>>,
     on_page: RefCell<Option<Box<dyn Fn(bool)>>>,
-    on_key: RefCell<Option<Box<dyn Fn(gdk::Key, gdk::ModifierType) -> bool>>>,
+    on_key: RefCell<Option<Box<dyn Fn(&KeyChord) -> bool>>>,
 }
 
 impl InputView {
@@ -102,9 +102,9 @@ impl InputView {
         *self.on_submit.borrow_mut() = Some(Box::new(f));
     }
 
-    /// `f(key, modifiers)` sees every key press first, for keyboard macros. Returning true
-    /// consumes the key.
-    pub fn connect_key<F: Fn(gdk::Key, gdk::ModifierType) -> bool + 'static>(&self, f: F) {
+    /// `f(chord)` sees every key press first (after the window's shortcuts), for keyboard
+    /// macros. Returning true consumes the key.
+    pub fn connect_key<F: Fn(&KeyChord) -> bool + 'static>(&self, f: F) {
         *self.on_key.borrow_mut() = Some(Box::new(f));
     }
 
@@ -151,6 +151,11 @@ impl InputView {
         buffer.place_cursor(&buffer.end_iter());
     }
 
+    /// What was sent, oldest first.
+    pub fn history(&self) -> Vec<String> {
+        self.history.borrow().entries().to_vec()
+    }
+
     fn text(&self) -> String {
         let buffer = self.view.buffer();
         buffer.text(&buffer.start_iter(), &buffer.end_iter(), false).to_string()
@@ -175,9 +180,12 @@ impl InputView {
         let keys = gtk::EventControllerKey::new();
         keys.set_propagation_phase(gtk::PropagationPhase::Capture);
         let weak = Rc::downgrade(self);
-        keys.connect_key_pressed(move |_, key, _, state| {
+        keys.connect_key_pressed(move |controller, key, keycode, state| {
             let Some(this) = weak.upgrade() else { return glib::Propagation::Proceed };
-            if this.on_key.borrow().as_ref().is_some_and(|f| f(key, state)) {
+            let chord = crate::keys::chord(controller, key, keycode, state);
+            if let Some(chord) = chord
+                && this.on_key.borrow().as_ref().is_some_and(|f| f(&chord))
+            {
                 return glib::Propagation::Stop;
             }
             let shift = state.contains(gdk::ModifierType::SHIFT_MASK);

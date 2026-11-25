@@ -1,11 +1,12 @@
 //! Shared application state and styling.
 
-use std::cell::RefCell;
+use std::cell::{Ref, RefCell};
 use std::path::PathBuf;
 
 use gtk::{gdk, pango};
 use familiar_ansi::Palette;
 use familiar_config::Config;
+use familiar_engine::keymap::{Keymap, Platform};
 
 pub struct AppState {
     pub config: RefCell<Config>,
@@ -18,6 +19,11 @@ pub struct AppState {
     /// Set if the config file exists but couldn't be read. We then refuse to save, so we don't
     /// overwrite the user's file with defaults.
     load_error: Option<String>,
+    /// The keyboard shortcuts, from `[settings.keys]`. Rebuilt when a save changes them.
+    keymap: RefCell<Keymap>,
+    /// Called after the shortcuts change, so menus and tooltips can show the new keys. Each
+    /// returns false once what it updates has gone.
+    on_keys_changed: RefCell<Vec<Box<dyn Fn() -> bool>>>,
     /// LLM agents beside worlds (/agent): the MCP server, and the worlds it answers for.
     #[cfg(feature = "agents")]
     pub agents: std::rc::Rc<crate::session::AgentHost>,
@@ -34,7 +40,10 @@ impl AppState {
         if let Some(display) = gdk::Display::default() {
             gtk::style_context_add_provider_for_display(&display, &css, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
         }
+        let keymap = Keymap::new(&config.settings, Platform::Linux);
         let state = Self {
+            keymap: RefCell::new(keymap),
+            on_keys_changed: RefCell::default(),
             config: RefCell::new(config),
             speaker: familiar_speech::Speaker::new(crate::APP_NAME),
             path,
@@ -56,9 +65,44 @@ impl AppState {
         self.load_error.as_deref()
     }
 
-    /// Saves the config. Fonts may be what changed, so this restyles too.
+    pub fn keymap(&self) -> Ref<'_, Keymap> {
+        self.keymap.borrow()
+    }
+
+    /// The first key for an action, as GTK shows it ("Ctrl+O"), for a tooltip.
+    pub fn key_label(&self, id: &str) -> Option<String> {
+        self.keymap().keys(id).first().map(crate::keys::label)
+    }
+
+    /// `f` runs whenever the shortcuts change, until it returns false.
+    pub fn connect_keys_changed(&self, f: impl Fn() -> bool + 'static) {
+        self.on_keys_changed.borrow_mut().push(Box::new(f));
+    }
+
+    /// Rebuilds the keymap if the config's shortcuts changed, and tells whoever shows them.
+    fn update_keymap(&self) {
+        let keymap = Keymap::new(&self.config.borrow().settings, Platform::Linux);
+        let same = {
+            let old = self.keymap.borrow();
+            familiar_engine::keymap::actions(Platform::Linux).all(|a| old.keys(a.id) == keymap.keys(a.id))
+        };
+        if same {
+            return;
+        }
+        *self.keymap.borrow_mut() = keymap;
+        // Taken out while they run, in case one adds another.
+        let mut listeners = std::mem::take(&mut *self.on_keys_changed.borrow_mut());
+        listeners.retain(|f| f());
+        let mut slot = self.on_keys_changed.borrow_mut();
+        listeners.append(&mut slot);
+        *slot = listeners;
+    }
+
+    /// Saves the config. Fonts or shortcuts may be what changed, so this restyles and
+    /// rebuilds the keymap too.
     pub fn save(&self) -> Result<(), String> {
         self.apply_css();
+        self.update_keymap();
         if let Some(e) = &self.load_error {
             return Err(format!("Not saving: the config file couldn't be read ({e})"));
         }

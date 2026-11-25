@@ -53,7 +53,7 @@ impl Engine {
                     out.push(Output::PuppetEcho { name: name.to_string(), text: line.to_string() });
                 }
             } else {
-                out.push(Output::Notice("Not connected. Press Ctrl+R or type /reconnect to reconnect.".into()));
+                out.push(Output::Notice(format!("Not connected. {}", self.reconnect_hint())));
                 break;
             }
         }

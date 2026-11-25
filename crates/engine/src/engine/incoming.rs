@@ -54,7 +54,7 @@ impl Engine {
                     Some(e) => format!("Disconnected: {e}"),
                     None => "Disconnected".to_string(),
                 };
-                out.push(Output::Notice(format!("{reason}. Press Ctrl+R or type /reconnect to reconnect.")));
+                out.push(Output::Notice(format!("{reason}. {}", self.reconnect_hint())));
                 self.log(&format!("--- {reason} ---"), &mut out);
                 out.push(Output::Status(Status::Disconnected(error)));
                 if self.server_echo {

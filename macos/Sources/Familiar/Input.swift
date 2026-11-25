@@ -33,18 +33,22 @@ enum Keys {
         return punctuation[character] ?? character
     }
 
-    /// The chord as arguments for the engine's `session.macro`.
+    /// The chord as arguments for the engine's `session.macro` and `keys.match`.
     static func chord(_ event: NSEvent) -> JSON? {
         guard let key = name(event) else { return nil }
         let flags = event.modifierFlags
-        return ["key": .of(key), "ctrl": .of(flags.contains(.control)), "alt": .of(flags.contains(.option)), "shift": .of(flags.contains(.shift))]
+        return [
+            "key": .of(key), "cmd": .of(flags.contains(.command)), "ctrl": .of(flags.contains(.control)), "alt": .of(flags.contains(.option)),
+            "shift": .of(flags.contains(.shift)),
+        ]
     }
 
-    /// The chord as text for the config ("Ctrl+Shift+F5"), for the macro editor.
+    /// The chord as text for the config ("Ctrl+Shift+F5"), for the macro and shortcut editors.
     static func text(_ event: NSEvent) -> String? {
         guard let key = name(event) else { return nil }
         let flags = event.modifierFlags
         var parts: [String] = []
+        if flags.contains(.command) { parts.append("Cmd") }
         if flags.contains(.control) { parts.append("Ctrl") }
         if flags.contains(.option) { parts.append("Alt") }
         if flags.contains(.shift) { parts.append("Shift") }
@@ -95,6 +99,9 @@ struct History {
     }
 
     mutating func reset() { position = nil }
+
+    /// Everything remembered, oldest first.
+    var all: [String] { entries }
 }
 
 final class InputTextView: NSTextView {
@@ -205,6 +212,9 @@ final class InputBox: NSView, NSTextFieldDelegate, NSTextViewDelegate {
         set { history.limit = max(newValue, 1) }
     }
 
+    /// What was typed before, oldest first.
+    var historyEntries: [String] { history.all }
+
     func setPasswordMode(_ on: Bool) {
         guard on != isPassword else { return }
         let focused = hasFocus
@@ -282,10 +292,11 @@ final class InputBox: NSView, NSTextFieldDelegate, NSTextViewDelegate {
 
     fileprivate func handleKey(_ event: NSEvent) -> Bool {
         let flags = event.modifierFlags
-        if flags.contains(.command) { return false }
         // Composing an accented or CJK character: the keys belong to the input method.
         if textView.hasMarkedText() { return false }
+        // Shortcuts have had their turn (ShortcutMonitor); macros come next.
         if onKey?(event) == true { return true }
+        if flags.contains(.command) { return false }
         let shift = flags.contains(.shift), control = flags.contains(.control)
         switch Int(event.keyCode) {
         case kVK_Return, kVK_ANSI_KeypadEnter:

@@ -828,11 +828,11 @@ impl RulesDialog {
             let chord = chord.clone();
             let record = record.clone();
             let key_row = key_row.clone();
-            keys.connect_key_pressed(move |_, key, _, state| {
+            keys.connect_key_pressed(move |controller, key, keycode, state| {
                 if !record.is_active() {
                     return glib::Propagation::Proceed;
                 }
-                let Some(c) = crate::keys::chord(key, state) else { return glib::Propagation::Stop };
+                let Some(c) = crate::keys::chord(controller, key, keycode, state) else { return glib::Propagation::Stop };
                 key_row.set_subtitle(&c.to_string());
                 *chord.borrow_mut() = Some(c);
                 record.set_active(false);

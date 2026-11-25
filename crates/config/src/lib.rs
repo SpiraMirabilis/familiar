@@ -9,6 +9,7 @@ mod rules;
 pub use address::Address;
 pub use rules::{Alias, Highlight, Macro, Pattern, Rules, Scope, Trigger};
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -118,6 +119,13 @@ pub struct Settings {
     /// the first one whose program is installed.
     #[serde(skip_serializing_if = "is_default_agent_order")]
     pub agent_order: Vec<String>,
+    /// Desktop apps: keyboard shortcuts changed from their defaults, by action ("next-tab"),
+    /// as key chords ("Ctrl+Page_Down"). An empty list leaves the action without a key.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub keys: BTreeMap<String, Vec<String>>,
+    /// Terminal client: the same, for its own shortcuts (terminals can't send every key).
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub terminal_keys: BTreeMap<String, Vec<String>>,
 }
 
 /// The agents `/agent` tries when the config doesn't say.
@@ -221,6 +229,8 @@ impl Default for Settings {
             editor_syntax_hint_shown: false,
             agents: Vec::new(),
             agent_order: default_agent_order(),
+            keys: BTreeMap::new(),
+            terminal_keys: BTreeMap::new(),
         }
     }
 }

@@ -426,6 +426,16 @@ impl OutputView {
         adj.set_value(value);
     }
 
+    pub fn buffer(&self) -> &gtk::TextBuffer {
+        &self.buffer
+    }
+
+    /// Scrolls to a mark (a find match) and stops following new output, so it stays in view.
+    pub fn show_mark(&self, mark: &gtk::TextMark) {
+        self.follow.set(false);
+        self.view.scroll_to_mark(mark, 0.0, true, 0.0, 0.4);
+    }
+
     pub fn scroll_to_end(&self) {
         let adj = self.scrolled.vadjustment();
         self.follow.set(true);

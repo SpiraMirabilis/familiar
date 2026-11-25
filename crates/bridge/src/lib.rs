@@ -25,7 +25,7 @@ use std::time::Instant;
 use familiar_agent::{AgentRequest, Agents};
 use familiar_ansi::{AnsiParser, Palette};
 use familiar_config::{Address, Config, World};
-use familiar_engine::{Engine, KeyChord, Output, Target};
+use familiar_engine::{Engine, KeyChord, Keymap, Output, Target, keymap};
 use familiar_net::SessionEvent;
 use serde_json::{Value, json};
 
@@ -173,6 +173,10 @@ impl State {
             inboxes,
             search_path_set: false,
         }
+    }
+
+    fn keymap(&self) -> Keymap {
+        Keymap::new(&self.config.settings, keymap::Platform::desktop())
     }
 
     fn save(&self) -> Result<(), String> {
@@ -630,6 +634,30 @@ impl State {
                 "commands": familiar_engine::COMMANDS.iter().map(|(usage, about)| json!([usage, about])).collect::<Vec<_>>(),
             })),
             "config.get" => serde_json::to_value(&self.config).map_err(|e| e.to_string()),
+            // Keyboard shortcuts. "keys.actions": every action this app has, in order, with its
+            // label, group, scope ("window" or "editor"), keys, defaults, whether the user changed
+            // it, and for each key the other actions and the keyboard macros on it.
+            "keys.actions" => serde_json::to_value(self.keymap().describe(&self.config)).map_err(|e| e.to_string()),
+            // The action a key press runs: {"scope": "window"|"editor", "key", "ctrl", "alt",
+            // "shift", "cmd"} → its id, or null. Ask before running a macro: shortcuts come first.
+            "keys.match" => {
+                let chord = KeyChord::new(text(args, "key")?, flag(args, "ctrl"), flag(args, "alt"), flag(args, "shift")).with_cmd(flag(args, "cmd"));
+                let scope = if args.get("scope").and_then(Value::as_str) == Some("editor") { keymap::Scope::Editor } else { keymap::Scope::Window };
+                Ok(self.keymap().lookup(scope, &chord).into())
+            }
+            // Sets an action's keys ({"id", "keys": ["Ctrl+K", ...]}; [] for none) or with "keys"
+            // null puts back its defaults. Saves, and returns what "keys.actions" does.
+            "keys.set" => {
+                let id = text(args, "id")?.to_string();
+                let keys: Option<Vec<String>> = match args.get("keys") {
+                    None | Some(Value::Null) => None,
+                    Some(v) => Some(serde_json::from_value(v.clone()).map_err(|e| format!("\"keys\" should be a list of keys: {e}"))?),
+                };
+                keymap::set_keys(&mut self.config.settings, keymap::Platform::desktop(), &id, keys.as_deref())?;
+                self.save()?;
+                self.reload_sessions();
+                serde_json::to_value(self.keymap().describe(&self.config)).map_err(|e| e.to_string())
+            }
             // Saves the config and has every open session pick it up.
             "config.set" => self.set_config(args),
             "import.beipmu" => self.import_beipmu(args),
@@ -663,7 +691,7 @@ impl State {
             // A key press. "handled" says whether a macro ran.
             "session.macro" => {
                 let (id, session) = self.session(args)?;
-                let chord = KeyChord::new(text(args, "key")?, flag(args, "ctrl"), flag(args, "alt"), flag(args, "shift"));
+                let chord = KeyChord::new(text(args, "key")?, flag(args, "ctrl"), flag(args, "alt"), flag(args, "shift")).with_cmd(flag(args, "cmd"));
                 match session.engine.run_macro(&chord) {
                     Some(out) => Ok(json!({ "handled": true, "outputs": self.finish(id, out) })),
                     None => Ok(json!({ "handled": false, "outputs": [] })),
@@ -1005,6 +1033,17 @@ mod tests {
         assert!(outputs.iter().any(|o| o["t"] == "line" && o["plain"] == "hello" || o["t"] == "notice" && o["text"] == "hello" || o["t"] == "echo"), "{outputs:?}");
         let key = call("session.macro", &json!({ "id": id, "key": "F5" })).unwrap();
         assert_eq!(key["handled"], false);
+        // Shortcuts (read only: "keys.set" would save the user's config).
+        let actions = call("keys.actions", &Value::Null).unwrap();
+        let find = actions.as_array().unwrap().iter().find(|a| a["id"] == "find").expect("find");
+        assert_eq!(find["scope"], "window");
+        let key = if cfg!(target_os = "macos") { json!({ "key": "f", "cmd": true }) } else { json!({ "key": "f", "ctrl": true }) };
+        if find["changed"] == false {
+            assert_eq!(call("keys.match", &key).unwrap(), "find");
+        }
+        let mut editor = key.clone();
+        editor["scope"] = "editor".into();
+        assert!(call("keys.match", &editor).unwrap() != "find");
         assert_eq!(call("session.poll", &json!({ "id": id })).unwrap()["more"], false);
         // Without "agents", /agent is an unknown command.
         let reply = call("session.submit", &json!({ "id": id, "text": "/agent list" })).unwrap();

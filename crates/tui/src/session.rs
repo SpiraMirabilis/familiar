@@ -97,6 +97,7 @@ impl Session {
     pub fn new(id: u64, config: &Config, world: World, character: Option<Character>) -> (Self, Vec<Output>) {
         let (mut engine, out) = Engine::new(config, world, character);
         engine.set_agents_supported(true);
+        engine.set_keymap_platform(familiar_engine::keymap::Platform::Terminal);
         let s = &config.settings;
         (
             Self {
