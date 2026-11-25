@@ -766,3 +766,108 @@ fn simpleedit_through_a_core_that_colours_every_line() {
     let out = e.handle_event(SessionEvent::Line(format!("#$#dns-com-awns-status {key} text: \"unterminated")));
     assert!(notices(&out)[0].starts_with("Ignored an MCP message"), "{out:?}");
 }
+
+/// An engine that has negotiated MCP with a server offering dns-com-familiar-agent and two
+/// tools. Returns it with the auth key.
+fn agent_engine() -> (Engine, UnboundedReceiver<SessionCommand>, String) {
+    let (mut e, mut rx) = engine(&config(Rules::default(), Rules::default(), Rules::default()));
+    assert_eq!(e.agent_tools(), None);
+    e.handle_event(SessionEvent::Line("#$#mcp version: 2.1 to: 2.1".into()));
+    let key = sent(&mut rx)[0].split_whitespace().nth(2).unwrap().to_string();
+    e.handle_event(SessionEvent::Line(format!("#$#mcp-negotiate-can {key} package: dns-com-familiar-agent min-version: 1.0 max-version: 1.0")));
+    e.handle_event(SessionEvent::Line(format!("#$#mcp-negotiate-end {key}")));
+    // The client asks for the tools.
+    assert_eq!(sent(&mut rx), vec![format!("#$#dns-com-familiar-agent-list {key}")]);
+    assert_eq!(e.agent_tools(), Some(&[][..]));
+    let lines = [
+        format!(r#"#$#dns-com-familiar-agent-tools {key} tools*: "" _data-tag: t1"#),
+        r#"#$#* t1 tools: {"name":"list_verb","description":"Shows a verb","input_schema":{"type":"object","properties":{"obj":{"type":"string"}}},"show":"full"}"#.into(),
+        r#"#$#* t1 tools: {"name":"program_verb","timeout":5}"#.into(),
+        "#$#* t1 tools: not json".into(),
+        "#$#: t1".into(),
+    ];
+    let mut out = Vec::new();
+    for line in lines {
+        out.extend(e.handle_event(SessionEvent::Line(line)));
+    }
+    assert!(main_lines(&out).is_empty());
+    assert_eq!(notices(&out).len(), 1, "the bad line is reported: {out:?}");
+    let Some(Output::AgentTools(tools)) = out.iter().find(|o| matches!(o, Output::AgentTools(_))) else { panic!("{out:?}") };
+    assert_eq!(tools.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(), ["list_verb", "program_verb"]);
+    assert_eq!(e.agent_tools().unwrap().len(), 2);
+    (e, rx, key)
+}
+
+#[test]
+fn agent_tools_calls_and_results() {
+    let (mut e, mut rx, key) = agent_engine();
+    let tools = e.agent_tools().unwrap();
+    assert_eq!(tools[1].timeout, 5);
+    assert_eq!(tools[1].input_schema["type"], "object", "a schema is always an object");
+
+    assert!(e.agent_call("nope", &serde_json::json!({})).unwrap_err().contains("no tool called nope"));
+    let id = e.agent_call("list_verb", &serde_json::json!({"obj": "#1", "verb": "look"})).unwrap();
+    let lines = sent(&mut rx);
+    assert!(lines[0].starts_with(&format!("#$#dns-com-familiar-agent-call {key} id: \"{id}\" tool: \"list_verb\" args*: \"\" _data-tag: ")), "{lines:?}");
+    let tag = lines[0].rsplit(' ').next().unwrap();
+    assert_eq!(&lines[1..], [format!(r##"#$#* {tag} args: {{"obj":"#1","verb":"look"}}"##), format!("#$#: {tag}")]);
+
+    // A result with someone else's key is ignored.
+    let out = e.handle_event(SessionEvent::Line(format!("#$#dns-com-familiar-agent-result badkey id: {id} ok: 1 content: spoofed")));
+    assert!(out.iter().all(|o| !matches!(o, Output::AgentResult { .. })));
+
+    let lines = [
+        format!(r#"#$#dns-com-familiar-agent-result {key} id: {id} ok: 1 content*: "" _data-tag: r1"#),
+        "#$#* r1 content: return this.name;".into(),
+        "#$#* r1 content: ".into(),
+        "#$#: r1".into(),
+    ];
+    let mut out = Vec::new();
+    for line in lines {
+        out.extend(e.handle_event(SessionEvent::Line(line)));
+    }
+    assert!(out.contains(&Output::AgentResult { id, ok: true, content: "return this.name;\n".into() }), "{out:?}");
+    // show = full: the summary and what came back.
+    assert_eq!(notices(&out), ["[agent] list_verb obj=#1 verb=look → ok", "[agent]   return this.name;"]);
+    // A second result for the same call is dropped.
+    let out = e.handle_event(SessionEvent::Line(format!("#$#dns-com-familiar-agent-result {key} id: {id} ok: 1 content: again")));
+    assert!(out.is_empty(), "{out:?}");
+}
+
+#[test]
+fn long_agent_arguments_are_sent_in_pieces() {
+    let (mut e, mut rx, _) = agent_engine();
+    let code: String = (0..300).map(|i| format!("x = {i}; \"é\";\n")).collect();
+    let args = serde_json::json!({"obj": "#1", "verb": "v", "code": code});
+    e.agent_call("program_verb", &args).unwrap();
+    let lines = sent(&mut rx);
+    let tag = lines[0].rsplit(' ').next().unwrap().to_string();
+    let prefix = format!("#$#* {tag} args: ");
+    let pieces: Vec<&str> = lines[1..lines.len() - 1].iter().map(|l| l.strip_prefix(&prefix).unwrap()).collect();
+    assert!(pieces.len() > 3);
+    assert!(pieces.iter().all(|p| p.len() <= 1000 && !p.ends_with(' ')));
+    let joined: serde_json::Value = serde_json::from_str(&pieces.concat()).unwrap();
+    assert_eq!(joined, args);
+}
+
+#[test]
+fn agent_calls_fail_on_timeout_and_disconnect() {
+    let (mut e, _rx, key) = agent_engine();
+    let slow = e.agent_call("program_verb", &serde_json::json!({"code": "a\nb"})).unwrap();
+    let deadline = e.next_deadline().unwrap();
+    assert!(deadline <= Instant::now() + Duration::from_secs(5));
+    let out = e.tick(deadline);
+    let Some(Output::AgentResult { id, ok: false, content }) = out.iter().find(|o| matches!(o, Output::AgentResult { .. })) else { panic!("{out:?}") };
+    assert_eq!(*id, slow);
+    assert!(content.contains("5 seconds"));
+    assert_eq!(notices(&out), ["[agent] program_verb code=(2 lines) → failed: The world didn't answer within 5 seconds"]);
+    // Its late result is dropped.
+    let out = e.handle_event(SessionEvent::Line(format!("#$#dns-com-familiar-agent-result {key} id: {slow} ok: 1 content: late")));
+    assert!(out.is_empty());
+
+    let pending = e.agent_call("list_verb", &serde_json::json!({})).unwrap();
+    let out = e.handle_event(SessionEvent::Disconnected { error: None });
+    assert!(out.iter().any(|o| matches!(o, Output::AgentResult { id, ok: false, .. } if *id == pending)));
+    assert!(out.contains(&Output::AgentTools(Vec::new())));
+    assert!(e.agent_call("list_verb", &serde_json::json!({})).is_err());
+}

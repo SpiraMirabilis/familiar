@@ -12,7 +12,7 @@ use familiar_net::{BouncerOptions, ConnectOptions, Encoding, SessionEvent, Sessi
 use tokio::sync::mpsc::UnboundedReceiver;
 
 use crate::expand::{Captures, expand};
-use crate::mcp::{Disposition, Mcp, McpEvent};
+use crate::mcp::{AgentTool, Disposition, Mcp, McpEvent};
 use crate::media::{Media, MediaCommand};
 use crate::rules::CompiledRules;
 use crate::script::{ScriptAction, ScriptContext, ScriptHost};
@@ -165,6 +165,10 @@ pub enum Output {
     Received(String),
     /// A command sent to the server, for web views.
     Sent(String),
+    /// The tools the world offers an LLM agent changed (dns-com-familiar-agent).
+    AgentTools(Vec<AgentTool>),
+    /// The result of [`Engine::agent_call`]: text for the agent, and whether the tool succeeded.
+    AgentResult { id: u64, ok: bool, content: String },
 }
 
 pub struct Engine {
@@ -212,6 +216,11 @@ pub struct Engine {
     room_info_seen: bool,
     /// After an upload: which editor it came from, and until when to look for errors.
     compile_watch: Option<(String, Instant)>,
+    /// Tools the server offers an LLM agent.
+    agent_tools: Vec<AgentTool>,
+    /// Agent tool calls waiting for results, by id.
+    agent_calls: std::collections::HashMap<u64, agent::AgentCall>,
+    next_agent_call: u64,
     /// How deeply script actions are nested (a script typing input that runs a script...).
     script_depth: u32,
     /// Commands waiting to run (/delay).
@@ -258,6 +267,9 @@ impl Engine {
             map_tracking: true,
             room_info_seen: false,
             compile_watch: None,
+            agent_tools: Vec::new(),
+            agent_calls: Default::default(),
+            next_agent_call: 1,
             script_depth: 0,
             delays: Vec::new(),
             next_delay_id: 1,
@@ -551,6 +563,7 @@ struct Delay {
     command: String,
 }
 
+mod agent;
 mod commands;
 mod incoming;
 mod map;

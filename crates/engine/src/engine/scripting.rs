@@ -65,13 +65,14 @@ impl Engine {
         for command in due {
             out.extend(self.submit(&command, false));
         }
+        self.agent_timeouts(now, &mut out);
         out
     }
 
     pub fn next_deadline(&mut self) -> Option<Instant> {
         let script = self.script.as_mut().and_then(|s| s.next_deadline());
         let delay = self.delays.iter().map(|d| d.due).min();
-        script.into_iter().chain(delay).min()
+        script.into_iter().chain(delay).chain(self.agent_deadline()).min()
     }
 
     /// `/delay [id NAME] [every] TIME COMMAND`, `/delay list`, `/delay kill NAME`,

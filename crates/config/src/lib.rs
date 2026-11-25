@@ -110,6 +110,89 @@ pub struct Settings {
     /// Terminal client: the hint that `/editor syntax` installs MOO highlighting for `$EDITOR`
     /// has been shown. It's shown once, after the first MOO edit in an editor without it.
     pub editor_syntax_hint_shown: bool,
+    /// Terminal client: LLM agents `/agent` can run beside a world, besides the built-in ones
+    /// ([`Agent::builtin`]). One with a built-in one's name replaces it.
+    #[serde(rename = "agent", skip_serializing_if = "Vec::is_empty")]
+    pub agents: Vec<Agent>,
+    /// Terminal client: the agents `/agent` tries, in order, when it isn't given a name. It runs
+    /// the first one whose program is installed.
+    #[serde(skip_serializing_if = "is_default_agent_order")]
+    pub agent_order: Vec<String>,
+}
+
+/// The agents `/agent` tries when the config doesn't say.
+pub const DEFAULT_AGENT_ORDER: [&str; 4] = ["claude", "codex", "agy", "grok"];
+
+fn default_agent_order() -> Vec<String> {
+    DEFAULT_AGENT_ORDER.iter().map(|s| s.to_string()).collect()
+}
+
+fn is_default_agent_order(order: &Vec<String>) -> bool {
+    *order == default_agent_order()
+}
+
+/// An LLM agent (Claude Code, Codex, ...) the terminal client can run beside a world, with the
+/// world's tools served to it over MCP (Model Context Protocol).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Agent {
+    pub name: String,
+    /// The program and its arguments. `{url}` in them is replaced by the address of the MCP
+    /// server for the world, and `{world}` by the world's name. The program also gets the
+    /// address in the environment, as FAMILIAR_MCP_URL.
+    pub command: Vec<String>,
+    /// Files written into the agent's folder before it starts, by path within the folder, with
+    /// `{url}` and `{world}` filled in as in `command`. This is for agents that read their MCP
+    /// servers from a file in the project rather than from their command line.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub files: std::collections::BTreeMap<String, String>,
+}
+
+impl Agent {
+    /// The agents there are without any in the config.
+    pub fn builtin() -> Vec<Agent> {
+        let agent = |name: &str, command: &[&str], files: &[(&str, &str)]| Agent {
+            name: name.into(),
+            command: command.iter().map(|s| s.to_string()).collect(),
+            files: files.iter().map(|(path, text)| (path.to_string(), text.to_string())).collect(),
+        };
+        vec![
+            agent("claude", &["claude", "--mcp-config", r#"{"mcpServers":{"familiar":{"type":"http","url":"{url}"}}}"#], &[]),
+            agent("codex", &["codex", "-c", r#"mcp_servers.familiar.url="{url}""#], &[]),
+            // Antigravity's CLI reads a workspace's servers from .agents/mcp_config.json.
+            agent("agy", &["agy"], &[(".agents/mcp_config.json", r#"{"mcpServers":{"familiar":{"serverUrl":"{url}"}}}"#)]),
+            // Grok Build reads Claude Code's project file, .mcp.json.
+            agent("grok", &["grok"], &[(".mcp.json", r#"{"mcpServers":{"familiar":{"type":"http","url":"{url}"}}}"#)]),
+        ]
+    }
+
+    fn fill(&self, text: &str, url: &str, world: &str) -> String {
+        text.replace("{url}", url).replace("{world}", world)
+    }
+
+    /// The command with `{url}` and `{world}` filled in.
+    pub fn command_for(&self, url: &str, world: &str) -> Vec<String> {
+        self.command.iter().map(|arg| self.fill(arg, url, world)).collect()
+    }
+
+    /// The files to write into the agent's folder, with `{url}` and `{world}` filled in.
+    pub fn files_for(&self, url: &str, world: &str) -> Vec<(String, String)> {
+        self.files.iter().map(|(path, text)| (path.clone(), self.fill(text, url, world))).collect()
+    }
+}
+
+impl Settings {
+    /// The agents `/agent` can run: the built-in ones, replaced or joined by the configured
+    /// ones.
+    pub fn agents(&self) -> Vec<Agent> {
+        let mut agents = Agent::builtin();
+        for agent in &self.agents {
+            match agents.iter_mut().find(|a| a.name.eq_ignore_ascii_case(&agent.name)) {
+                Some(builtin) => *builtin = agent.clone(),
+                None => agents.push(agent.clone()),
+            }
+        }
+        agents
+    }
 }
 
 impl Default for Settings {
@@ -136,6 +219,8 @@ impl Default for Settings {
             editor_in_tab: true,
             editor_in_sidebar: false,
             editor_syntax_hint_shown: false,
+            agents: Vec::new(),
+            agent_order: default_agent_order(),
         }
     }
 }
@@ -285,6 +370,11 @@ pub fn startup_script_path() -> PathBuf {
 /// Where a world's map is saved.
 pub fn map_path(world: &str) -> PathBuf {
     data_dir().join("maps").join(format!("{}.json", paths::file_name(world, "map")))
+}
+
+/// Where an agent working on a world runs, so it can keep notes about the world there.
+pub fn agent_dir(world: &str) -> PathBuf {
+    data_dir().join("agents").join(paths::file_name(world, "world"))
 }
 
 pub fn log_dir() -> PathBuf {

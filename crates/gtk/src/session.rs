@@ -545,6 +545,8 @@ impl SessionView {
                 Output::Gmcp { package, data } => self.to_pages(|| PageEvent::Gmcp { package: &package, data: &data }),
                 Output::Received(text) => self.to_pages(|| PageEvent::Receive(&text)),
                 Output::Sent(text) => self.to_pages(|| PageEvent::Send(&text)),
+                // Agent tools are only served by the TUI for now.
+                Output::AgentTools(_) | Output::AgentResult { .. } => {}
             }
         }
     }

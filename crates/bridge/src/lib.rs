@@ -238,6 +238,8 @@ impl State {
                 Output::Gmcp { package, data } => json!({ "t": "gmcp", "package": package, "data": data }),
                 Output::Received(text) => json!({ "t": "received", "text": text }),
                 Output::Sent(text) => json!({ "t": "sent", "text": text }),
+                // Agent tools are only served by the TUI for now.
+                Output::AgentTools(_) | Output::AgentResult { .. } => continue,
             };
             shown.push(v);
         }

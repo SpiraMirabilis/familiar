@@ -275,6 +275,11 @@ impl Buffer {
         self.entries.len()
     }
 
+    /// The text of the last `n` lines, oldest first.
+    pub fn last_lines(&self, n: usize) -> Vec<&str> {
+        self.entries.iter().skip(self.entries.len().saturating_sub(n)).map(|e| e.line.text.as_str()).collect()
+    }
+
     pub fn entry(&self, seq: u64) -> Option<&Entry> {
         let first = self.entries.front()?.seq;
         self.entries.get(usize::try_from(seq.checked_sub(first)?).ok()?)

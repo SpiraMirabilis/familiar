@@ -3,17 +3,74 @@
 //!
 //! Supported packages: mcp-negotiate 2.0, dns-org-mud-moo-simpleedit 1.0 (edit server text in
 //! the client), dns-com-awns-status 1.0 (status line), dns-com-awns-ping 1.0 and
-//! dns-com-vmoo-client 1.0.
+//! dns-com-vmoo-client 1.0, and dns-com-familiar-agent 1.0 (tools a MOO offers to an LLM agent;
+//! see docs/agent-protocol.md).
 
 use std::collections::HashMap;
 
-const PACKAGES: [(&str, &str, &str); 5] = [
+const PACKAGES: [(&str, &str, &str); 6] = [
     ("mcp-negotiate", "2.0", "2.0"),
     ("dns-org-mud-moo-simpleedit", "1.0", "1.0"),
     ("dns-com-awns-status", "1.0", "1.0"),
     ("dns-com-awns-ping", "1.0", "1.0"),
     ("dns-com-vmoo-client", "1.0", "1.0"),
+    (AGENT, "1.0", "1.0"),
 ];
+
+/// The package a MOO offers tools to an LLM agent with.
+pub const AGENT: &str = "dns-com-familiar-agent";
+
+/// The longest piece of an agent call's arguments sent on one line.
+const ARGS_CHUNK: usize = 1000;
+
+/// How a tool call shows in the world's window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Show {
+    /// Nothing.
+    None,
+    /// A line saying which tool was called and how it went.
+    #[default]
+    Summary,
+    /// That, and what the tool returned.
+    Full,
+}
+
+/// A tool the server offers through dns-com-familiar-agent.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AgentTool {
+    pub name: String,
+    pub description: String,
+    /// A JSON Schema object for the tool's arguments.
+    pub input_schema: serde_json::Value,
+    pub show: Show,
+    /// Seconds to wait for its result.
+    pub timeout: u64,
+}
+
+impl AgentTool {
+    pub const DEFAULT_TIMEOUT: u64 = 30;
+
+    /// Reads one line of a dns-com-familiar-agent-tools message.
+    pub fn parse(line: &str) -> Result<Self, String> {
+        let v: serde_json::Value = serde_json::from_str(line).map_err(|e| e.to_string())?;
+        let name = v.get("name").and_then(|n| n.as_str()).filter(|n| !n.is_empty()).ok_or("no name")?;
+        let mut input_schema = v.get("input_schema").cloned().unwrap_or_else(|| serde_json::json!({}));
+        let Some(schema) = input_schema.as_object_mut() else { return Err(format!("{name}: input_schema isn't an object")) };
+        schema.entry("type").or_insert_with(|| "object".into());
+        let show = match v.get("show").and_then(|s| s.as_str()).unwrap_or("summary") {
+            "none" => Show::None,
+            "full" => Show::Full,
+            _ => Show::Summary,
+        };
+        Ok(Self {
+            name: name.to_string(),
+            description: v.get("description").and_then(|d| d.as_str()).unwrap_or("").to_string(),
+            input_schema,
+            show,
+            timeout: v.get("timeout").and_then(|t| t.as_u64()).filter(|t| *t > 0).unwrap_or(Self::DEFAULT_TIMEOUT),
+        })
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Message {
@@ -40,6 +97,10 @@ pub enum McpEvent {
     /// dns-org-mud-moo-simpleedit: let the user edit text, then call [`Mcp::simpleedit_set`].
     Edit { reference: String, name: String, kind: String, content: String },
     Notice(String),
+    /// dns-com-familiar-agent-tools: the tools the server offers now.
+    AgentTools(Vec<AgentTool>),
+    /// dns-com-familiar-agent-result: the answer to a call.
+    AgentResult { id: u64, ok: bool, content: String },
 }
 
 /// What to do with a line after MCP has looked at it.
@@ -197,7 +258,8 @@ impl Mcp {
         if let Some(rest) = body.strip_prefix("* ") {
             // Multiline continuation: "#$#* <tag> <key>: <value>"
             if let Some((tag, rest)) = rest.split_once(' ')
-                && let Some((key, value)) = rest.split_once(": ")
+                // An empty value is "key: ", but the space may not survive the trip: take "key:" too.
+                && let Some((key, value)) = rest.split_once(": ").or_else(|| Some((rest.strip_suffix(':')?, "")))
                 && let Some(message) = self.pending.get_mut(tag)
                 && let Some((_, list)) = message.lists.iter_mut().find(|(k, _)| k.eq_ignore_ascii_case(key))
             {
@@ -243,6 +305,9 @@ impl Mcp {
                 }
             }
             "mcp-negotiate-end" => {
+                if self.server_supports(AGENT) {
+                    sends.extend(self.format("dns-com-familiar-agent-list", &[], &[]));
+                }
                 if self.server_supports("dns-com-vmoo-client") {
                     let version = env!("CARGO_PKG_VERSION");
                     sends.extend(self.format(
@@ -270,8 +335,46 @@ impl Mcp {
                     content,
                 });
             }
+            "dns-com-familiar-agent-tools" => {
+                let mut tools = Vec::new();
+                for line in m.list("tools").unwrap_or_default() {
+                    match AgentTool::parse(line) {
+                        Ok(tool) => tools.push(tool),
+                        Err(e) => events.push(McpEvent::Notice(format!("Ignored an agent tool the server offered ({e})"))),
+                    }
+                }
+                events.push(McpEvent::AgentTools(tools));
+            }
+            "dns-com-familiar-agent-result" => {
+                if let Some(id) = m.get("id").and_then(|id| id.parse().ok()) {
+                    let content = match m.list("content") {
+                        Some(lines) => lines.join("\n"),
+                        None => m.get("content").unwrap_or("").to_string(),
+                    };
+                    events.push(McpEvent::AgentResult { id, ok: m.get("ok").is_some_and(|ok| ok != "0" && !ok.is_empty()), content });
+                }
+            }
             _ => {}
         }
+    }
+
+    /// The lines that call an agent tool. `args` is JSON, sent in pieces the server joins.
+    pub fn agent_call(&mut self, id: u64, tool: &str, args: &str) -> Vec<String> {
+        let mut pieces = Vec::new();
+        let mut rest = args;
+        while !rest.is_empty() {
+            let mut end = ARGS_CHUNK.min(rest.len());
+            while !rest.is_char_boundary(end) {
+                end -= 1;
+            }
+            // A piece ending in a space would lose it to a server that trims lines.
+            while end > 1 && rest.as_bytes()[end - 1] == b' ' {
+                end -= 1;
+            }
+            pieces.push(rest[..end].to_string());
+            rest = &rest[end..];
+        }
+        self.format("dns-com-familiar-agent-call", &[("id", &id.to_string()), ("tool", tool)], &[("args", &pieces)])
     }
 
     /// Formats an outgoing message as one or more lines.
@@ -356,6 +459,8 @@ mod tests {
         let mut ev = Vec::new();
         mcp.on_line(&format!(r##"#$#dns-org-mud-moo-simpleedit-content {key} reference: "#123.desc" name: "My description" type: string-list content*: "" _data-tag: 99"##), &mut ev);
         mcp.on_line("#$#* 99 content: First line", &mut ev);
+        mcp.on_line("#$#* 99 content: ", &mut ev);
+        mcp.on_line("#$#* 99 content:", &mut ev);
         mcp.on_line("#$#* 99 content:   indented: with \"quotes\"", &mut ev);
         assert!(ev.is_empty());
         mcp.on_line("#$#: 99", &mut ev);
@@ -365,7 +470,7 @@ mod tests {
                 reference: "#123.desc".into(),
                 name: "My description".into(),
                 kind: "string-list".into(),
-                content: "First line\n  indented: with \"quotes\"".into(),
+                content: "First line\n\n\n  indented: with \"quotes\"".into(),
             }]
         );
         let out = mcp.simpleedit_set("#123.desc", "string-list", "New one\nNew two");

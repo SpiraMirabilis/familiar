@@ -76,8 +76,19 @@ impl Term {
         let pair = native_pty_system().openpty(pty_size(size)).map_err(|e| e.to_string())?;
         let mut builder = CommandBuilder::new(command.get_program());
         builder.args(command.get_args());
-        if let Ok(dir) = std::env::current_dir() {
-            builder.cwd(dir);
+        match command.get_current_dir() {
+            Some(dir) => builder.cwd(dir),
+            None => {
+                if let Ok(dir) = std::env::current_dir() {
+                    builder.cwd(dir);
+                }
+            }
+        }
+        for (name, value) in command.get_envs() {
+            match value {
+                Some(value) => builder.env(name, value),
+                None => builder.env_remove(name),
+            }
         }
         // What the emulator here understands, whatever the real terminal is.
         builder.env("TERM", "xterm-256color");
@@ -326,5 +337,29 @@ mod tests {
         assert!(screen.cell(0, 6).unwrap().bold() && !screen.cell(0, 0).unwrap().bold());
         // ESC [ 0 n (the answer to its question) and then "abc".
         assert!(screen.contents().contains("got 7"), "{:?}", screen.contents());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn passes_the_commands_environment_and_folder() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let dir = std::env::temp_dir();
+        let mut command = std::process::Command::new("sh");
+        command.args(["-c", "printf \"$FAMILIAR_TEST_VAR $(pwd)\""]).env("FAMILIAR_TEST_VAR", "here").current_dir(&dir);
+        let mut term = Term::spawn(&command, (200, 5), 1, tx).unwrap();
+        let mut exited = false;
+        while let Ok(Some((_, event))) = tokio::time::timeout(std::time::Duration::from_secs(10), rx.recv()).await {
+            match event {
+                PtyEvent::Output(bytes) => term.feed(&bytes),
+                PtyEvent::Exited(_) => exited = true,
+            }
+            if exited && term.screen().contents().contains("here") {
+                break;
+            }
+        }
+        let contents = term.screen().contents();
+        let expected = dir.canonicalize().unwrap();
+        let name = expected.file_name().unwrap().to_string_lossy();
+        assert!(contents.starts_with("here /") && contents.trim_end().ends_with(&*name), "{contents:?}");
     }
 }

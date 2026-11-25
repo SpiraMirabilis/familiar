@@ -29,6 +29,10 @@ pub enum Effect {
     OpenPuppet { name: String, focus: bool },
     /// Show this sidebar panel.
     ShowPanel(Panel),
+    /// The tools the world offers an agent changed.
+    AgentTools,
+    /// An agent tool call finished.
+    AgentResult { id: u64, ok: bool, content: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -258,6 +262,8 @@ impl Session {
                 },
                 Output::StatusText(text) => self.status_text = text,
                 Output::Edit(request) => effects.push(Effect::Edit(request)),
+                Output::AgentTools(_) => effects.push(Effect::AgentTools),
+                Output::AgentResult { id, ok, content } => effects.push(Effect::AgentResult { id, ok, content }),
                 Output::WebView(familiar_engine::WebViewCommand::Open(open)) => {
                     match open.url {
                         Some(url) => self.output.notice(&format!("The server opened a web view; open it in a browser: {url}")),

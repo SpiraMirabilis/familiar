@@ -1,5 +1,6 @@
 //! A terminal MU* client on the same engine as the GTK one.
 
+mod agent;
 mod app;
 mod buffer;
 mod clipboard;
@@ -144,9 +145,10 @@ async fn run(terminal: &mut Term, args: Args) -> std::io::Result<()> {
     let (net_tx, mut net_rx) = mpsc::unbounded_channel();
     let (key_tx, mut key_rx) = mpsc::unbounded_channel();
     let (pty_tx, mut pty_rx) = mpsc::unbounded_channel();
+    let (agent_tx, mut agent_rx) = mpsc::unbounded_channel();
     let input = InputThread::start(key_tx);
     let migrated = familiar_config::migrate_old_dirs();
-    let mut app = App::new(net_tx, pty_tx);
+    let mut app = App::new(net_tx, pty_tx, agent_tx);
     for message in migrated {
         app.toast(&message);
     }
@@ -185,6 +187,7 @@ async fn run(terminal: &mut Term, args: Args) -> std::io::Result<()> {
                     app.on_pty(ev);
                 }
             }
+            Some(request) = agent_rx.recv() => app.on_agent(request),
             _ = tokio::time::sleep_until(wake.into()) => app.on_tick(),
         }
         if let Some(text) = app.clipboard.take() {
