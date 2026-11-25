@@ -9,6 +9,7 @@
   it again when its tab opens (`restore_log`).
 - Terminal client on macOS: Option+← and → switch tabs. Mac terminals send them as Esc b and
   Esc f, which the input used to take as word movement.
+- Windows app: Alt+← and → switch tabs (they only beeped).
 - Importing from BeipMU brings in each character's log file, date setting and Restore Log. On
   macOS and Linux a Windows log path becomes the same file name in the logs folder.
 
