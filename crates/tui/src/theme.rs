@@ -31,6 +31,15 @@ pub fn faint() -> Style {
     Style::new().fg(FAINT)
 }
 
+/// The search match being shown, and the others.
+pub fn current_match() -> Style {
+    Style::new().fg(Color::Black).bg(ACCENT_2)
+}
+
+pub fn other_match() -> Style {
+    Style::new().fg(Color::Black).bg(WARN)
+}
+
 pub fn bold() -> Style {
     Style::new().add_modifier(Modifier::BOLD)
 }
