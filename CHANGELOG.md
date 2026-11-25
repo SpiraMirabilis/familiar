@@ -19,6 +19,8 @@
   new dependency (the default `agents` feature).
 - macOS: `/agent` too, in a terminal (SwiftTerm) in the side dock. Agents' programs are looked
   for on the login shell's PATH, since an app opened from the Finder doesn't get it.
+- Windows: `/agent` too. The engine runs the agent in a ConPTY (for apps that ask, with
+  `"agents": "pty"`), and the side dock shows it with xterm.js in WebView2.
 - Only clients that can run agents offer MOOs `dns-com-familiar-agent`. The agent server and
   launching live in a new crate, `familiar-agent`, for every frontend.
 - The terminal client's embedded terminal passes on a command's environment and working

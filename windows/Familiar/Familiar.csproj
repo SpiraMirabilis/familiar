@@ -42,6 +42,8 @@
     <!-- The code editor's highlighting is made from the GTK client's language files. -->
     <EmbeddedResource Include="..\..\crates\gtk\data\language-specs\*.lang" LogicalName="%(Filename).lang" />
     <Content Include="..\..\packaging\windows\familiar.ico" Link="familiar.ico" CopyToOutputDirectory="PreserveNewest" />
+    <!-- The terminal LLM agents run in (xterm.js; see Terminal\README.md). -->
+    <Content Include="Terminal\*.html;Terminal\*.js;Terminal\*.css" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <!-- The Rust engine. Build it first: cargo build [-r] -p familiar-bridge -->

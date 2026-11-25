@@ -199,6 +199,10 @@ The Windows app is written for Windows rather than being the GTK client: C# and 
 colour, and keeps its worlds in tabs in the title bar.
 
 - **Web views** use WebView2, which is part of Windows 11 and of nearly every Windows 10.
+- **LLM agents** (`/agent`) run in a terminal in the side dock, as in the GTK client: the engine
+  runs the agent in a ConPTY, and the panel draws it with xterm.js in WebView2. Ctrl+C copies
+  when there's a selection (and interrupts the agent when there isn't), and Ctrl+V pastes, as in
+  Windows Terminal. Closing the panel's tab stops the agent.
 - **Speech** uses the voice built into Windows instead of speech-dispatcher, and **sounds** play
   through Windows' own audio (WAV, Ogg Vorbis, MP3 and FLAC).
 - **Spell checking** is Windows' own, in whichever languages Windows has installed.

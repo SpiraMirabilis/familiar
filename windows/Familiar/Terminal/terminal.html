@@ -1,0 +1,76 @@
+<!doctype html>
+<!-- The terminal an LLM agent (/agent) runs in. The app (AgentPane.cs) runs nothing itself: the
+     engine runs the agent's program in a ConPTY, and the two talk through WebView2 messages.
+     From the app: {op: "start", font, size, background, foreground}, {op: "write", data:
+     base64}, {op: "focus"}. To the app: {op: "ready"}, {op: "input", data}, {op: "resize",
+     cols, rows}. -->
+<html>
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="xterm.css">
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; }
+  #terminal { position: absolute; inset: 6px; }
+</style>
+<script src="xterm.js"></script>
+<script src="addon-fit.js"></script>
+</head>
+<body>
+<div id="terminal"></div>
+<script>
+  const post = message => window.chrome.webview.postMessage(message);
+  let term = null;
+
+  function start(o) {
+    document.body.style.background = o.background;
+    term = new Terminal({
+      fontFamily: `"${o.font}", "Cascadia Mono", Consolas, monospace`,
+      fontSize: o.size,
+      cursorBlink: true,
+      scrollback: 10000,
+      theme: { background: o.background, foreground: o.foreground },
+    });
+    const fit = new FitAddon.FitAddon();
+    term.loadAddon(fit);
+    const box = document.getElementById("terminal");
+    term.open(box);
+    term.onData(data => post({ op: "input", data }));
+    term.onResize(size => post({ op: "resize", cols: size.cols, rows: size.rows }));
+    // As in Windows Terminal: Ctrl+C copies when there's a selection (and interrupts when not),
+    // and Ctrl+V pastes. Letting the browser have Ctrl+V gives xterm a paste event.
+    term.attachCustomKeyEventHandler(e => {
+      if (e.type !== "keydown" || !e.ctrlKey || e.altKey) return true;
+      const key = e.key.toLowerCase();
+      if (key === "c" && (e.shiftKey || term.hasSelection())) {
+        if (term.hasSelection()) navigator.clipboard.writeText(term.getSelection());
+        term.clearSelection();
+        e.preventDefault();
+        return false;
+      }
+      if (key === "v") return false;
+      return true;
+    });
+    new ResizeObserver(() => fit.fit()).observe(box);
+    fit.fit();
+    post({ op: "resize", cols: term.cols, rows: term.rows });
+    term.focus();
+  }
+
+  function write(base64) {
+    const text = atob(base64);
+    const bytes = new Uint8Array(text.length);
+    for (let i = 0; i < text.length; i++) bytes[i] = text.charCodeAt(i);
+    term.write(bytes);
+  }
+
+  window.chrome.webview.addEventListener("message", e => {
+    const m = e.data;
+    if (m.op === "start") start(m);
+    else if (!term) return;
+    else if (m.op === "write") write(m.data);
+    else if (m.op === "focus") term.focus();
+  });
+  post({ op: "ready" });
+</script>
+</body>
+</html>

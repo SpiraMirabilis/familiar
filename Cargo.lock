@@ -848,6 +848,7 @@ dependencies = [
  "familiar-platform",
  "familiar-script",
  "familiar-speech",
+ "portable-pty",
  "serde",
  "serde_json",
  "tokio",

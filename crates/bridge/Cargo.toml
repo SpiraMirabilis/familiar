@@ -23,6 +23,7 @@ familiar-import = { version = "0.4.0", path = "../import" }
 familiar-map = { version = "0.4.0", path = "../map" }
 familiar-net = { version = "0.4.0", path = "../net" }
 familiar-script = { version = "0.4.0", path = "../script" }
+portable-pty = "0.9.0"
 serde = "1.0.229"
 serde_json = { version = "1.0.154", features = ["preserve_order"] }
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "net", "time", "sync"] }

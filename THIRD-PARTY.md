@@ -16,9 +16,10 @@ Familiar's own licence is in `LICENSE`. Rust dependencies keep their own licence
 
 The Windows zip and installer also contain what the Windows app runs on: Microsoft's .NET runtime
 (MIT), Windows App SDK and WinUI (MIT, with Microsoft's licence terms for the runtime files),
-Win2D (MIT), the Windows Community Toolkit (MIT), and
+Win2D (MIT), the Windows Community Toolkit (MIT),
 [TextControlBox](https://github.com/FrozenAssassine/TextControlBox-WinUI) (MIT), which the code
-editor is built on.
+editor is built on, and [xterm.js](https://github.com/xtermjs/xterm.js) (MIT, the xterm.js
+authors), the terminal LLM agents run in, which is in `windows/Familiar/Terminal/`.
 
 The macOS app contains [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm) (MIT, Copyright (c)
 2019-2026 Miguel de Icaza, and the xterm.js authors), the terminal LLM agents run in.

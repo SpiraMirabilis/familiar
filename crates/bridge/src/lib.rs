@@ -10,6 +10,7 @@
 //! Methods that may be called from any thread are marked "(any thread)" in [`call`].
 
 mod json;
+mod tty;
 #[cfg(windows)]
 mod windows;
 
@@ -55,6 +56,8 @@ struct Inbox {
     woken: AtomicBool,
     /// LLM agents' requests of this world, answered at the next poll.
     agent: Mutex<VecDeque<AgentRequest>>,
+    /// What the agent we run in a terminal has printed (apps that asked for "pty").
+    tty: Arc<Mutex<tty::TtyOutput>>,
 }
 
 impl Inbox {
@@ -78,6 +81,10 @@ struct Session {
     timer: Option<(tokio::task::JoinHandle<()>, Instant)>,
     /// The LLM agent working on this world: its name and endpoint token.
     agent: Option<(String, String)>,
+    /// Whether we run agents in a terminal ourselves ("agents": "pty"), rather than the app.
+    run_agents: bool,
+    /// The agent's terminal, when we run it.
+    tty: Option<tty::Tty>,
     /// The last lines of the world's window as plain text, for agents (world_output).
     recent: VecDeque<String>,
 }
@@ -369,6 +376,7 @@ impl State {
             "list" => notice(format!("Agents: {} ([[settings.agent]] in the config adds more)", familiar_agent::names(&self.config.settings))),
             "stop" => match session.agent.take() {
                 Some((name, token)) => {
+                    session.tty = None;
                     self.agents.close(&token);
                     (vec![json!({ "t": "agent_stop", "token": token })], vec![Output::Notice(format!("Stopped {name}"))])
                 }
@@ -394,12 +402,27 @@ impl State {
                     Ok(launch) => launch,
                     Err(e) => return notice(e),
                 };
+                if session.run_agents {
+                    *session.inbox.tty.lock().unwrap() = tty::TtyOutput::default();
+                    let inbox = session.inbox.clone();
+                    // The app resizes it to fit as soon as it's on screen.
+                    match tty::Tty::spawn(&launch, 80, 24, session.inbox.tty.clone(), move || inbox.wake(id)) {
+                        Ok(tty) => session.tty = Some(tty),
+                        Err(e) => {
+                            self.agents.close(&launch.token);
+                            return notice(format!("Couldn't run {}: {e}", launch.program));
+                        }
+                    }
+                }
                 session.agent = Some((launch.name.clone(), launch.token.clone()));
                 let mut more = Vec::new();
                 if session.engine.agent_tools().is_none() {
                     more.push(Output::Notice("This world offers no tools (its MOO needs the dns-com-familiar-agent package), so the agent can only read its output".into()));
                 }
                 let env: serde_json::Map<String, Value> = launch.env.iter().map(|(k, v)| (k.clone(), Value::from(v.as_str()))).collect();
+                if session.run_agents {
+                    return (vec![json!({ "t": "agent_start", "name": launch.name, "token": launch.token, "pty": true })], more);
+                }
                 let start = json!({
                     "t": "agent_start",
                     "name": launch.name,
@@ -436,6 +459,19 @@ impl State {
         for request in requests {
             agents.answer(request, Some(&mut AgentWorld(session)));
         }
+        // What the agent we run printed, and whether it has stopped.
+        let mut shown = Vec::new();
+        let printed = std::mem::take(&mut *session.inbox.tty.lock().unwrap());
+        if !printed.bytes.is_empty() && session.tty.is_some() {
+            shown.push(json!({ "t": "agent_output", "data": tty::base64(&printed.bytes) }));
+        }
+        if printed.exited && session.tty.take().is_some()
+            && let Some((name, token)) = session.agent.take()
+        {
+            agents.close(&token);
+            shown.push(json!({ "t": "agent_stop", "token": token }));
+            out.push(Output::Notice(format!("{name} stopped")));
+        }
         let now = Instant::now();
         if session.engine.next_deadline().is_some_and(|due| due <= now) {
             // This timer has fired; a new one is set below.
@@ -443,8 +479,8 @@ impl State {
             out.extend(session.engine.tick(now));
         }
         let more = !session.inbox.events.lock().unwrap().is_empty();
-        let outputs = self.finish(id, out);
-        Ok(json!({ "outputs": outputs, "more": more }))
+        shown.extend(self.finish(id, out));
+        Ok(json!({ "outputs": shown, "more": more }))
     }
 
     fn open(&mut self, args: &Value) -> Reply {
@@ -456,10 +492,13 @@ impl State {
         self.next_id += 1;
         // Only apps that can run agents (in a terminal) say so: the engine then offers MOOs the
         // agent package and passes /agent on.
-        engine.set_agents_supported(flag(args, "agents"));
-        let inbox = Arc::new(Inbox { events: Mutex::default(), woken: AtomicBool::new(false), agent: Mutex::default() });
+        // "pty" also asks us to run them, in a pseudo-terminal, and pass on what they print.
+        let run_agents = args.get("agents").and_then(Value::as_str) == Some("pty");
+        engine.set_agents_supported(flag(args, "agents") || run_agents);
+        let inbox = Arc::new(Inbox { events: Mutex::default(), woken: AtomicBool::new(false), agent: Mutex::default(), tty: Arc::default() });
         self.inboxes.lock().unwrap().insert(id, inbox.clone());
-        self.sessions.insert(id, Session { engine, generation: 0, inbox, pending: Vec::new(), timer: None, agent: None, recent: VecDeque::new() });
+        let session = Session { engine, generation: 0, inbox, pending: Vec::new(), timer: None, agent: None, run_agents, tty: None, recent: VecDeque::new() };
+        self.sessions.insert(id, session);
         out.extend(self.start_scripting(id));
         let outputs = self.finish(id, out);
         let mut info = self.info(id)?;
@@ -492,7 +531,8 @@ impl State {
         if let Some((task, _)) = session.timer.take() {
             task.abort();
         }
-        // The app stops the agent's program with the tab.
+        // The app stops the agent's program with the tab, or we do.
+        session.tty = None;
         if let Some((_, token)) = session.agent.take() {
             self.agents.close(&token);
         }
@@ -675,6 +715,26 @@ impl State {
                 let (_, session) = self.session(args)?;
                 session.engine.set_puppet_open(text(args, "name")?, flag(args, "open"));
                 Ok(Value::Null)
+            }
+            // Typing into the agent we run ("pty"): "data" is the text.
+            "agent.write" => {
+                let (_, session) = self.session(args)?;
+                if let Some(tty) = &mut session.tty {
+                    tty.write(text(args, "data")?.as_bytes());
+                }
+                Ok(Value::Null)
+            }
+            "agent.resize" => {
+                let (_, session) = self.session(args)?;
+                if let Some(tty) = &session.tty {
+                    tty.resize(number(args, "cols")?.clamp(2.0, 1000.0) as u16, number(args, "rows")?.clamp(2.0, 1000.0) as u16);
+                }
+                Ok(Value::Null)
+            }
+            // /agent stop, from the app (closing the agent's tab, say).
+            "agent.stop" => {
+                let (id, _) = self.session(args)?;
+                self.outputs(id, vec![Output::Agent("stop".into())])
             }
             // The agent the app was running for a world ended (or never started, with "error").
             // "token" is the one from its agent_start, so a late report is ignored.
