@@ -15,7 +15,7 @@ jobs:
       - name: Install dependencies
         run: |
           pacman -Syu --noconfirm --needed base-devel git rust gtk4 libadwaita gtksourceview5 \
-            libspelling webkitgtk-6.0 gstreamer gst-plugins-base
+            libspelling webkitgtk-6.0 vte4 gstreamer gst-plugins-base
       - uses: actions/checkout@v7
       - name: Build
         run: make

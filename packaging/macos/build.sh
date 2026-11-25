@@ -26,17 +26,29 @@ if [ -n "${UNIVERSAL:-}" ]; then
     lipo -create -output target/universal/release/libfamiliar_bridge.a \
         target/aarch64-apple-darwin/release/libfamiliar_bridge.a target/x86_64-apple-darwin/release/libfamiliar_bridge.a
     export FAMILIAR_RUST_LIB_DIR="$PWD/target/universal/release"
-    ARCHS=(--arch arm64 --arch x86_64)
+    ARCHS=(arm64 x86_64)
 else
     cargo build --release --locked -p familiar-bridge
-    ARCHS=()
+    ARCHS=("")
 fi
 
-BINARY="$(swift build --package-path macos -c release ${ARCHS[@]+"${ARCHS[@]}"} --show-bin-path)/Familiar"
-# SwiftPM doesn't know the app depends on the Rust library, so it wouldn't relink after a change
-# to the engine alone.
-rm -f "$BINARY"
-swift build --package-path macos -c release ${ARCHS[@]+"${ARCHS[@]}"}
+# One architecture at a time: given several, swift build switches to Xcode's build system, which
+# can't run SwiftTerm's build plugin. The binaries are joined afterwards.
+BINARIES=()
+for arch in "${ARCHS[@]}"; do
+    flags=(--package-path macos -c release ${arch:+--arch "$arch"})
+    built="$(swift build "${flags[@]}" --show-bin-path)/Familiar"
+    # SwiftPM doesn't know the app depends on the Rust library, so it wouldn't relink after a
+    # change to the engine alone.
+    rm -f "$built"
+    swift build "${flags[@]}"
+    BINARIES+=("$built")
+done
+BINARY="${BINARIES[0]}"
+if [ ${#BINARIES[@]} -gt 1 ]; then
+    BINARY=target/universal/Familiar
+    lipo -create -output "$BINARY" "${BINARIES[@]}"
+fi
 
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
