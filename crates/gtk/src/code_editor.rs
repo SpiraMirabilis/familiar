@@ -10,7 +10,10 @@ use adw::prelude::*;
 use gtk::{gdk, glib};
 use familiar_code::Lang;
 use familiar_engine::EditRequest;
+use familiar_engine::keymap::Scope;
 use sourceview5::prelude::*;
+
+use crate::app::AppState;
 
 /// Language definitions we ship. GtkSourceView's own (Lua, Python, ...) are built in.
 const LANGUAGE_SPECS: [(&str, &str); 2] = [
@@ -86,12 +89,16 @@ pub struct CodeEditor {
     search: sourceview5::SearchContext,
     errors: gtk::ListBox,
     errors_revealer: gtk::Revealer,
+    /// Show the current shortcuts.
+    send_button: gtk::Button,
+    more: gtk::MenuButton,
+    state: Rc<AppState>,
     on_send: Box<dyn Fn(String)>,
 }
 
 impl CodeEditor {
     /// Opens an editor for `request`. `on_send` gets the text each time the user sends it.
-    pub fn open(parent: Option<&gtk::Window>, request: &EditRequest, on_send: impl Fn(String) + 'static) -> Rc<Self> {
+    pub fn open(parent: Option<&gtk::Window>, state: Rc<AppState>, request: &EditRequest, on_send: impl Fn(String) + 'static) -> Rc<Self> {
         install_languages();
         let buffer = sourceview5::Buffer::new(None);
         buffer.set_highlight_matching_brackets(true);
@@ -144,12 +151,11 @@ impl CodeEditor {
 
         let title = adw::WindowTitle::new(&request.name, "");
         let close = gtk::Button::with_label("Close");
-        let send = gtk::Button::builder().label("Send").tooltip_text("Send to the server (Ctrl+S)").css_classes(["suggested-action"]).build();
+        let send = gtk::Button::builder().label("Send").css_classes(["suggested-action"]).build();
         let language_names: Vec<&str> = LANGUAGES.iter().map(|(_, name)| *name).collect();
         let picker = gtk::DropDown::from_strings(&language_names);
         picker.set_tooltip_text(Some("Language"));
-        let menu = gio_menu();
-        let more = gtk::MenuButton::builder().icon_name("view-more-symbolic").menu_model(&menu).tooltip_text("More").build();
+        let more = gtk::MenuButton::builder().icon_name("view-more-symbolic").tooltip_text("More").build();
         let header = adw::HeaderBar::builder().title_widget(&title).show_end_title_buttons(false).show_start_title_buttons(false).build();
         header.pack_start(&close);
         header.pack_end(&send);
@@ -173,8 +179,14 @@ impl CodeEditor {
             search,
             errors,
             errors_revealer,
+            send_button: send.clone(),
+            more: more.clone(),
+            state,
             on_send: Box::new(on_send),
         });
+        this.show_keys();
+        let weak = Rc::downgrade(&this);
+        this.state.connect_keys_changed(move || weak.upgrade().inspect(|this| this.show_keys()).is_some());
 
         this.set_language(request.language.as_deref());
         let selected = LANGUAGES.iter().position(|(id, _)| Some(*id) == request.language.as_deref()).unwrap_or(0);
@@ -226,6 +238,28 @@ impl CodeEditor {
 
     pub fn present(&self) {
         self.window.present();
+    }
+
+    /// Puts the current shortcuts in the Send button's tooltip and the menu.
+    fn show_keys(&self) {
+        let tooltip = match self.state.key_label("editor-send") {
+            Some(key) => format!("Send to the server ({key})"),
+            None => "Send to the server".into(),
+        };
+        self.send_button.set_tooltip_text(Some(&tooltip));
+        let keymap = self.state.keymap();
+        let item = |label: &str, action: &str, id: &str| {
+            let item = gtk::gio::MenuItem::new(Some(label), Some(action));
+            if let Some(accel) = keymap.keys(id).first().and_then(crate::keys::accel) {
+                item.set_attribute_value("accel", Some(&accel.to_variant()));
+            }
+            item
+        };
+        let menu = gtk::gio::Menu::new();
+        menu.append_item(&item("Re-indent", "editor.reindent", "editor-reindent"));
+        menu.append_item(&item("Find", "editor.find", "editor-find"));
+        menu.append(Some("Clear Error Marks"), Some("editor.clear-errors"));
+        self.more.set_menu_model(Some(&menu));
     }
 
     fn update_title(&self) {
@@ -451,17 +485,21 @@ impl CodeEditor {
         let keys = gtk::EventControllerKey::new();
         keys.set_propagation_phase(gtk::PropagationPhase::Capture);
         let weak = Rc::downgrade(self);
-        keys.connect_key_pressed(move |_, key, _, state| {
+        keys.connect_key_pressed(move |controller, key, keycode, mods| {
             let Some(this) = weak.upgrade() else { return glib::Propagation::Proceed };
-            let ctrl = state.contains(gdk::ModifierType::CONTROL_MASK);
-            let shift = state.contains(gdk::ModifierType::SHIFT_MASK);
-            match key {
-                gdk::Key::s if ctrl => this.send(),
-                gdk::Key::f if ctrl => this.search_bar.set_search_mode(true),
-                gdk::Key::I | gdk::Key::i if ctrl && shift => this.reindent(),
-                gdk::Key::g if ctrl => this.find(false),
-                gdk::Key::G if ctrl => this.find(true),
-                gdk::Key::Return | gdk::Key::KP_Enter if this.view.has_focus() && !ctrl => {
+            // Not while "Discard Changes?" is asking.
+            let action = match this.window.visible_dialog() {
+                Some(_) => None,
+                None => crate::keys::chord(controller, key, keycode, mods).and_then(|c| this.state.keymap().lookup(Scope::Editor, &c)),
+            };
+            let ctrl = mods.contains(gdk::ModifierType::CONTROL_MASK);
+            match (action, key) {
+                (Some("editor-send"), _) => this.send(),
+                (Some("editor-find"), _) => this.search_bar.set_search_mode(true),
+                (Some("editor-find-next"), _) => this.find(false),
+                (Some("editor-find-previous"), _) => this.find(true),
+                (Some("editor-reindent"), _) => this.reindent(),
+                (_, gdk::Key::Return | gdk::Key::KP_Enter) if this.view.has_focus() && !ctrl => {
                     let Some(lang) = this.lang() else { return glib::Propagation::Proceed };
                     this.smart_enter(lang);
                 }
@@ -471,12 +509,4 @@ impl CodeEditor {
         });
         self.window.add_controller(keys);
     }
-}
-
-fn gio_menu() -> gtk::gio::Menu {
-    let menu = gtk::gio::Menu::new();
-    menu.append(Some("Re-indent (Ctrl+Shift+I)"), Some("editor.reindent"));
-    menu.append(Some("Find (Ctrl+F)"), Some("editor.find"));
-    menu.append(Some("Clear Error Marks"), Some("editor.clear-errors"));
-    menu
 }

@@ -1,11 +1,13 @@
 //! Application state and behaviour: tabs, overlays, keys, mouse, commands and side effects.
 //! Drawing is in `ui.rs`; this module never touches the terminal directly.
 
+use std::ops::Range;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use familiar_config::{Config, Settings, World};
-use familiar_engine::{EditRequest, KeyChord, Output, Status};
+use familiar_engine::keymap::{Platform, Scope};
+use familiar_engine::{EditRequest, KeyChord, Keymap, Output, Status};
 use familiar_net::SessionEvent;
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::{Position, Rect};
@@ -19,6 +21,7 @@ use crate::rules::RulesView;
 use crate::term::{PtyEvent, PtySender, Term};
 use crate::form::{FieldKind, WorldForm};
 use crate::fuzzy;
+use crate::keyboard::KeysView;
 use crate::input::Input;
 use crate::session::{Effect, Panel, Session};
 
@@ -37,7 +40,8 @@ pub const TUI_COMMANDS: &[(&str, &str)] = &[
     ("/editor syntax [force]", "install MOO highlighting for $EDITOR (micro, Vim, Neovim, Emacs)"),
     ("/agent [<name>|stop|list]", "run an LLM agent (claude, codex, agy, grok) beside the world, with the world's tools"),
     ("/rules", "edit triggers, aliases, keyboard macros and variables"),
-    ("/keys", "show keyboard shortcuts"),
+    ("/keys", "change the keyboard shortcuts"),
+    ("/import <path>", "import worlds, characters and rules from a BeipMU Config.txt"),
     ("/quit", "disconnect everything and quit"),
 ];
 
@@ -49,63 +53,13 @@ pub enum Tab {
     Editor(u64),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Cmd {
-    Connect,
-    NewWorld,
-    EditWorld,
-    History,
-    NextTab,
-    PrevTab,
-    CloseTab,
-    Reconnect,
-    Disconnect,
-    Clear,
-    ToggleSidebar,
-    NextPanel,
-    ToggleLog,
-    ShowMap,
-    EditInput,
-    EditConfig,
-    EditorFocus,
-    MoveEditor,
-    Rules,
-    StopSpeech,
-    Help,
-    Quit,
-}
-
 /// How often the output scrolls while a selection is held at its top or bottom edge.
 const AUTOSCROLL: Duration = Duration::from_millis(40);
 
-const PALETTE: &[(Cmd, &str, &str)] = &[
-    (Cmd::Connect, "Connect to a world…", "Ctrl+O"),
-    (Cmd::NewWorld, "New world…", "Ctrl+O Ctrl+N"),
-    (Cmd::EditWorld, "Save or edit this world…", "/world"),
-    (Cmd::History, "Search command history…", "Ctrl+R"),
-    (Cmd::NextTab, "Next tab", "Alt+→"),
-    (Cmd::PrevTab, "Previous tab", "Alt+←"),
-    (Cmd::CloseTab, "Close tab", "/close"),
-    (Cmd::Reconnect, "Reconnect", "Enter on empty line"),
-    (Cmd::Disconnect, "Disconnect", "/disconnect"),
-    (Cmd::Clear, "Clear output", "/clear"),
-    (Cmd::ToggleSidebar, "Show or hide the sidebar", "Ctrl+B"),
-    (Cmd::NextPanel, "Next sidebar panel", "Alt+]"),
-    (Cmd::ShowMap, "Show the map", "/map"),
-    (Cmd::ToggleLog, "Start or stop logging", "/log"),
-    (Cmd::EditInput, "Edit the input in $EDITOR", "Ctrl+G"),
-    (Cmd::EditConfig, "Edit the config file", "/config"),
-    (Cmd::EditorFocus, "Switch between the world and the editor beside it", "F6"),
-    (Cmd::MoveEditor, "Move the editor between its tab and the sidebar", "F7"),
-    (Cmd::Rules, "Triggers, aliases and macros…", "F2"),
-    (Cmd::StopSpeech, "Stop speaking", "/speech stop"),
-    (Cmd::Help, "Keyboard shortcuts", "F1"),
-    (Cmd::Quit, "Quit", "Ctrl+C Ctrl+C"),
-];
-
 pub enum Action {
     Connect { world: Box<World>, character: Option<String> },
-    Run(Cmd),
+    /// A keyboard shortcut's action, by id (`familiar_engine::keymap`).
+    Run(&'static str),
     Insert(String),
 }
 
@@ -169,7 +123,22 @@ pub enum Overlay {
     Picker(Box<Picker>),
     World(Box<WorldForm>),
     Rules(Box<RulesView>),
+    /// The keyboard shortcuts, to change.
+    Keys(Box<KeysView>),
+    /// The search bar over the output.
+    Find(Box<Find>),
     Help,
+}
+
+/// Searching the output: what's typed, and the match being shown.
+pub struct Find {
+    pub query: Input,
+    /// The `Buffer::id` searched.
+    pub buffer: u64,
+    /// The match shown: its entry and bytes.
+    pub current: Option<(u64, Range<usize>)>,
+    /// Which match that is, counting from the newest, and how many there are.
+    pub position: (usize, usize),
 }
 
 /// A suggestion under a `/` command being typed.
@@ -317,6 +286,10 @@ pub struct App {
     /// A saved world Ctrl+D was pressed on once (in the picker).
     delete_armed: Option<String>,
     sounds: familiar_platform::SoundPlayer,
+    /// The keyboard shortcuts, from `[settings.terminal_keys]` and the defaults.
+    pub keymap: Keymap,
+    /// What was last searched for in the output, for Find Next with the search bar closed.
+    last_find: Option<Box<Find>>,
 }
 
 impl App {
@@ -327,6 +300,7 @@ impl App {
             Err(e) => (Config::default(), Some(e.to_string())),
         };
         crate::theme::set_terminal_colors(config.settings.terminal_colors);
+        let keymap = Keymap::new(&config.settings, Platform::Terminal);
         let mut app = Self {
             config,
             config_path,
@@ -361,6 +335,8 @@ impl App {
             esc_at: None,
             delete_armed: None,
             sounds: familiar_platform::SoundPlayer::new(),
+            keymap,
+            last_find: None,
         };
         if let Some(e) = config_error {
             app.toast(&format!("Couldn't read the config ({e}); changes won't be saved"));
@@ -382,6 +358,22 @@ impl App {
         }
         if let Err(e) = self.config.save(&self.config_path) {
             self.toast(&format!("Couldn't save the config: {e}"));
+        }
+    }
+
+    /// An action's first key as people read it ("Alt+→"), for hints. None if it has no key.
+    pub fn key_for(&self, id: &str) -> Option<String> {
+        self.keymap.keys(id).first().map(crate::keys::pretty)
+    }
+
+    /// A message in the current tab's output, or a toast where there's no output.
+    pub(super) fn notice(&mut self, text: &str) {
+        match self.current_buffer() {
+            Some(buffer) => {
+                buffer.notice(text);
+                buffer.scroll_to_bottom();
+            }
+            None => self.toast(text),
         }
     }
 
@@ -656,6 +648,7 @@ impl App {
                 self.config = config;
                 self.config_error = None;
                 crate::theme::set_terminal_colors(self.config.settings.terminal_colors);
+                self.keymap = Keymap::new(&self.config.settings, Platform::Terminal);
                 for idx in 0..self.sessions.len() {
                     let out = self.sessions[idx].engine.reload(&self.config);
                     self.apply(idx, out);
@@ -668,11 +661,13 @@ impl App {
 
 }
 
+mod actions;
 mod agents;
 mod editing;
 pub use editing::{DOCK_MIN_WIDTH, dock_width};
 mod effects;
 mod events;
+mod keyboard;
 mod overlays;
 mod rules;
 
@@ -680,7 +675,7 @@ use events::parse_address;
 
 #[cfg(test)]
 mod tests {
-    use super::events::chord;
+    use super::events::{chord, is_readline_key, reaches_past_editor};
     use super::overlays::insert_for;
     use super::*;
 
@@ -725,5 +720,43 @@ mod tests {
         let mut kp = key(KeyCode::Char('8'), KeyModifiers::NONE);
         kp.state = KeyEventState::KEYPAD;
         assert_eq!(chord(&kp).unwrap().to_string(), "KP_8");
+        assert_eq!(chord(&key(KeyCode::Char(']'), KeyModifiers::ALT)).unwrap().to_string(), "Alt+bracketright");
+        assert_eq!(chord(&key(KeyCode::Char('.'), KeyModifiers::CONTROL)).unwrap().to_string(), "Ctrl+period");
+    }
+
+    #[test]
+    fn key_presses_find_their_shortcuts() {
+        let keymap = Keymap::new(&Settings::default(), Platform::Terminal);
+        let action = |code, m| keymap.lookup(Scope::Window, &chord(&KeyEvent::new(code, m)).unwrap());
+        assert_eq!(action(KeyCode::Char('k'), KeyModifiers::CONTROL), Some("palette"));
+        assert_eq!(action(KeyCode::Char(']'), KeyModifiers::ALT), Some("next-panel"));
+        assert_eq!(action(KeyCode::Char('3'), KeyModifiers::ALT), Some("tab-3"));
+        assert_eq!(action(KeyCode::PageDown, KeyModifiers::CONTROL), Some("next-tab"));
+        assert_eq!(action(KeyCode::F(1), KeyModifiers::NONE), Some("keyboard"));
+        assert_eq!(action(KeyCode::F(3), KeyModifiers::SHIFT), Some("find-previous"));
+        assert_eq!(action(KeyCode::Char('b'), KeyModifiers::ALT), cfg!(target_os = "macos").then_some("prev-tab"));
+        assert_eq!(action(KeyCode::Char('a'), KeyModifiers::NONE), None);
+    }
+
+    #[test]
+    fn an_editor_keeps_most_keys() {
+        let key = |text: &str| KeyChord::parse(text).unwrap();
+        assert!(reaches_past_editor("next-tab", &key("Alt+Right"), false));
+        assert!(reaches_past_editor("tab-2", &key("Alt+2"), false));
+        assert!(reaches_past_editor("move-editor", &key("F7"), false));
+        assert!(!reaches_past_editor("editor-focus", &key("F6"), false), "only beside a world");
+        assert!(reaches_past_editor("editor-focus", &key("F6"), true));
+        assert!(!reaches_past_editor("palette", &key("Ctrl+K"), true));
+        // Esc then b, quickly, in Vim.
+        assert!(!reaches_past_editor("prev-tab", &key("Alt+B"), false));
+        assert!(!reaches_past_editor("next-tab", &key("Alt+F"), true));
+    }
+
+    #[test]
+    fn readline_keys_are_shortcuts_only_on_an_empty_line() {
+        assert!(is_readline_key(&KeyChord::parse("Ctrl+K").unwrap()));
+        assert!(is_readline_key(&KeyChord::parse("Ctrl+W").unwrap()));
+        assert!(!is_readline_key(&KeyChord::parse("Ctrl+P").unwrap()));
+        assert!(!is_readline_key(&KeyChord::parse("Ctrl+Shift+K").unwrap()));
     }
 }

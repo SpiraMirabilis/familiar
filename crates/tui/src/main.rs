@@ -7,6 +7,7 @@ mod editor;
 mod form;
 mod fuzzy;
 mod input;
+mod keyboard;
 mod keys;
 mod rules;
 mod session;

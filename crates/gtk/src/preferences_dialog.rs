@@ -1,5 +1,6 @@
 //! The Preferences dialog: the default font and the other settings in the config file's
-//! `[settings]` table. Changes apply (and are saved) as they're made.
+//! `[settings]` table, and a page for the keyboard shortcuts. Changes apply (and are saved) as
+//! they're made.
 
 use std::rc::Rc;
 
@@ -9,8 +10,10 @@ use familiar_config::Settings;
 use crate::app::AppState;
 use crate::font_row::FontRow;
 
-/// Opens the dialog. `on_change` runs after each saved change, so open sessions can reload.
-pub fn show(parent: &impl IsA<gtk::Widget>, state: Rc<AppState>, on_change: impl Fn() + 'static) {
+/// Opens the dialog, on the page called `page` ("general" or "keyboard") if given.
+/// `on_change` runs after each saved change, so open sessions can reload.
+pub fn show(parent: &impl IsA<gtk::Widget>, state: Rc<AppState>, page: Option<&str>, on_change: impl Fn() + 'static) {
+    let on_change: Rc<dyn Fn()> = Rc::new(on_change);
     let settings = state.config.borrow().settings.clone();
     let defaults = Settings::default();
 
@@ -58,18 +61,19 @@ pub fn show(parent: &impl IsA<gtk::Widget>, state: Rc<AppState>, on_change: impl
     other.add(&speak);
     other.add(&timestamps);
 
-    let page = adw::PreferencesPage::new();
-    page.add(&appearance);
-    page.add(&input);
-    page.add(&other);
-    let toasts = adw::ToastOverlay::new();
-    toasts.set_child(Some(&page));
-    let toolbar = adw::ToolbarView::new();
-    toolbar.add_top_bar(&adw::HeaderBar::new());
-    toolbar.set_content(Some(&toasts));
-    let dialog = adw::Dialog::builder().title("Preferences").content_width(520).content_height(640).child(&toolbar).build();
+    let general = adw::PreferencesPage::builder().name("general").title("General").icon_name("preferences-system-symbolic").build();
+    general.add(&appearance);
+    general.add(&input);
+    general.add(&other);
+    let dialog = adw::PreferencesDialog::builder().title("Preferences").content_width(560).content_height(680).build();
+    dialog.add(&general);
+    dialog.add(&crate::keyboard_page::page(&dialog, state.clone(), on_change.clone()));
+    if let Some(page) = page {
+        dialog.set_visible_page_name(page);
+    }
 
     let apply: Rc<dyn Fn()> = {
+        let dialog = dialog.downgrade();
         let (font, local_echo, inline_images, scrollback, prompt_timeout, spellcheck, history, speak, timestamps) = (
             font.clone(),
             local_echo.clone(),
@@ -93,7 +97,7 @@ pub fn show(parent: &impl IsA<gtk::Widget>, state: Rc<AppState>, on_change: impl
                 inline_images: inline_images.is_active(),
                 speak_output: speak.is_active(),
                 spellcheck: spellcheck.is_active(),
-                // Not shown here: it only concerns the terminal client.
+                // The shortcuts are on their own page; the rest only concerns the terminal client.
                 ..state.config.borrow().settings.clone()
             };
             if state.config.borrow().settings == new {
@@ -102,7 +106,11 @@ pub fn show(parent: &impl IsA<gtk::Widget>, state: Rc<AppState>, on_change: impl
             state.config.borrow_mut().settings = new;
             match state.save() {
                 Ok(()) => on_change(),
-                Err(e) => toasts.add_toast(adw::Toast::new(&e)),
+                Err(e) => {
+                    if let Some(dialog) = dialog.upgrade() {
+                        dialog.add_toast(adw::Toast::new(&e));
+                    }
+                }
             }
         })
     };

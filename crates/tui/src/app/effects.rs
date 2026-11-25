@@ -64,7 +64,9 @@ impl App {
             Effect::Settings(settings) => {
                 // Settings changed from inside a session (/images, /speech) don't know about ours.
                 let Settings { terminal_colors, editor_in_tab, editor_in_sidebar, editor_syntax_hint_shown, .. } = self.config.settings;
-                self.config.settings = Settings { terminal_colors, editor_in_tab, editor_in_sidebar, editor_syntax_hint_shown, ..settings };
+                let keys = std::mem::take(&mut self.config.settings.keys);
+                let terminal_keys = std::mem::take(&mut self.config.settings.terminal_keys);
+                self.config.settings = Settings { terminal_colors, editor_in_tab, editor_in_sidebar, editor_syntax_hint_shown, keys, terminal_keys, ..settings };
                 self.save_config();
             }
             Effect::OpenPuppet { name, focus } => {

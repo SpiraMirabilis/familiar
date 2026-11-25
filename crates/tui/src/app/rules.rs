@@ -14,7 +14,7 @@ impl App {
     }
 
     /// Saves changed rules and gives them to the open sessions.
-    fn rules_changed(&mut self) {
+    pub(super) fn rules_changed(&mut self) {
         self.save_config();
         for idx in 0..self.sessions.len() {
             let out = self.sessions[idx].engine.reload(&self.config);
