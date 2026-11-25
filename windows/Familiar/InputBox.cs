@@ -94,6 +94,9 @@ internal sealed class InputBox : UserControl
         set => history.Limit = Math.Max(value, 1);
     }
 
+    /// <summary>What was typed before, oldest first, for searching the history.</summary>
+    public IReadOnlyList<string> PastCommands => history.Entries;
+
     public bool IsPassword => password.Visibility == Visibility.Visible;
 
     public void SetPasswordMode(bool on)
