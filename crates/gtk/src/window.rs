@@ -1,22 +1,31 @@
-//! The main window: a tab per connection.
+//! The main window: a tab per connection. Its commands are window actions named as in the
+//! engine's keymap ("win.next-tab"), and its shortcuts come from the keymap too.
 
 use std::cell::RefCell;
+use std::path::Path;
 use std::rc::Rc;
 
 use adw::prelude::*;
 use gtk::{gio, glib};
 use familiar_config::{Character, World};
+use familiar_engine::KeyChord;
+use familiar_engine::keymap::{self, Platform, Scope};
 
 use crate::app::AppState;
-use crate::connect_dialog;
-use crate::rules_dialog;
+use crate::palette::{self, Item};
 use crate::session::SessionView;
+use crate::{connect_dialog, rules_dialog, world_dialog};
+
+const HELP_URL: &str = "https://github.com/SpiraMirabilis/familiar#readme";
 
 pub struct MainWindow {
     pub window: adw::ApplicationWindow,
     tab_view: adw::TabView,
     stack: gtk::Stack,
     toasts: adw::ToastOverlay,
+    /// Show the current shortcuts.
+    connect_button: gtk::Button,
+    menu_button: gtk::MenuButton,
     state: Rc<AppState>,
     sessions: RefCell<Vec<(adw::TabPage, Rc<SessionView>)>>,
 }
@@ -26,36 +35,12 @@ impl MainWindow {
         let tab_view = adw::TabView::new();
         let tab_bar = adw::TabBar::builder().view(&tab_view).build();
 
-        let connect_button = gtk::Button::builder()
-            .icon_name("list-add-symbolic")
-            .tooltip_text("Connect (Ctrl+O)")
-            .action_name("win.connect")
-            .build();
-        let menu = gio::Menu::new();
-        let session_section = gio::Menu::new();
-        session_section.append(Some("Reconnect"), Some("win.reconnect"));
-        session_section.append(Some("Disconnect"), Some("win.disconnect"));
-        session_section.append(Some("Clear Output"), Some("win.clear"));
-        menu.append_section(None, &session_section);
-        let rules_section = gio::Menu::new();
-        rules_section.append(Some("Triggers, Aliases & Macros"), Some("win.rules"));
-        rules_section.append(Some("Import from BeipMU…"), Some("win.import-beipmu"));
-        menu.append_section(None, &rules_section);
-        let log_section = gio::Menu::new();
-        log_section.append(Some("Log to File"), Some("win.toggle-log"));
-        log_section.append(Some("Open Log Folder"), Some("win.open-logs"));
-        menu.append_section(None, &log_section);
-        let app_section = gio::Menu::new();
-        app_section.append(Some("Preferences"), Some("win.preferences"));
-        app_section.append(Some("Keyboard Shortcuts"), Some("win.shortcuts"));
-        app_section.append(Some(&format!("About {}", crate::APP_NAME)), Some("win.about"));
-        menu.append_section(None, &app_section);
-        let menu_button = gtk::MenuButton::builder()
-            .icon_name("open-menu-symbolic")
-            .menu_model(&menu)
-            .tooltip_text("Main Menu")
-            .primary(true)
-            .build();
+        // AdwTabView's own shortcuts (Ctrl+Tab, Alt+1...) would take keys before the keymap,
+        // and couldn't be changed.
+        tab_view.set_shortcuts(adw::TabViewShortcuts::empty());
+
+        let connect_button = gtk::Button::builder().icon_name("list-add-symbolic").action_name("win.connect").build();
+        let menu_button = gtk::MenuButton::builder().icon_name("open-menu-symbolic").tooltip_text("Main Menu").primary(true).build();
 
         let header = adw::HeaderBar::new();
         header.pack_start(&connect_button);
@@ -93,9 +78,13 @@ impl MainWindow {
             .content(&toolbar)
             .build();
 
-        let this = Rc::new(Self { window, tab_view, stack, toasts, state, sessions: RefCell::default() });
-        this.setup_actions(app);
+        let this = Rc::new(Self { window, tab_view, stack, toasts, connect_button, menu_button, state, sessions: RefCell::default() });
+        this.setup_actions();
+        this.setup_keys();
         this.setup_tabs();
+        this.show_keys();
+        let weak = Rc::downgrade(&this);
+        this.state.connect_keys_changed(move || weak.upgrade().inspect(|this| this.show_keys()).is_some());
         // Closing the window quits, so save every session's map first.
         let weak = Rc::downgrade(&this);
         this.window.connect_close_request(move |_| {
@@ -229,144 +218,411 @@ impl MainWindow {
         }
     }
 
-    fn setup_actions(self: &Rc<Self>, app: &adw::Application) {
-        let add = |name: &str, accels: &[&str], f: Box<dyn Fn(&Rc<Self>)>| {
-            let action = gio::SimpleAction::new(name, None);
+    /// A window action for every command in the keymap, each running [`Self::run`].
+    fn setup_actions(self: &Rc<Self>) {
+        for action in keymap::actions(Platform::Linux).filter(|a| a.scope == Scope::Window) {
+            let id = action.id;
+            // Stateful, so the menu shows a check mark while logging.
+            let gio_action = match id {
+                "toggle-log" => gio::SimpleAction::new_stateful(id, None, &false.to_variant()),
+                _ => gio::SimpleAction::new(id, None),
+            };
             let weak = Rc::downgrade(self);
-            action.connect_activate(move |_, _| {
+            gio_action.connect_activate(move |_, _| {
                 if let Some(this) = weak.upgrade() {
-                    f(&this);
+                    this.run(id);
                 }
             });
-            self.window.add_action(&action);
-            if !accels.is_empty() {
-                app.set_accels_for_action(&format!("win.{name}"), accels);
-            }
-        };
+            self.window.add_action(&gio_action);
+        }
+    }
 
-        add(
-            "connect",
-            &["<Control>o"],
-            Box::new(|this| {
-                let weak = Rc::downgrade(this);
-                connect_dialog::show(&this.window, this.state.clone(), move |world, character| {
+    /// Runs shortcuts from the keymap. In the capture phase, so they come before keyboard
+    /// macros (which the input and output check for themselves) and before the focused
+    /// widget's own keys.
+    fn setup_keys(self: &Rc<Self>) {
+        let keys = gtk::EventControllerKey::new();
+        keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let weak = Rc::downgrade(self);
+        keys.connect_key_pressed(move |controller, key, keycode, state| {
+            let Some(this) = weak.upgrade() else { return glib::Propagation::Proceed };
+            // A dialog (Preferences recording a key, a picker) has the keyboard to itself.
+            if this.window.visible_dialog().is_some() {
+                return glib::Propagation::Proceed;
+            }
+            let Some(chord) = crate::keys::chord(controller, key, keycode, state) else { return glib::Propagation::Proceed };
+            let Some(id) = this.state.keymap().lookup(Scope::Window, &chord) else { return glib::Propagation::Proceed };
+            if this.terminal_wants(&chord) {
+                return glib::Propagation::Proceed;
+            }
+            this.run(id);
+            glib::Propagation::Stop
+        });
+        self.window.add_controller(keys);
+    }
+
+    /// An agent's terminal has the focus and this is a key terminal programs use themselves
+    /// (Ctrl or Alt with a letter), so it goes to the program rather than to a shortcut.
+    #[cfg(feature = "agents")]
+    fn terminal_wants(&self, chord: &KeyChord) -> bool {
+        let focus = gtk::prelude::GtkWindowExt::focus(&self.window);
+        let in_terminal = focus.is_some_and(|w| w.is::<vte4::Terminal>() || w.ancestor(vte4::Terminal::static_type()).is_some());
+        let letter = chord.key.len() == 1 && chord.key.chars().all(|c| c.is_ascii_alphabetic());
+        in_terminal && letter && chord.ctrl != chord.alt && !chord.shift && !chord.cmd
+    }
+
+    #[cfg(not(feature = "agents"))]
+    fn terminal_wants(&self, _chord: &KeyChord) -> bool {
+        false
+    }
+
+    /// Puts the current shortcuts in the main menu and the Connect button's tooltip.
+    fn show_keys(&self) {
+        let tooltip = match self.state.key_label("connect") {
+            Some(key) => format!("Connect ({key})"),
+            None => "Connect".into(),
+        };
+        self.connect_button.set_tooltip_text(Some(&tooltip));
+        self.menu_button.set_menu_model(Some(&self.menu()));
+    }
+
+    fn menu(&self) -> gio::Menu {
+        let keymap = self.state.keymap();
+        let section = |items: &[(&str, &str)]| {
+            let section = gio::Menu::new();
+            for (label, id) in items {
+                let item = gio::MenuItem::new(Some(label), Some(&format!("win.{id}")));
+                // Only shown: the window's key controller runs the shortcuts.
+                if let Some(accel) = keymap.keys(id).first().and_then(crate::keys::accel) {
+                    item.set_attribute_value("accel", Some(&accel.to_variant()));
+                }
+                section.append_item(&item);
+            }
+            section
+        };
+        let about = format!("About {}", crate::APP_NAME);
+        let menu = gio::Menu::new();
+        menu.append_section(None, &section(&[("New World…", "new-world"), ("Edit World…", "edit-world"), ("Reconnect", "reconnect"), ("Disconnect", "disconnect")]));
+        menu.append_section(None, &section(&[("Find…", "find"), ("Clear Output", "clear"), ("Log to File", "toggle-log"), ("Open Log Folder", "open-logs")]));
+        menu.append_section(
+            None,
+            &section(&[
+                ("Command Palette…", "palette"),
+                ("Show Map", "show-map"),
+                ("Triggers, Aliases & Macros", "rules"),
+                ("Import from BeipMU…", "import-beipmu"),
+                ("Import a BeipMU Map…", "import-map"),
+            ]),
+        );
+        menu.append_section(
+            None,
+            &section(&[("Preferences", "preferences"), ("Keyboard Shortcuts", "keyboard"), ("Help", "help"), (&about, "about"), ("Quit", "quit")]),
+        );
+        menu
+    }
+
+    /// Runs a command from the keymap, by its id.
+    fn run(self: &Rc<Self>, id: &str) {
+        let current = self.current();
+        let session = current.as_ref();
+        match id {
+            "connect" => {
+                let weak = Rc::downgrade(self);
+                connect_dialog::show(&self.window, self.state.clone(), move |world, character| {
                     if let Some(this) = weak.upgrade() {
                         this.open_session(world, character);
                     }
                 });
-            }),
-        );
-        add(
-            "reconnect",
-            &["<Control>r"],
-            Box::new(|this| {
-                if let Some(s) = this.current() {
-                    s.connect();
+            }
+            "new-world" => self.new_world(),
+            "edit-world" => match session {
+                Some(s) => self.edit_world(s.world()),
+                None => self.new_world(),
+            },
+            "reconnect" => session.into_iter().for_each(|s| s.connect()),
+            "disconnect" => session.into_iter().for_each(|s| s.disconnect()),
+            "close-tab" => {
+                if let Some(page) = self.tab_view.selected_page() {
+                    self.tab_view.close_page(&page);
                 }
-            }),
-        );
-        add(
-            "disconnect",
-            &["<Control><Shift>d"],
-            Box::new(|this| {
-                if let Some(s) = this.current() {
-                    s.disconnect();
+            }
+            "next-tab" => self.cycle_tabs(1),
+            "prev-tab" => self.cycle_tabs(-1),
+            "find" => session.into_iter().for_each(|s| s.find()),
+            "find-next" => session.into_iter().for_each(|s| s.find_again(false)),
+            "find-previous" => session.into_iter().for_each(|s| s.find_again(true)),
+            "clear" => session.into_iter().for_each(|s| s.clear()),
+            "toggle-log" => {
+                if let Some(s) = session {
+                    s.toggle_log();
+                    self.update_log_state();
                 }
-            }),
-        );
-        add(
-            "clear",
-            &["<Control><Shift>l"],
-            Box::new(|this| {
-                if let Some(s) = this.current() {
-                    s.clear();
+            }
+            "open-logs" => self.open_folder(&familiar_config::log_dir()),
+            "toggle-sidebar" => {
+                if session.is_some_and(|s| !s.toggle_side()) {
+                    self.toast("Nothing is in the side dock yet");
                 }
-            }),
-        );
-        add(
-            "close-tab",
-            &["<Control>w"],
-            Box::new(|this| {
-                if let Some(page) = this.tab_view.selected_page() {
-                    this.tab_view.close_page(&page);
+            }
+            "next-panel" | "prev-panel" => {
+                if session.is_some_and(|s| !s.cycle_side(if id == "next-panel" { 1 } else { -1 })) {
+                    self.toast("Nothing is in the side dock yet");
                 }
-            }),
-        );
-        add(
-            "open-logs",
-            &[],
-            Box::new(|this| {
-                let dir = familiar_config::log_dir();
-                if let Err(e) = std::fs::create_dir_all(&dir) {
-                    this.toast(&format!("Couldn't create {}: {e}", dir.display()));
-                    return;
+            }
+            "show-map" => session.into_iter().for_each(|s| s.show_map(true)),
+            "palette" => self.show_palette(),
+            "history-search" => {
+                if let Some(s) = session {
+                    self.show_history(s);
                 }
-                let file = gio::File::for_path(&dir);
-                gtk::FileLauncher::new(Some(&file)).launch(Some(&this.window), None::<&gio::Cancellable>, |_| {});
-            }),
-        );
-        add(
-            "rules",
-            &["<Control>t"],
-            Box::new(|this| {
-                let current = this.current().map(|s| s.scopes()).unwrap_or_default();
-                let weak = Rc::downgrade(this);
-                rules_dialog::show(&this.window, this.state.clone(), current.first().cloned(), move || {
+            }
+            "rules" => {
+                let current = session.map(|s| s.scopes()).unwrap_or_default();
+                let weak = Rc::downgrade(self);
+                rules_dialog::show(&self.window, self.state.clone(), current.first().cloned(), move || {
                     if let Some(this) = weak.upgrade() {
-                        for (_, session) in this.sessions.borrow().iter() {
-                            session.reload();
-                        }
+                        this.reload_sessions();
                     }
                 });
-            }),
-        );
-        add(
-            "preferences",
-            &["<Control>comma"],
-            Box::new(|this| {
-                let weak = Rc::downgrade(this);
-                crate::preferences_dialog::show(&this.window, this.state.clone(), move || {
+            }
+            "reopen-editor" => {
+                if session.is_some_and(|s| !s.reopen_editor()) {
+                    self.toast("Nothing to reopen: no program has been sent from an editor in this tab yet");
+                }
+            }
+            "restart-scripts" => session.into_iter().for_each(|s| s.restart_scripts()),
+            "stop-speech" => self.state.speaker.stop(),
+            "import-beipmu" => {
+                let weak = Rc::downgrade(self);
+                crate::import::choose_and_import(self.window.upcast_ref(), self.state.clone(), move || {
                     if let Some(this) = weak.upgrade() {
-                        for (_, session) in this.sessions.borrow().iter() {
-                            session.reload();
-                        }
+                        this.reload_sessions();
                     }
                 });
-            }),
-        );
-        add(
-            "import-beipmu",
-            &[],
-            Box::new(|this| {
-                let weak = Rc::downgrade(this);
-                crate::import::choose_and_import(this.window.upcast_ref(), this.state.clone(), move || {
-                    if let Some(this) = weak.upgrade() {
-                        for (_, session) in this.sessions.borrow().iter() {
-                            session.reload();
-                        }
-                    }
-                });
-            }),
-        );
-        add(
-            "stop-speech",
-            &["<Control>period"],
-            Box::new(|this| this.state.speaker.stop()),
-        );
-        add("about", &[], Box::new(|this| this.show_about()));
-        add("shortcuts", &["<Control>question"], Box::new(|this| this.show_shortcuts()));
+            }
+            "import-map" => match session {
+                Some(s) => self.import_map(s.clone()),
+                None => self.toast("Open a world's tab first: the map is imported into that world's map"),
+            },
+            "preferences" => self.show_preferences(None),
+            "keyboard" => self.show_preferences(Some("keyboard")),
+            "open-settings-folder" => self.open_folder(&familiar_config::config_dir()),
+            "help" => gtk::UriLauncher::new(HELP_URL).launch(Some(&self.window), None::<&gio::Cancellable>, |_| {}),
+            "about" => self.show_about(),
+            // Closing the window saves the maps, and quits.
+            "quit" => self.window.close(),
+            _ => {
+                // tab-1 to tab-9.
+                let n = id.strip_prefix("tab-").and_then(|n| n.parse::<i32>().ok());
+                if let Some(n) = n.filter(|n| (1..=self.tab_view.n_pages()).contains(n)) {
+                    self.tab_view.set_selected_page(&self.tab_view.nth_page(n - 1));
+                }
+            }
+        }
+    }
 
-        // Stateful so the menu shows a check mark while logging.
-        let log = gio::SimpleAction::new_stateful("toggle-log", None, &false.to_variant());
+    fn reload_sessions(&self) {
+        for (_, session) in self.sessions.borrow().iter() {
+            session.reload();
+        }
+    }
+
+    /// The next (`step` 1) or previous (-1) tab, wrapping around.
+    fn cycle_tabs(&self, step: i32) {
+        let n = self.tab_view.n_pages();
+        if n == 0 {
+            return;
+        }
+        let at = self.tab_view.selected_page().map_or(0, |p| self.tab_view.page_position(&p));
+        self.tab_view.set_selected_page(&self.tab_view.nth_page((at + step).rem_euclid(n)));
+    }
+
+    fn open_folder(&self, dir: &Path) {
+        if let Err(e) = std::fs::create_dir_all(dir) {
+            self.toast(&format!("Couldn't create {}: {e}", dir.display()));
+            return;
+        }
+        let file = gio::File::for_path(dir);
+        gtk::FileLauncher::new(Some(&file)).launch(Some(&self.window), None::<&gio::Cancellable>, |_| {});
+    }
+
+    fn show_preferences(self: &Rc<Self>, page: Option<&str>) {
         let weak = Rc::downgrade(self);
-        log.connect_activate(move |_, _| {
-            let Some(this) = weak.upgrade() else { return };
-            let Some(session) = this.current() else { return };
-            session.toggle_log();
-            this.update_log_state();
+        crate::preferences_dialog::show(&self.window, self.state.clone(), page, move || {
+            if let Some(this) = weak.upgrade() {
+                this.reload_sessions();
+            }
         });
-        self.window.add_action(&log);
-        app.set_accels_for_action("win.toggle-log", &["<Control><Shift>g"]);
+    }
+
+    /// Saves the config after a world changed, and lets open tabs pick it up.
+    fn save_worlds(&self) {
+        match self.state.save() {
+            Ok(()) => self.reload_sessions(),
+            Err(e) => self.toast(&e),
+        }
+    }
+
+    /// The world editor for a new world, as the Connect dialog's + button opens it.
+    fn new_world(self: &Rc<Self>) {
+        let weak = Rc::downgrade(self);
+        let default_font = self.state.config.borrow().settings.font.clone();
+        let on_save = move |world: World| {
+            let Some(this) = weak.upgrade() else { return };
+            let name = world.name.clone();
+            this.state.config.borrow_mut().worlds.push(world);
+            this.save_worlds();
+            this.toast(&format!("Saved {name}"));
+        };
+        world_dialog::show(&self.window, None, &default_font, on_save, None);
+    }
+
+    /// The world editor for the current tab's world. A quick connection isn't saved yet, so
+    /// saving it adds it to the saved worlds.
+    fn edit_world(self: &Rc<Self>, world: World) {
+        let original = world.name.clone();
+        let saved = self.state.config.borrow().worlds.iter().find(|w| w.name == original).cloned();
+        let default_font = self.state.config.borrow().settings.font.clone();
+        let on_save = {
+            let weak = Rc::downgrade(self);
+            let original = original.clone();
+            move |edited: World| {
+                let Some(this) = weak.upgrade() else { return };
+                {
+                    let mut config = this.state.config.borrow_mut();
+                    match config.worlds.iter_mut().find(|w| w.name == original) {
+                        Some(slot) => *slot = edited,
+                        None => config.worlds.push(edited),
+                    }
+                }
+                this.save_worlds();
+            }
+        };
+        let on_delete = saved.is_some().then(|| {
+            let weak = Rc::downgrade(self);
+            Box::new(move || {
+                let Some(this) = weak.upgrade() else { return };
+                this.state.config.borrow_mut().worlds.retain(|w| w.name != original);
+                this.save_worlds();
+            }) as Box<dyn Fn()>
+        });
+        world_dialog::show(&self.window, Some(saved.as_ref().unwrap_or(&world)), &default_font, on_save, on_delete);
+    }
+
+    /// Asks for a BeipMU .atlas file and adds its rooms to the tab's map.
+    fn import_map(&self, session: Rc<SessionView>) {
+        let filter = gtk::FileFilter::new();
+        filter.set_name(Some("BeipMU maps (.atlas)"));
+        filter.add_pattern("*.atlas");
+        filter.add_pattern("*.ATLAS");
+        let filters = gio::ListStore::new::<gtk::FileFilter>();
+        filters.append(&filter);
+        let dialog = gtk::FileDialog::builder().title("Import a BeipMU Map").filters(&filters).default_filter(&filter).build();
+        dialog.open(Some(&self.window), None::<&gio::Cancellable>, move |result| {
+            let Some(path) = result.ok().and_then(|file| file.path()) else { return };
+            session.import_map(&path);
+            session.show_map(true);
+        });
+    }
+
+    /// The command palette: every command, the saved worlds, and the client's / commands.
+    fn show_palette(self: &Rc<Self>) {
+        let mut items = Vec::new();
+        {
+            let keymap = self.state.keymap();
+            for action in keymap::actions(Platform::Linux).filter(|a| a.scope == Scope::Window && a.id != "palette") {
+                let weak = Rc::downgrade(self);
+                let id = action.id;
+                items.push(Item {
+                    group: "Commands",
+                    label: action.label.to_string(),
+                    detail: keymap.keys(id).first().map(crate::keys::label).unwrap_or_default(),
+                    run: Rc::new(move || {
+                        if let Some(this) = weak.upgrade() {
+                            this.run(id);
+                        }
+                    }),
+                });
+            }
+        }
+        let worlds = self.state.config.borrow().worlds.clone();
+        for world in worlds {
+            let address = format!("{}:{}", world.host, world.port);
+            // One entry per character, or one for the world if it has none.
+            let characters: Vec<Option<Character>> =
+                if world.characters.is_empty() { vec![None] } else { world.characters.iter().cloned().map(Some).collect() };
+            for character in characters {
+                let label = match &character {
+                    Some(c) => format!("{} @ {}", c.name, world.name),
+                    None => world.name.clone(),
+                };
+                let weak = Rc::downgrade(self);
+                let world = world.clone();
+                items.push(Item {
+                    group: "Worlds",
+                    label,
+                    detail: address.clone(),
+                    run: Rc::new(move || {
+                        if let Some(this) = weak.upgrade() {
+                            this.open_session(world.clone(), character.clone());
+                        }
+                    }),
+                });
+            }
+        }
+        let commands: Vec<&(&str, &str)> = familiar_engine::COMMANDS.iter().collect();
+        #[cfg(feature = "agents")]
+        let commands = [commands, vec![&familiar_engine::AGENT_COMMAND]].concat();
+        for (usage, description) in commands {
+            let weak = Rc::downgrade(self);
+            let text = palette::insert_for(usage);
+            items.push(Item {
+                group: "Client Commands",
+                label: usage.to_string(),
+                detail: description.to_string(),
+                run: Rc::new(move || {
+                    let Some(this) = weak.upgrade() else { return };
+                    match this.current() {
+                        Some(session) => {
+                            session.input.set_text(&text);
+                            session.input.grab_focus();
+                        }
+                        None => this.toast("Open a world's tab first: commands go in its input box"),
+                    }
+                }),
+            });
+        }
+        palette::show(&self.window, "Command Palette", "Search commands, worlds and / commands", items);
+    }
+
+    /// Searches the tab's input history, newest first. The chosen line goes in the input box.
+    fn show_history(&self, session: &Rc<SessionView>) {
+        let mut seen = std::collections::HashSet::new();
+        let items: Vec<Item> = session
+            .input
+            .history()
+            .into_iter()
+            .rev()
+            .filter(|line| seen.insert(line.clone()))
+            .map(|line| {
+                let input = Rc::downgrade(&session.input);
+                Item {
+                    group: "History",
+                    label: line.replace('\n', " ⏎ "),
+                    detail: String::new(),
+                    run: Rc::new(move || {
+                        if let Some(input) = input.upgrade() {
+                            input.set_text(&line);
+                            input.grab_focus();
+                        }
+                    }),
+                }
+            })
+            .collect();
+        if items.is_empty() {
+            return self.toast("Nothing has been sent from this tab yet");
+        }
+        palette::show(&self.window, "Input History", "Search what you've sent", items);
     }
 
     fn show_about(&self) {
@@ -379,42 +635,25 @@ impl MainWindow {
             .build();
         about.present(Some(&self.window));
     }
+}
 
-    fn show_shortcuts(&self) {
-        let rows = [
-            ("Ctrl+O", "Connect"),
-            ("Ctrl+R", "Reconnect"),
-            ("Ctrl+Shift+D", "Disconnect"),
-            ("Ctrl+W", "Close tab"),
-            ("Ctrl+Shift+L", "Clear output"),
-            ("Ctrl+Shift+G", "Log to file"),
-            ("Ctrl+T", "Triggers, aliases and macros"),
-            ("Ctrl+,", "Preferences"),
-            ("Ctrl+.", "Stop speaking"),
-            ("Enter", "Send"),
-            ("Shift+Enter", "New line in input"),
-            ("Up / Down", "Input history (Ctrl+Up/Down in multi-line input)"),
-            ("Page Up / Page Down", "Scroll output"),
-            ("Escape", "Clear input"),
-            ("/help", "List client commands (/set, /log, /clear, ...)"),
-        ];
-        let group = adw::PreferencesGroup::new();
-        for (keys, what) in rows {
-            let row = adw::ActionRow::builder().title(what).use_markup(false).build();
-            row.add_suffix(&gtk::Label::builder().label(keys).css_classes(["dim-label"]).build());
-            group.add(&row);
+#[cfg(test)]
+mod tests {
+    use familiar_engine::keymap::{self, Platform, Scope};
+
+    /// Every window command in the keymap has an arm in `MainWindow::run`. (Read from the
+    /// source, as the window can't be built without a display.)
+    #[test]
+    fn every_window_action_is_handled() {
+        let source = include_str!("window.rs");
+        let run = &source[source.find("fn run(").unwrap()..source.find("fn reload_sessions").unwrap()];
+        for action in keymap::actions(Platform::Linux).filter(|a| a.scope == Scope::Window) {
+            let handled = run.contains(&format!("\"{}\"", action.id)) || action.id.strip_prefix("tab-").is_some_and(|n| n.parse::<u8>().is_ok());
+            assert!(handled, "{} isn't handled", action.id);
         }
-        let page = adw::PreferencesPage::new();
-        page.add(&group);
-        let toolbar = adw::ToolbarView::new();
-        toolbar.add_top_bar(&adw::HeaderBar::new());
-        toolbar.set_content(Some(&page));
-        let dialog = adw::Dialog::builder()
-            .title("Keyboard Shortcuts")
-            .content_width(460)
-            .content_height(560)
-            .child(&toolbar)
-            .build();
-        dialog.present(Some(&self.window));
+        let editor = include_str!("code_editor.rs");
+        for action in keymap::actions(Platform::Linux).filter(|a| a.scope == Scope::Editor) {
+            assert!(editor.contains(&format!("Some(\"{}\")", action.id)), "{} isn't handled in the editor", action.id);
+        }
     }
 }
