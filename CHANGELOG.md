@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.0 (2026-11-25)
 
 - Every keyboard shortcut can be changed, in every app: Preferences → Keyboard (F1; ⌘⌥/ on a
   Mac) in the desktop apps, and a key editor (F1 or `/keys`) in the terminal client. A command

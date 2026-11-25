@@ -54,6 +54,17 @@
     <content_attribute id="social-info">mild</content_attribute>
   </content_rating>
   <releases>
+    <release version="0.6.0" date="2026-11-25">
+      <description>
+        <p>Keyboard shortcuts you can change, and logs that start by themselves.</p>
+        <ul>
+          <li>Every shortcut can be changed in Preferences, under Keyboard; a command can have several keys, and keys that clash with another command or a macro are marked</li>
+          <li>A command palette, a search through what you've typed, and find in the output</li>
+          <li>Keys for switching tabs (Alt+arrows, Alt+1 to 9), the side dock, the map, editing worlds and reopening the last program you edited</li>
+          <li>A character can log to its own file whenever it connects, optionally with the date in the name, and can show the end of its last session when its tab opens, as in BeipMU</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.5.0" date="2026-11-25">
       <description>
         <p>LLM coding agents beside a world, with tools the world itself offers.</p>
