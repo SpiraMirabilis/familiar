@@ -895,6 +895,7 @@ dependencies = [
  "familiar-net",
  "fancy-regex 0.20.2",
  "flate2",
+ "serde",
  "serde_json",
  "tempfile",
  "tokio",
