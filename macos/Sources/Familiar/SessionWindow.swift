@@ -31,7 +31,7 @@ struct SessionView: View {
             }
             .frame(minWidth: 320, maxWidth: .infinity, maxHeight: .infinity)
             .layoutPriority(1)
-            if !session.panels.isEmpty {
+            if !session.panels.isEmpty && !session.dockHidden {
                 SideDock(session: session)
                     .frame(minWidth: 330, idealWidth: 360, maxWidth: .infinity, maxHeight: .infinity)
             }
@@ -43,8 +43,8 @@ struct SessionView: View {
 /// the input box.
 func typed(_ input: InputBox, _ event: NSEvent, macro: (NSEvent) -> Bool) -> Bool {
     let flags = event.modifierFlags
-    if flags.contains(.command) { return false }
     if macro(event) { return true }
+    if flags.contains(.command) { return false }
     if flags.contains(.control) || flags.contains(.option) { return false }
     if [kVK_Return, kVK_ANSI_KeypadEnter].contains(Int(event.keyCode)) {
         input.focus()

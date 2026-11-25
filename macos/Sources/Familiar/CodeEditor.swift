@@ -685,17 +685,6 @@ private final class LineNumberRuler: NSRulerView {
     }
 }
 
-/// The window sees key equivalents before the menu bar does, which has no Save item to hang
-/// Cmd+S on.
-private final class EditorWindow: NSWindow {
-    var onKeyEquivalent: ((NSEvent) -> Bool)?
-
-    override func performKeyEquivalent(with event: NSEvent) -> Bool {
-        if onKeyEquivalent?(event) == true { return true }
-        return super.performKeyEquivalent(with: event)
-    }
-}
-
 /// Flipped, so the list of errors starts at the top of its scroll view.
 private final class ErrorList: NSStackView {
     override var isFlipped: Bool { true }
@@ -719,7 +708,11 @@ final class CodeEditorController: NSWindowController, NSWindowDelegate, NSTextVi
     private let ruler: LineNumberRuler
     private let status = NSTextField(labelWithString: "")
     private let languagePicker = NSPopUpButton(frame: .zero, pullsDown: false)
-    private let reindentItem = NSMenuItem(title: "Re-indent", action: #selector(reindent), keyEquivalent: "i")
+    private let reindentItem = NSMenuItem(title: "Re-indent", action: #selector(reindent), keyEquivalent: "")
+    private let findItem = NSMenuItem(title: "Find…", action: #selector(showFind), keyEquivalent: "")
+    private let findNextItem = NSMenuItem(title: "Find Next", action: #selector(findNext), keyEquivalent: "")
+    private let findPreviousItem = NSMenuItem(title: "Find Previous", action: #selector(findPrevious), keyEquivalent: "")
+    private let sendButton = NSButton(title: "Send", target: nil, action: nil)
     private let errorList = ErrorList()
     private let errorScroll = NSScrollView()
     private var errorHeight: NSLayoutConstraint!
@@ -756,13 +749,12 @@ final class CodeEditorController: NSWindowController, NSWindowDelegate, NSTextVi
         textView = CodeTextView(frame: NSRect(x: 0, y: 0, width: 800, height: 560), textContainer: container)
         ruler = LineNumberRuler(scrollView: scrollView, textView: textView, font: font)
 
-        let window = EditorWindow(contentRect: NSRect(x: 0, y: 0, width: 820, height: 640), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 820, height: 640), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.tabbingMode = .disallowed
         window.minSize = NSSize(width: 420, height: 260)
         super.init(window: window)
         window.delegate = self
-        window.onKeyEquivalent = { [weak self] event in self?.keyEquivalent(event) ?? false }
 
         let name = request["name"].string
         window.title = name.isEmpty ? "Editor" : name
@@ -775,6 +767,7 @@ final class CodeEditorController: NSWindowController, NSWindowDelegate, NSTextVi
         CodeEditorController.cascade = window.cascadeTopLeft(from: CodeEditorController.cascade)
 
         NotificationCenter.default.addObserver(self, selector: #selector(scrolled), name: NSView.boundsDidChangeNotification, object: scrollView.contentView)
+        NotificationCenter.default.addObserver(self, selector: #selector(showKeys), name: Shortcuts.changed, object: nil)
         setLanguage(language)
         load(request["content"].string)
         window.makeFirstResponder(textView)
@@ -860,10 +853,8 @@ final class CodeEditorController: NSWindowController, NSWindowDelegate, NSTextVi
         more.item(at: 0)?.image = NSImage(systemSymbolName: "ellipsis.circle", accessibilityDescription: "More")
         more.toolTip = "More"
         more.setAccessibilityLabel("More")
-        let find = NSMenuItem(title: "Find…", action: #selector(showFind), keyEquivalent: "f")
         let clear = NSMenuItem(title: "Clear Error Marks", action: #selector(clearErrors), keyEquivalent: "")
-        reindentItem.keyEquivalentModifierMask = [.command, .shift]
-        for item in [reindentItem, find, clear] {
+        for item in [reindentItem, findItem, findNextItem, findPreviousItem, clear] {
             item.target = self
             more.menu?.addItem(item)
         }
@@ -876,11 +867,12 @@ final class CodeEditorController: NSWindowController, NSWindowDelegate, NSTextVi
         status.setContentHuggingPriority(.init(1), for: .horizontal)
         status.setContentCompressionResistancePriority(.init(1), for: .horizontal)
 
-        let send = NSButton(title: "Send", target: self, action: #selector(send))
-        send.bezelColor = .controlAccentColor
-        send.toolTip = "Send to the server (⌘S)"
+        sendButton.target = self
+        sendButton.action = #selector(send)
+        sendButton.bezelColor = .controlAccentColor
+        showKeys()
 
-        let bar = NSStackView(views: [languagePicker, more, status, send])
+        let bar = NSStackView(views: [languagePicker, more, status, sendButton])
         bar.orientation = .horizontal
         // The status line takes the room between the pickers and Send.
         bar.distribution = .fill
@@ -920,6 +912,18 @@ final class CodeEditorController: NSWindowController, NSWindowDelegate, NSTextVi
     }
 
     private var errorSeparator: NSBox?
+
+    /// The keymap's keys on the menu and the Send button. The keys work through
+    /// `perform`, called by the app's shortcut monitor; the menu only shows them.
+    @objc private func showKeys() {
+        let shortcuts = Shortcuts.shared
+        shortcuts.apply("editor-reindent", to: reindentItem)
+        shortcuts.apply("editor-find", to: findItem)
+        shortcuts.apply("editor-find-next", to: findNextItem)
+        shortcuts.apply("editor-find-previous", to: findPreviousItem)
+        let send = shortcuts.display("editor-send")
+        sendButton.toolTip = send.isEmpty ? "Send to the server" : "Send to the server (\(send))"
+    }
 
     // MARK: Text
 
@@ -1421,21 +1425,31 @@ final class CodeEditorController: NSWindowController, NSWindowDelegate, NSTextVi
         find(.showFindInterface)
     }
 
-    private func keyEquivalent(_ event: NSEvent) -> Bool {
-        let modifiers = event.modifierFlags.intersection([.command, .shift, .option, .control])
-        let key = event.charactersIgnoringModifiers?.lowercased() ?? ""
-        switch (modifiers, key) {
-        case ([.command], "s"), ([.command], "\r"), ([.command], "\u{3}"):
-            send()
-        case ([.command, .shift], "i"):
-            reindent()
-        case ([.command, .shift], "g"):
-            // Find and Find Next are in the Edit menu; Find Previous isn't.
-            find(.previousMatch)
-        default:
-            return false
+    @objc private func findNext() { find(.nextMatch) }
+    @objc private func findPrevious() { find(.previousMatch) }
+
+    /// Runs one of the program editor's shortcuts ("editor-send" and so on).
+    func perform(_ id: String) {
+        switch id {
+        case "editor-send": send()
+        case "editor-find": showFind()
+        case "editor-find-next": findNext()
+        case "editor-find-previous": findPrevious()
+        case "editor-reindent": reindent()
+        default: break
         }
-        return true
+    }
+
+    /// Brings the window forward with the cursor at the start of `line` (counting from 1).
+    func reveal(line: Int?) {
+        if window?.isMiniaturized == true { window?.deminiaturize(nil) }
+        window?.makeKeyAndOrderFront(nil)
+        guard let line else { return }
+        let length = (textView.string as NSString).length
+        let range = NSRange(location: min(lineStarts[min(max(line - 1, 0), lineStarts.count - 1)], length), length: 0)
+        textView.setSelectedRange(range)
+        textView.scrollRangeToVisible(range)
+        window?.makeFirstResponder(textView)
     }
 
     // MARK: Closing

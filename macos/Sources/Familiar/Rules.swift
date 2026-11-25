@@ -1099,8 +1099,9 @@ private struct KeyRecorder: NSViewRepresentable {
     }
 }
 
-private final class KeyRecorderButton: NSButton {
+private final class KeyRecorderButton: NSButton, KeyRecording {
     var onCapture: ((String) -> Void)?
+    var isRecordingKey: Bool { recording }
 
     private var recording = false {
         didSet {
