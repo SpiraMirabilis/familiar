@@ -17,14 +17,14 @@ jobs:
       - name: Install dependencies
         run: |
           pacman -Syu --noconfirm --needed base-devel git rust gtk4 libadwaita gtksourceview5 \
-            libspelling webkitgtk-6.0 gstreamer gst-plugins-base appstream desktop-file-utils
+            libspelling webkitgtk-6.0 vte4 gstreamer gst-plugins-base appstream desktop-file-utils
       - uses: actions/checkout@v7
       - uses: Swatinem/rust-cache@v2
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Tests
         run: cargo test --workspace --locked
-      - name: Without web views
+      - name: Without web views, spelling or agents
         run: cargo check -p familiar-gtk --no-default-features --locked
       - name: Desktop files and AppStream metadata
         run: |

@@ -29,6 +29,12 @@ pub enum Effect {
     OpenPuppet { name: String, focus: bool },
     /// Show this sidebar panel.
     ShowPanel(Panel),
+    /// The tools the world offers an agent changed.
+    AgentTools,
+    /// An agent tool call finished.
+    AgentResult { id: u64, ok: bool, content: String },
+    /// `/agent ...`, from an alias or a macro (typed, the app catches it first).
+    Agent(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -89,7 +95,8 @@ pub struct Session {
 
 impl Session {
     pub fn new(id: u64, config: &Config, world: World, character: Option<Character>) -> (Self, Vec<Output>) {
-        let (engine, out) = Engine::new(config, world, character);
+        let (mut engine, out) = Engine::new(config, world, character);
+        engine.set_agents_supported(true);
         let s = &config.settings;
         (
             Self {
@@ -258,6 +265,9 @@ impl Session {
                 },
                 Output::StatusText(text) => self.status_text = text,
                 Output::Edit(request) => effects.push(Effect::Edit(request)),
+                Output::AgentTools(_) => effects.push(Effect::AgentTools),
+                Output::AgentResult { id, ok, content } => effects.push(Effect::AgentResult { id, ok, content }),
+                Output::Agent(args) => effects.push(Effect::Agent(args)),
                 Output::WebView(familiar_engine::WebViewCommand::Open(open)) => {
                     match open.url {
                         Some(url) => self.output.notice(&format!("The server opened a web view; open it in a browser: {url}")),
@@ -278,5 +288,19 @@ impl Session {
             }
         }
         effects
+    }
+}
+
+impl familiar_agent::World for Session {
+    fn agent_tools(&self) -> Option<&[familiar_engine::AgentTool]> {
+        self.engine.agent_tools()
+    }
+
+    fn agent_call(&mut self, tool: &str, args: &serde_json::Value) -> Result<u64, String> {
+        self.engine.agent_call(tool, args)
+    }
+
+    fn last_lines(&self, n: usize) -> Vec<String> {
+        self.output.last_lines(n).into_iter().map(str::to_string).collect()
     }
 }

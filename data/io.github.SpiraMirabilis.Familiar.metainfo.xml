@@ -54,6 +54,16 @@
     <content_attribute id="social-info">mild</content_attribute>
   </content_rating>
   <releases>
+    <release version="0.5.0" date="2026-11-25">
+      <description>
+        <p>LLM coding agents beside a world, with tools the world itself offers.</p>
+        <ul>
+          <li>/agent runs Claude Code, Codex, Antigravity or Grok Build in a terminal beside the world, and serves it the world's tools over the Model Context Protocol</li>
+          <li>A MOO offers those tools through a new MCP 2.1 package, dns-com-familiar-agent, so the agent can read and program verbs and more with your character's permissions; a server side for ToastStunt and LambdaCore comes with Familiar</li>
+          <li>Each tool call shows a one-line summary in the world's window</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.4.0" date="2026-11-24">
       <description>
         <p>A native app for Windows, and examples to learn triggers, aliases and macros from.</p>

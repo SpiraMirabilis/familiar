@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.5.0 (2026-11-25)
+
+- Terminal client:
+  - `/agent` runs an LLM agent (Claude Code, Codex, Antigravity or Grok Build built in; any
+    other through `[[settings.agent]]`) beside the world, where `$EDITOR` goes. Without a
+    name it runs the first one installed, in the order `agent_order` gives. Familiar serves
+    it the world's tools over MCP (Model Context Protocol), on 127.0.0.1 only.
+  - The MOO defines the tools, with a new MCP 2.1 package, `dns-com-familiar-agent`
+    (`docs/agent-protocol.md`): listing, searching and programming verbs, creating objects,
+    and so on. They run with the character's own permissions.
+  - Results come back as tagged, authenticated messages, so nothing is scraped from the
+    output. Each call shows a one-line summary in the world's window.
+  - `moo/familiar-agent` is a server side for ToastStunt/LambdaCore. It runs on the MCP
+    feature (moved from `examples/moo` to `moo/mcp-feature`), which now passes other packages'
+    messages to the objects registered with `:set_handler`.
+- GTK: `/agent` too, with the agent in a terminal (VTE) in the side dock. VTE for GTK 4 is a
+  new dependency (the default `agents` feature).
+- macOS: `/agent` too, in a terminal (SwiftTerm) in the side dock. Agents' programs are looked
+  for on the login shell's PATH, since an app opened from the Finder doesn't get it.
+- Windows: `/agent` too. The engine runs the agent in a ConPTY (for apps that ask, with
+  `"agents": "pty"`), and the side dock shows it with xterm.js in WebView2.
+- Only clients that can run agents offer MOOs `dns-com-familiar-agent`. The agent server and
+  launching live in a new crate, `familiar-agent`, for every frontend.
+- The terminal client's embedded terminal passes on a command's environment and working
+  folder.
+
 ## 0.4.0 (2026-11-24)
 
 - Every client: the triggers, aliases and macros editor can add a set of examples to learn

@@ -1,0 +1,23 @@
+[package]
+name = "familiar-agent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "LLM agents (Claude Code, Codex, ...) beside a world in Familiar: the MCP server that serves them the world's tools, and starting them"
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "tokio"] }
+familiar-config = { version = "0.5.0", path = "../config" }
+familiar-engine = { version = "0.5.0", path = "../engine" }
+futures-util = { version = "0.3.34", default-features = false }
+getrandom = "0.3.4"
+serde_json = "1.0.154"
+tokio = { version = "1.54.1", features = ["rt", "net", "sync"] }
+
+[dev-dependencies]
+tokio = { version = "1.54.1", features = ["rt", "net", "sync", "macros", "io-util", "time"] }
+tower = { version = "0.5", features = ["util"] }

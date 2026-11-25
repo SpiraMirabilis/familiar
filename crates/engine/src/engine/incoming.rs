@@ -60,6 +60,7 @@ impl Engine {
                     out.push(Output::PasswordMode(false));
                 }
                 self.handle = None;
+                self.agent_disconnected(&mut out);
                 if let Err(e) = self.save_map() {
                     out.push(Output::Notice(format!("Couldn't save the map: {e}")));
                 }
@@ -234,6 +235,14 @@ impl Engine {
             }
             for event in events {
                 out.push(match event {
+                    McpEvent::AgentTools(tools) => {
+                        self.agent_tools = tools.clone();
+                        Output::AgentTools(tools)
+                    }
+                    McpEvent::AgentResult { id, ok, content } => {
+                        self.agent_result(id, ok, content, out);
+                        continue;
+                    }
                     McpEvent::Status(text) => Output::StatusText(text),
                     McpEvent::Edit { reference, name, kind, content } => {
                         let language = (kind == "moo-code").then(|| self.program_language());

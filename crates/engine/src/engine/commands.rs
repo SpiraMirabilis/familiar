@@ -130,7 +130,8 @@ impl Engine {
         let (name, args) = command.split_once(char::is_whitespace).unwrap_or((command, ""));
         let args = args.trim();
         match name.to_lowercase().as_str() {
-            "help" | "?" => out.push(Output::Notice(help_text())),
+            "help" | "?" => out.push(Output::Notice(help_text(self.agents_supported))),
+            "agent" | "agents" if self.agents_supported => out.push(Output::Agent(args.to_string())),
             "set" if args.is_empty() => {
                 let all = self.merged_variables();
                 if all.is_empty() {
@@ -353,9 +354,12 @@ pub(super) fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-pub(super) fn help_text() -> String {
+/// `/agent`, for frontends that can run agents ([`Engine::set_agents_supported`]).
+pub const AGENT_COMMAND: (&str, &str) = ("/agent [<name>|stop|list]", "run an LLM agent (claude, codex, agy, grok) beside the world, with the world's tools");
+
+pub(super) fn help_text(agents: bool) -> String {
     let mut text = String::from("Client commands:");
-    for (usage, description) in COMMANDS {
+    for (usage, description) in COMMANDS.iter().chain(agents.then_some(&AGENT_COMMAND)) {
         text.push_str(&format!("\n  {usage:<34} {description}"));
     }
     text.push_str("\n  //<text>                           send text that starts with a /");

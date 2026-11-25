@@ -199,14 +199,24 @@ fn draw_docked_editor(f: &mut Frame, app: &mut App, id: u64, focused: bool, area
     let border = if focused { theme::accent() } else { theme::faint() };
     let lines: Vec<Line> = (0..rule.height).map(|_| Line::styled("│", border)).collect();
     f.render_widget(Paragraph::new(lines), rule);
-    let title = app.editors.iter().find(|e| e.id == id).map_or(String::new(), |e| e.title.clone());
+    let (title, label) = pane_label(app, id);
     let name = if focused { Style::new().fg(ACCENT_2).add_modifier(Modifier::BOLD) } else { theme::muted() };
-    let hint = Line::from(vec![key_hint("F6"), Span::styled(if focused { " world  " } else { " editor  " }, theme::faint()), key_hint("F7"), Span::styled(" to a tab ", theme::faint())]);
+    let other = if focused { " world  " } else if label.1 { " agent  " } else { " editor  " };
+    let hint = Line::from(vec![key_hint("F6"), Span::styled(other, theme::faint()), key_hint("F7"), Span::styled(" to a tab ", theme::faint())]);
     let hint_width = hint.width() as u16;
     let [l, r] = Layout::horizontal([Constraint::Min(1), Constraint::Length(hint_width)]).areas(heading);
-    f.render_widget(Paragraph::new(Line::from(vec![Span::styled(format!(" ✎ {title}"), name), Span::styled("  save and quit to finish", theme::faint())])), l);
+    f.render_widget(Paragraph::new(Line::from(vec![Span::styled(format!(" {title}"), name), Span::styled(label.0, theme::faint())])), l);
     f.render_widget(Paragraph::new(hint.right_aligned()), r);
     draw_editor(f, app, id, screen, focused);
+}
+
+/// An editor's or agent's title with its mark, the hint after it, and whether it's an agent.
+fn pane_label(app: &App, id: u64) -> (String, (&'static str, bool)) {
+    match app.editors.iter().find(|e| e.id == id) {
+        Some(e) if e.is_agent() => (format!("✦ {}", e.title), ("  /agent stop ends it", true)),
+        Some(e) => (format!("✎ {}", e.title), ("  save and quit to finish", false)),
+        None => (String::new(), ("", false)),
+    }
 }
 
 /// Draws an editor's screen. `cursor` is whether the keyboard is the editor's.
@@ -241,8 +251,8 @@ fn draw_editor(f: &mut Frame, app: &mut App, id: u64, area: Rect, cursor: bool) 
 }
 
 fn draw_editor_status(f: &mut Frame, app: &App, id: u64, area: Rect) {
-    let title = app.editors.iter().find(|e| e.id == id).map_or("", |e| e.title.as_str());
-    let left = Line::from(vec![Span::styled(format!(" ✎ {title}"), Style::new().fg(ACCENT_2)), Span::styled("  save and quit to finish", theme::faint())]);
+    let (title, label) = pane_label(app, id);
+    let left = Line::from(vec![Span::styled(format!(" {title}"), Style::new().fg(ACCENT_2)), Span::styled(label.0, theme::faint())]);
     let right = Line::from(vec![key_hint("F7"), Span::styled(" to the sidebar  ", theme::faint()), key_hint("Alt+← →"), Span::styled(" other tabs ", theme::faint())]);
     let right_width = right.width() as u16;
     let [l, r] = Layout::horizontal([Constraint::Min(1), Constraint::Length(right_width)]).areas(area);

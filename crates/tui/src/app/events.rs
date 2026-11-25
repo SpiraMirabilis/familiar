@@ -497,6 +497,7 @@ impl App {
             "world" | "worlds" => self.run(Cmd::EditWorld),
             "config" => self.run(Cmd::EditConfig),
             "rules" | "triggers" | "aliases" | "macros" => self.run(Cmd::Rules),
+            "agent" | "agents" => self.agent_command(args),
             "editor" => {
                 let settings = &mut self.config.settings;
                 match args.to_lowercase().as_str() {

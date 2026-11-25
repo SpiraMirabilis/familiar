@@ -6,6 +6,8 @@ DATADIR ?= $(PREFIX)/share
 LICENSEDIR ?= $(DATADIR)/licenses/familiar
 CARGO ?= cargo
 CARGOFLAGS ?= --locked
+# Cargo feature flags for the build, e.g. --no-default-features --features familiar-gtk/webview
+FEATURES ?=
 APP_ID = io.github.SpiraMirabilis.Familiar
 # Binaries: target/release after building, or bin/ in a release tarball.
 TARGET ?= $(if $(wildcard bin/familiar),bin,target/release)
@@ -15,7 +17,7 @@ TARGET ?= $(if $(wildcard bin/familiar),bin,target/release)
 all: build
 
 build:
-	$(CARGO) build --release $(CARGOFLAGS) -p familiar-gtk -p familiar-tui
+	$(CARGO) build --release $(CARGOFLAGS) $(FEATURES) -p familiar-gtk -p familiar-tui
 
 check:
 	$(CARGO) test $(CARGOFLAGS) --workspace

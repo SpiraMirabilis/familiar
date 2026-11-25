@@ -56,7 +56,8 @@ internal sealed partial class Session
 
     public Session(JsonNode world, string? character)
     {
-        var opened = Core.Call("session.open", Json.Args(("world", world), ("character", character)))!;
+        // LLM agents (/agent): the engine runs them in a ConPTY, and the dock shows the terminal.
+        var opened = Core.Call("session.open", Json.Args(("world", world), ("character", character), ("agents", "pty")))!;
         Id = opened.Long("id");
         Info = opened;
         Output = new OutputBuffer(AppState.Settings.Int("scrollback_lines"));
@@ -116,6 +117,10 @@ internal sealed partial class Session
     public void RestartScripts() => Call("session.restart_scripts");
     public void Submit(string text, bool secret = false) => Call("session.submit", Json.Args(("text", text), ("secret", secret)));
     public void Resize(int cols, int rows) => Call("session.resize", Json.Args(("cols", cols), ("rows", rows)));
+
+    public void AgentWrite(string data) => Call("agent.write", Json.Args(("data", data)));
+    public void AgentResize(int cols, int rows) => Call("agent.resize", Json.Args(("cols", cols), ("rows", rows)));
+    public void AgentStop() => Call("agent.stop");
 
     public void PuppetSubmit(string name, string text) => Call("session.puppet_submit", Json.Args(("name", name), ("text", text)));
     public void SaveEdit(JsonNode request, string content) => Call("session.save_edit", Json.Args(("request", request), ("content", content)));
@@ -256,7 +261,8 @@ internal sealed partial class Session
                 case "puppet_echo":
                     if (Puppets.TryGetValue(o.Str("name"), out var echoed)) echoed.Echo(o.Str("text"));
                     break;
-                case "tilemap" or "map_changed" or "show_map" or "stats" or "edit" or "compile_error" or "webview":
+                case "tilemap" or "map_changed" or "show_map" or "stats" or "edit" or "compile_error" or "webview"
+                    or "agent_start" or "agent_output" or "agent_stop" or "agent_focus":
                     ToView(o);
                     break;
                 case "gmcp" or "received" or "sent":

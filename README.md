@@ -60,10 +60,10 @@ sudo make install         # PREFIX=/usr/local by default; DESTDIR is honoured
 ```
 
 Building the GTK client needs Rust 1.92 or newer and the development files for GTK 4 (4.14+),
-libadwaita (1.6+), GtkSourceView 5, libspelling, WebKitGTK 6.0 and GStreamer. On Arch:
-`pacman -S gtk4 libadwaita gtksourceview5 libspelling webkitgtk-6.0 gstreamer gst-plugins-base`.
+libadwaita (1.6+), GtkSourceView 5, libspelling, WebKitGTK 6.0, VTE for GTK 4 and GStreamer. On Arch:
+`pacman -S gtk4 libadwaita gtksourceview5 libspelling webkitgtk-6.0 vte4 gstreamer gst-plugins-base`.
 The terminal client needs only Rust. `cargo build --no-default-features -p familiar-gtk` leaves out
-WebKitGTK (and web views).
+WebKitGTK, libspelling and VTE (and web views, spellcheck and agents).
 
 At runtime, speech needs `speech-dispatcher` with a voice such as `espeak-ng`, spell checking needs a
 Hunspell dictionary (`hunspell-en_us`), and sounds need `gst-plugins-good` (GTK) or `pw-play`,
@@ -120,6 +120,10 @@ When a MOO sends code with MCP simpleedit (`type: moo-code`), it opens in a smal
 
 Languages: **MOO (Stunt)** built from the Stunt lexer (keywords, `/* */` and string-statement comments, `$#colour` and `b"bytes"` literals, string escapes, maps and bitwise operators, built-in variables and all 209 built-in functions), **MUF**, and GtkSourceView's built-in languages such as Lua. Each world has a program language. Add your own GtkSourceView `.lang` files to `~/.local/share/familiar/language-specs/`.
 
+### LLM agents
+
+`/agent` runs an LLM coding agent (Claude Code, Codex, Antigravity or Grok Build) in a terminal in the side dock, and serves it the world's tools over MCP (Model Context Protocol), as in [the terminal client](#the-terminal-client). The tab closes when the agent quits, on `/agent stop`, or when the world's tab closes. In the agent's terminal, Ctrl+Shift+C and Ctrl+Shift+V copy and paste; Ctrl+C goes to the agent.
+
 ### Map
 
 The map tab appears in the side dock once a world has rooms. If the game sends GMCP `Room.Info`, the map fills in as you move: rooms are placed by the direction you walked when the server sends no coordinates, and exits link up as both ends are seen. Without `Room.Info`, add rooms with `/map addroom "Name" north south` and the map follows you by recognising neighbouring room names. Double-click a room (or `/map go name`) to walk there by the shortest known path. Drag rooms to move them (Ctrl to place freely), drag the background to pan, scroll to zoom, and right-click for Walk Here, I'm Here, Rename, Delete and Add Room Here. Maps are saved per world in `~/.local/share/familiar/maps/`. The folder button in the map (or `/map import file.atlas`) adds a BeipMU map: each of its maps becomes an area, with the room shapes, colours and exits. Background rectangles, labels and exit line shapes aren't drawn.
@@ -167,9 +171,19 @@ Then turn on **Connect through the bouncer** for a world (the world's settings i
 - **Layout:** tabs across the top, with unread counts, ★ for trigger-marked activity and puppets as `↳ Name` tabs. Below them the output, and a sidebar (Ctrl+B) with the map, Beip.Stats bars and spawn windows (Alt+[ and Alt+] switch). Then the input box, which carries the server's prompt on its border, and a status line.
 - **Reading back:** PgUp, Shift+↑ or the mouse wheel scrolls; once scrolled, the view splits so the live tail stays visible underneath. Esc jumps back. Links, tabs and map rooms are clickable (a room walks you there). Drag over the output to select text; it's copied when you let go (through the terminal, with OSC 52, and `wl-copy`, `xclip`, `xsel` or `pbcopy` if there is one). Shift+drag is still the terminal's own selection.
 - **Typing:** Enter sends; an empty Enter reconnects a dropped connection. Shift+Enter, Alt+Enter or Ctrl+J add a line. ↑↓ and Ctrl+R are history and history search, Tab completes names seen in the output, readline keys work, and Ctrl+C or Esc Esc clears the line. Typing `/` lists client commands with descriptions, and completes world names, puppets and map rooms as arguments.
-- **Everything else:** Ctrl+K opens the command palette and Ctrl+O the world picker; Alt+1…9 switches tabs; F1 shows the shortcuts. `/connect`, `/world`, `/close`, `/sidebar`, `/config`, `/rules`, `/editor` and `/quit` are terminal-only commands.
+- **Everything else:** Ctrl+K opens the command palette and Ctrl+O the world picker; Alt+1…9 switches tabs; F1 shows the shortcuts. `/connect`, `/world`, `/close`, `/sidebar`, `/config`, `/rules`, `/editor`, `/agent` and `/quit` are terminal-only commands.
 - **Triggers, aliases and macros:** F2 (or `/rules`) opens the same editor the GUI has: a list each for triggers, aliases, keyboard macros and variables, for all worlds, one world or one character (`[` and `]` change which). Enter edits, `n` adds, Space switches one on or off, `d` twice deletes and Shift+↑↓ reorders. The trigger and alias forms have a line to try the rule on, and a macro's key is recorded with Ctrl+T. Changes apply to open tabs straight away.
 - **Editors:** MCP simpleedit opens in `$VISUAL`/`$EDITOR` with the right file extension (`.moo`, `.muf`) so your editor highlights it (`/editor syntax` installs MOO highlighting for micro and Emacs, which have none, or fuller highlighting than Vim and Neovim's own, with Stunt's additions; it never replaces a file that's there unless you add `force`. Emacs also needs one line in your init file, which `/editor syntax` shows you; its `moo-mode` indents blocks too. The files are [`crates/tui/data/micro/moo.yaml`](crates/tui/data/micro/moo.yaml), [`crates/tui/data/vim/moo.vim`](crates/tui/data/vim/moo.vim) and [`crates/tui/data/emacs/moo-mode.el`](crates/tui/data/emacs/moo-mode.el). After your first MOO edit in one of those editors without it, Familiar mentions this once), and saving and quitting sends it back. If the server reports compile errors, Alt+E reopens it at the first one. Ctrl+G edits the input line in `$EDITOR`. The editor opens in a tab of its own, so the world keeps scrolling in its tab and you can switch back to check something (Alt+←/→, Alt+1…9 and Ctrl+PgUp/PgDn stay with Familiar; every other key is the editor's). Quitting the editor closes the tab; middle-clicking the tab closes it without saving. `/editor sidebar` puts the editor beside the world instead, where the sidebar goes, so you can see both at once: F6 (or Alt+0, or a click) moves the keyboard between the editor and the world. That happens when the world has nothing in its sidebar (no map, stats or spawn windows) and the terminal is at least 90 columns wide; otherwise the editor gets a tab as usual. F7 (or `/editor move`) moves an open editor between the two places, from the editor or from the world's tab. `/editor fullscreen` gives the editor the whole terminal instead, as before, which is also what happens if the tab can't be opened. `/editor tab` goes back to tabs (these are the `editor_in_tab` and `editor_in_sidebar` settings).
+- **LLM agents:**
+  - `/agent` runs an LLM coding agent beside the world, where the sidebar goes (or in a tab if there's no room), and serves it the world's tools over MCP (Model Context Protocol).
+  - The built-in agents are Claude Code (`/agent claude`), Codex (`/agent codex`), Antigravity (`/agent agy`) and Grok Build (`/agent grok`). Plain `/agent` runs the first of them that's installed, in the order `agent_order` in the config gives (`["claude", "codex", "agy", "grok"]` unless you change it).
+  - Add others, or replace a built-in one, under `[[settings.agent]]` in the config, with `name`, `command` and optionally `files`. `{url}` in the command becomes the MCP server's address, which is also in `$FAMILIAR_MCP_URL`. `files` are written into the agent's folder first, for agents that read their MCP servers from a project file (agy's `.agents/mcp_config.json`, grok's `.mcp.json`).
+  - The tools come from the MOO, through the `dns-com-familiar-agent` MCP 2.1 package: list, grep and program verbs, create objects, and whatever else the MOO offers. They run with your character's permissions. See [`docs/agent-protocol.md`](docs/agent-protocol.md), and [`moo/familiar-agent`](moo/familiar-agent) for a server side for ToastStunt/LambdaCore, which runs on the MCP feature in [`moo/mcp-feature`](moo/mcp-feature).
+  - The client adds `world_output`, which reads the world's window.
+  - Each call shows a one-line summary in the world's window, unless the tool says otherwise.
+  - The server listens only on 127.0.0.1, at a secret address for each agent, and only while an agent is running.
+  - The agent runs in a folder of its own for each world, under the data folder, with an `AGENTS.md` for its notes on the world.
+  - F6 moves the keyboard between the agent and the world, the agent's own quit command ends it, and `/agent stop` stops it from the world's tab.
 - **Sound and alerts:** sounds play through `pw-play`, `paplay` or `aplay`. Trigger notifications use `notify-send`, and only while the terminal isn't focused. Speech works as in the GUI.
 - **Not available in a terminal:** images, avatars, web views and tilemaps. A web view's URL is shown so you can open it.
 - **Colours:** the 16 basic colours are drawn as exact colours (the same as the GUI), because
@@ -185,6 +199,10 @@ The Windows app is written for Windows rather than being the GTK client: C# and 
 colour, and keeps its worlds in tabs in the title bar.
 
 - **Web views** use WebView2, which is part of Windows 11 and of nearly every Windows 10.
+- **LLM agents** (`/agent`) run in a terminal in the side dock, as in the GTK client: the engine
+  runs the agent in a ConPTY, and the panel draws it with xterm.js in WebView2. Ctrl+C copies
+  when there's a selection (and interrupts the agent when there isn't), and Ctrl+V pastes, as in
+  Windows Terminal. Closing the panel's tab stops the agent.
 - **Speech** uses the voice built into Windows instead of speech-dispatcher, and **sounds** play
   through Windows' own audio (WAV, Ogg Vorbis, MP3 and FLAC).
 - **Spell checking** is Windows' own, in whichever languages Windows has installed.
@@ -206,6 +224,10 @@ colour, and keeps its worlds in tabs in the title bar.
 - Keyboard macros are written the same way as on Linux ("Ctrl+F5", "Alt+KP_8"), so a config can
   move between systems. Alt is the Option key. ⌘ is never part of a macro.
 - **Web views** work (they use the system's WebKit), unlike on Windows.
+- **LLM agents** (`/agent`) run in a terminal (SwiftTerm) in the side dock, as in the GTK client;
+  ⌘C and ⌘V copy and paste there. The app looks for the agents' programs on the PATH your login
+  shell sets up, so `claude` in `~/.local/bin` is found even when Familiar is opened from the
+  Finder.
 - **Speech** uses the system voice, **sounds** play through the system (WAV, MP3, AAC and more,
   but not Ogg Vorbis) and can loop, and notifications come from Notification Center.
 - The **program editor** highlights MOO, MUF and Lua; other languages are shown as plain text.
@@ -223,8 +245,8 @@ colour, and keeps its worlds in tabs in the title bar.
   right-click it and choose Open (or allow it in System Settings → Privacy & Security); for the
   terminal client, `xattr -d com.apple.quarantine familiar-tui`. Copies you build yourself
   aren't affected.
-- **Building:** `packaging/macos/build.sh` makes `dist/Familiar.app`. It needs Rust and Xcode (or
-  its command line tools), and nothing else.
+- **Building:** `packaging/macos/build.sh` makes `dist/Familiar.app`. It needs Rust and Xcode 26
+  (or its command line tools), and nothing else; Swift fetches SwiftTerm.
 
 ### Optional system packages
 
@@ -232,6 +254,7 @@ colour, and keeps its worlds in tabs in the title bar.
 - `speech-dispatcher` and a voice such as `espeak-ng`: speech.
 - `hunspell-en_us` (or another Hunspell dictionary): spellcheck.
 - `webkitgtk-6.0`: web views (on by default). Without it, build with `cargo run -p familiar-gtk --no-default-features`.
+- `vte4`: the terminal LLM agents run in (on by default; the `agents` feature).
 
 ## Development
 
@@ -241,15 +264,16 @@ colour, and keeps its worlds in tabs in the title bar.
 | `familiar-ansi` | ANSI parser. Supports SGR 16/256/truecolor in both `;` and `:` forms, OSC 8 hyperlinks, and swallows every other CSI/OSC/DCS sequence. Includes plain-URL detection and a palette resolver. |
 | `familiar-net` | Async TCP/TLS (rustls, verified against system certs, with an option to skip verification). Encodings: Auto (UTF-8 with a per-line Windows-1252 fallback, the default), UTF-8, Windows-1252, CP437. A session task turns raw bytes into line, prompt and GMCP events. |
 | `familiar-config` | Worlds, characters, settings and rules (triggers, aliases, macros, variables at global, world and character scope) in `~/.config/familiar/config.toml`, plus a built-in directory of 40 public worlds. |
-| `familiar-engine` | The UI-independent client: per-connection `Engine` that turns network events and input into render outputs. Triggers, aliases, keyboard macros, variables, `/` commands, input history, daily-rotating logs, GMCP (`Beip.Stats`, `Client.Media`, `WebView`), and MCP 2.1 (simpleedit, awns-status, awns-ping, vmoo-client). Shared by every frontend. |
+| `familiar-engine` | The UI-independent client: per-connection `Engine` that turns network events and input into render outputs. Triggers, aliases, keyboard macros, variables, `/` commands, input history, daily-rotating logs, GMCP (`Beip.Stats`, `Client.Media`, `WebView`), and MCP 2.1 (simpleedit, awns-status, awns-ping, vmoo-client, familiar-agent). Shared by every frontend. |
 | `familiar-script` | JavaScript scripting with QuickJS: one isolated runtime per connection, a 2-second limit per call and a memory cap. Implements the engine's `ScriptHost` trait, so any frontend gets scripting. |
 | `familiar-map` | World maps: rooms, exits and areas, an automapper for GMCP `Room.Info` (IRE, Aardwolf and BeipMU styles), shortest-path walking, and tracking by room name. |
 | `familiar-import` | Reads BeipMU's `Config.txt` (worlds, characters, puppets, triggers, aliases, macros, variables) and `.atlas` maps (plain or zipped XML), reporting anything that can't be carried over. |
 | `familiar-speech` | Text to speech on a background thread: speech-dispatcher on Linux, the built-in voice on Windows and macOS. |
 | `familiar-platform` | Sounds, notifications, opening links and finding an editor, done each system's way. |
+| `familiar-agent` | LLM agents beside a world: the MCP (Model Context Protocol) server that serves them the world's tools, choosing which agent to run and preparing its folder, and routing its calls to the world. |
 | `familiar-bridge` | The engine behind a small C interface (a method name and JSON in, JSON out), as a static library or a DLL. The macOS app, in [`macos/`](macos), is Swift on top of it; the Windows app, in [`windows/`](windows), is C#. |
 | `familiar-code` | Editing support shared by frontends: block-aware auto-indentation for MOO, MUF and Lua. |
-| `familiar-gtk` | GTK4/libadwaita client: a tab per connection, ANSI and full Unicode output with clickable links, a side dock with spawn windows and GMCP stat panes, input with history, password mode, NAWS, logging, sounds (trigger and server-driven), notifications, an MCP status line and text editor, web views, and a rules editor. |
+| `familiar-gtk` | GTK4/libadwaita client: a tab per connection, ANSI and full Unicode output with clickable links, a side dock with spawn windows and GMCP stat panes, input with history, password mode, NAWS, logging, sounds (trigger and server-driven), notifications, an MCP status line and text editor, web views, LLM agents in a terminal (VTE), and a rules editor. |
 | `familiar-tui` | Full-screen terminal client (ratatui) on the same engine: tabs, a sidebar with the map, stat bars and spawn windows, a command palette and fuzzy pickers, `/` completion, and `$EDITOR` for MCP editing. |
 | `familiar-cli` | Terminal client for testing against real servers. |
 

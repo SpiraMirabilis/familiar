@@ -12,7 +12,7 @@ use familiar_net::{BouncerOptions, ConnectOptions, Encoding, SessionEvent, Sessi
 use tokio::sync::mpsc::UnboundedReceiver;
 
 use crate::expand::{Captures, expand};
-use crate::mcp::{Disposition, Mcp, McpEvent};
+use crate::mcp::{AgentTool, Disposition, Mcp, McpEvent};
 use crate::media::{Media, MediaCommand};
 use crate::rules::CompiledRules;
 use crate::script::{ScriptAction, ScriptContext, ScriptHost};
@@ -165,6 +165,13 @@ pub enum Output {
     Received(String),
     /// A command sent to the server, for web views.
     Sent(String),
+    /// The tools the world offers an LLM agent changed (dns-com-familiar-agent).
+    AgentTools(Vec<AgentTool>),
+    /// The result of [`Engine::agent_call`]: text for the agent, and whether the tool succeeded.
+    AgentResult { id: u64, ok: bool, content: String },
+    /// `/agent <args>`, for the frontend: run, stop or list LLM agents (only if it said it can,
+    /// with [`Engine::set_agents_supported`]).
+    Agent(String),
 }
 
 pub struct Engine {
@@ -197,6 +204,7 @@ pub struct Engine {
     /// Show MCP traffic as notices.
     mcp_debug: bool,
     webviews_supported: bool,
+    agents_supported: bool,
     script: Option<Box<dyn ScriptHost>>,
     puppets: Vec<(Puppet, Option<fancy_regex::Regex>)>,
     /// Puppets whose tabs are open.
@@ -212,6 +220,11 @@ pub struct Engine {
     room_info_seen: bool,
     /// After an upload: which editor it came from, and until when to look for errors.
     compile_watch: Option<(String, Instant)>,
+    /// Tools the server offers an LLM agent.
+    agent_tools: Vec<AgentTool>,
+    /// Agent tool calls waiting for results, by id.
+    agent_calls: std::collections::HashMap<u64, agent::AgentCall>,
+    next_agent_call: u64,
     /// How deeply script actions are nested (a script typing input that runs a script...).
     script_depth: u32,
     /// Commands waiting to run (/delay).
@@ -248,6 +261,7 @@ impl Engine {
             gmcp_debug: false,
             mcp_debug: false,
             webviews_supported: false,
+            agents_supported: false,
             script: None,
             puppets: Vec::new(),
             open_puppets: Default::default(),
@@ -258,6 +272,9 @@ impl Engine {
             map_tracking: true,
             room_info_seen: false,
             compile_watch: None,
+            agent_tools: Vec::new(),
+            agent_calls: Default::default(),
+            next_agent_call: 1,
             script_depth: 0,
             delays: Vec::new(),
             next_delay_id: 1,
@@ -355,6 +372,14 @@ impl Engine {
         self.webviews_supported = supported;
     }
 
+    /// Tells the engine the UI can run LLM agents beside the world: it offers MOOs the
+    /// dns-com-familiar-agent MCP package from the next connection, and passes `/agent` on as
+    /// [`Output::Agent`].
+    pub fn set_agents_supported(&mut self, supported: bool) {
+        self.agents_supported = supported;
+        self.mcp = Mcp::new(supported);
+    }
+
     pub fn is_logging(&self) -> bool {
         self.logger.is_some()
     }
@@ -382,7 +407,7 @@ impl Engine {
         if self.webviews_supported {
             opts.telnet.gmcp_supports.push("WebView 1".into());
         }
-        self.mcp = Mcp::default();
+        self.mcp = Mcp::new(self.agents_supported);
         self.via_bouncer = self.world.bouncer && !self.bouncer.is_unset();
         if self.via_bouncer {
             let mut connect = ConnectOptions::new(&self.bouncer.host, self.bouncer.port);
@@ -551,6 +576,7 @@ struct Delay {
     command: String,
 }
 
+mod agent;
 mod commands;
 mod incoming;
 mod map;
@@ -559,4 +585,4 @@ mod scripting;
 #[cfg(test)]
 mod tests;
 
-pub use commands::COMMANDS;
+pub use commands::{AGENT_COMMAND, COMMANDS};

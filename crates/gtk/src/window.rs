@@ -134,6 +134,8 @@ impl MainWindow {
                 match removed {
                     Some(session) => {
                         session.save_map();
+                        #[cfg(feature = "agents")]
+                        session.close_agent();
                         session.disconnect();
                         if session.is_logging() {
                             session.toggle_log();

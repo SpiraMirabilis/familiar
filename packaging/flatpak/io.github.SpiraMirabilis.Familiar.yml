@@ -42,7 +42,9 @@ modules:
   - name: familiar
     buildsystem: simple
     build-commands:
-      - make CARGOFLAGS="--offline --locked"
+      # No LLM agents (the agents feature): the runtime has no VTE, and agents' programs are
+      # on the host, out of the sandbox's reach.
+      - make CARGOFLAGS="--offline --locked" FEATURES="--no-default-features --features familiar-gtk/webview,familiar-gtk/spelling"
       - make install PREFIX=/app
     sources:
       # Builds the checkout this manifest is in. For Flathub, replace with a git source

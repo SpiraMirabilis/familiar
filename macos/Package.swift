@@ -14,14 +14,20 @@ let rustLibs = environment["FAMILIAR_RUST_LIB_DIR"]
 let package = Package(
     name: "Familiar",
     platforms: [.macOS(.v14)],
+    dependencies: [
+        // The terminal LLM agents (/agent) run in.
+        .package(url: "https://github.com/migueldeicaza/SwiftTerm", from: "1.2.0"),
+    ],
     targets: [
         .systemLibrary(name: "FamiliarBridge"),
         .executableTarget(
             name: "Familiar",
-            dependencies: ["FamiliarBridge"],
+            dependencies: ["FamiliarBridge", .product(name: "SwiftTerm", package: "SwiftTerm")],
             swiftSettings: [.unsafeFlags(["-swift-version", "5"])],
             linkerSettings: [
-                .unsafeFlags(["-L\(rustLibs)"]),
+                // The static library by its path: with only -L, the linker would take the
+                // .dylib cargo builds beside it, which the signed app then can't load.
+                .unsafeFlags(["-Xlinker", "\(rustLibs)/libfamiliar_bridge.a"]),
                 .linkedFramework("Security"),
                 .linkedFramework("CoreFoundation"),
                 .linkedFramework("SystemConfiguration"),

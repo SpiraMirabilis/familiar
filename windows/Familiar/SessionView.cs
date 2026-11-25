@@ -24,6 +24,8 @@ internal sealed class SessionView : UserControl
     private readonly Dictionary<string, WebPane> webPanes = [];
     private readonly Dictionary<string, CodeEditorWindow> editors = [];
     private readonly List<OutputView> spawnViews = [];
+    /// <summary>The LLM agent working on this world, in the dock.</summary>
+    private AgentPane? agent;
     private double dockWidth = 340;
 
     /// <summary>Asks the window for a tab beside this session's (a puppet's). The last argument
@@ -73,6 +75,7 @@ internal sealed class SessionView : UserControl
         dock.TabCloseRequested += (_, e) =>
         {
             if (e.Tab.Tag is string id && id.StartsWith("web:")) CloseWebView(id[4..]);
+            else if (e.Tab.Tag is "agent") Session.AgentStop();
         };
 
         Output.FindClosed += Input.FocusInput;
@@ -146,6 +149,8 @@ internal sealed class SessionView : UserControl
         webPanes.Clear();
         foreach (var editor in editors.Values.ToList()) editor.Close();
         editors.Clear();
+        agent?.Shut();
+        agent = null;
     }
 
     // MARK: The side dock
@@ -235,6 +240,27 @@ internal sealed class SessionView : UserControl
                 if (editors.TryGetValue(o.Str("reference"), out var editor)) editor.AddError(o.Int("line"), o.Str("message"));
                 break;
             case "webview": WebView(o.Get("command") ?? new JsonObject()); break;
+            case "agent_start":
+                agent?.Shut();
+                RemovePanel("agent");
+                var started = new AgentPane(Session, o.Str("name"));
+                agent = started;
+                ShowPanel("agent", $"✦ {started.AgentName}", "\uE756", () => started, select: true, closable: true);
+                started.FocusTerminal();
+                break;
+            case "agent_output": agent?.Write(o.Str("data")); break;
+            case "agent_focus":
+                if (agent is not null && panels.TryGetValue("agent", out var agentTab))
+                {
+                    dock.SelectedItem = agentTab;
+                    agent.FocusTerminal();
+                }
+                break;
+            case "agent_stop":
+                RemovePanel("agent");
+                agent?.Shut();
+                agent = null;
+                break;
             case "display": ToPages(Json.Args(("type", "display"), ("text", o.Get("text")))); break;
             case "gmcp": ToPages(Json.Args(("type", "gmcp"), ("package", o.Get("package")), ("data", o.Get("data")))); break;
             case "received": ToPages(Json.Args(("type", "receive"), ("text", o.Get("text")))); break;

@@ -85,6 +85,13 @@ impl App {
                     self.switch_to(pos);
                 }
             }
+            Effect::Agent(args) => self.agent_command(&args),
+            Effect::AgentTools => {
+                self.agents.tools_changed(id);
+            }
+            Effect::AgentResult { id: call, ok, content } => {
+                self.agents.result(id, call, ok, content);
+            }
             Effect::ShowPanel(panel) => {
                 let explicit = panel == Panel::Map;
                 let s = &mut self.sessions[idx];

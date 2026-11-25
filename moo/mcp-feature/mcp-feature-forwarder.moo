@@ -1,4 +1,4 @@
-"Hands MCP lines (#$#...) to the MCP simple-edit feature, for servers built with OUT_OF_BAND_PREFIX.";
+"Hands MCP lines (#$#...) to the MCP feature, for servers built with OUT_OF_BAND_PREFIX.";
 "Replace FEATURE with the feature's object number.";
 if (callers())
   return E_PERM;

@@ -11,6 +11,7 @@ use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyEvent
 use ratatui::layout::{Position, Rect};
 use tokio::sync::mpsc::UnboundedSender;
 
+use familiar_agent::{AgentRequest, Agents};
 use crate::buffer::{Buffer, Cell, Selection};
 use crate::editor::Document;
 use crate::syntax::{Editor, Installed};
@@ -34,6 +35,7 @@ pub const TUI_COMMANDS: &[(&str, &str)] = &[
     ("/config", "edit the config file in $EDITOR"),
     ("/editor [tab|sidebar|fullscreen]", "open $EDITOR in a tab, beside the world, or with the whole terminal"),
     ("/editor syntax [force]", "install MOO highlighting for $EDITOR (micro, Vim, Neovim, Emacs)"),
+    ("/agent [<name>|stop|list]", "run an LLM agent (claude, codex, agy, grok) beside the world, with the world's tools"),
     ("/rules", "edit triggers, aliases, keyboard macros and variables"),
     ("/keys", "show keyboard shortcuts"),
     ("/quit", "disconnect everything and quit"),
@@ -186,6 +188,8 @@ pub enum External {
     /// The input box of a session's tab, or of one of its puppets.
     EditInput { session: u64, puppet: Option<String> },
     EditConfig,
+    /// An LLM agent working on a session's world. It isn't an edit: nothing comes back.
+    Agent { session: u64 },
 }
 
 /// An editor running in a tab, or beside the world it was opened from.
@@ -194,12 +198,32 @@ pub struct EditorTab {
     pub title: String,
     pub term: Term,
     job: External,
-    document: Document,
+    /// The file being edited; an agent has none.
+    document: Option<Document>,
+    /// An agent's MCP endpoint token.
+    agent: Option<String>,
     /// The session whose main tab it sits beside, taking the sidebar's place. It has no tab
     /// of its own then.
     pub docked: Option<u64>,
     /// For a docked editor: keys go to it rather than to the world's input.
     pub focused: bool,
+}
+
+impl EditorTab {
+    pub fn is_agent(&self) -> bool {
+        self.agent.is_some()
+    }
+
+    /// Throws away the edit, if it is one. Returns what to tell the user.
+    fn discard(self) -> String {
+        match self.document {
+            Some(document) => {
+                document.discard();
+                format!("Closed the editor on {} without saving", self.title)
+            }
+            None => format!("Stopped {}", self.title),
+        }
+    }
 }
 
 /// The map's screen area, the map-unit rectangle it shows (x0, y0, x1, y1), and its area name.
@@ -270,6 +294,8 @@ pub struct App {
     pub external: Option<External>,
     pub editors: Vec<EditorTab>,
     pty_tx: PtySender,
+    /// LLM agents: the MCP server that serves them the worlds' tools, and their calls.
+    agents: Agents,
     /// The size of the whole terminal at the last draw.
     pub screen: (u16, u16),
     /// Text being selected (or last selected) with the mouse.
@@ -294,7 +320,7 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(net_tx: UnboundedSender<NetEvent>, pty_tx: PtySender) -> Self {
+    pub fn new(net_tx: UnboundedSender<NetEvent>, pty_tx: PtySender, agent_tx: UnboundedSender<AgentRequest>) -> Self {
         let config_path = familiar_config::default_config_path();
         let (config, config_error) = match Config::load(&config_path) {
             Ok(c) => (c, None),
@@ -321,7 +347,8 @@ impl App {
             external: None,
             editors: Vec::new(),
             pty_tx,
-            screen: (80, 24),
+            agents: Agents::new(agent_tx, None),
+                    screen: (80, 24),
             selection: None,
             press: None,
             drag: None,
@@ -395,7 +422,11 @@ impl App {
         match tab {
             Tab::Main(id) => self.session_index(*id).map(|i| self.sessions[i].title()).unwrap_or_default(),
             Tab::Puppet(_, name) => format!("↳ {name}"),
-            Tab::Editor(id) => format!("✎ {}", self.editors.iter().find(|e| e.id == *id).map_or("", |e| e.title.as_str())),
+            Tab::Editor(id) => match self.editors.iter().find(|e| e.id == *id) {
+                Some(e) if e.is_agent() => format!("✦ {}", e.title),
+                Some(e) => format!("✎ {}", e.title),
+                None => String::new(),
+            },
         }
     }
 
@@ -493,10 +524,12 @@ impl App {
                 let docked: Vec<u64> = self.editors.iter().filter(|e| e.docked == Some(id)).map(|e| e.id).collect();
                 for editor in docked {
                     if let Some(editor) = self.remove_editor(editor) {
-                        editor.document.discard();
-                        self.toast(&format!("Closed the editor on {} without saving", editor.title));
+                        let message = editor.discard();
+                        self.toast(&message);
                     }
                 }
+                // Calls still waiting fail: their results can't arrive now.
+                self.agents.forget(id);
                 if let Some(i) = self.session_index(id) {
                     let mut s = self.sessions.remove(i);
                     let _ = s.engine.save_map();
@@ -516,8 +549,8 @@ impl App {
             Tab::Editor(id) => {
                 // Dropping it stops the editor.
                 if let Some(editor) = self.remove_editor(id) {
-                    editor.document.discard();
-                    self.toast(&format!("Closed the editor on {} without saving", editor.title));
+                    let message = editor.discard();
+                    self.toast(&message);
                 }
             }
         }
@@ -635,6 +668,7 @@ impl App {
 
 }
 
+mod agents;
 mod editing;
 pub use editing::{DOCK_MIN_WIDTH, dock_width};
 mod effects;

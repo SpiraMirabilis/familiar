@@ -43,6 +43,7 @@ impl App {
                 Ok((Document::temporary(&name, "txt", &text)?, "input".into(), None))
             }
             External::EditConfig => Ok((Document::file(&self.config_path), "config".into(), None)),
+            External::Agent { .. } => Err("an agent has nothing to edit".into()),
         }
     }
 
@@ -79,7 +80,7 @@ impl App {
 
     /// The session an edit can sit beside, or why it can't sit beside one.
     fn dock_for(&self, job: &External) -> Result<u64, &'static str> {
-        let (External::Edit { session, .. } | External::EditInput { session, puppet: None }) = job else {
+        let (External::Edit { session, .. } | External::EditInput { session, puppet: None } | External::Agent { session, .. }) = job else {
             return Err("it doesn't belong to a world's main tab");
         };
         let Some(s) = self.session_index(*session).map(|i| &self.sessions[i]) else { return Err("its world has closed") };
@@ -102,7 +103,7 @@ impl App {
             Some(Tab::Main(session)) => Some(*session),
             _ => None,
         };
-        let in_a_tab = |e: &&EditorTab| e.docked.is_none() && matches!(&e.job, External::Edit { session, .. } | External::EditInput { session, puppet: None } if Some(*session) == here);
+        let in_a_tab = |e: &&EditorTab| e.docked.is_none() && matches!(&e.job, External::Edit { session, .. } | External::EditInput { session, puppet: None } | External::Agent { session, .. } if Some(*session) == here);
         let found = self.visible_editor().map(|e| (e.id, e.docked.is_some())).or_else(|| self.editors.iter().find(in_a_tab).map(|e| (e.id, false)));
         let Some((id, docked)) = found else {
             return self.toast("This world has no editor open to move");
@@ -147,7 +148,7 @@ impl App {
     fn open_editor_tab(&mut self, job: &External) -> Result<(), String> {
         let (document, title, line) = self.document(job)?;
         // Already being edited: go there instead of opening the same file twice.
-        if let Some(open) = self.editors.iter_mut().find(|e| e.document.path == document.path) {
+        if let Some(open) = self.editors.iter_mut().find(|e| e.document.as_ref().is_some_and(|d| d.path == document.path)) {
             open.focused = true;
             let tab = if open.docked.is_some() { self.owner_tab(job) } else { self.tabs.iter().position(|t| *t == Tab::Editor(open.id)) };
             if let Some(pos) = tab {
@@ -156,23 +157,43 @@ impl App {
             return Ok(());
         }
         let (command, name) = crate::editor::command(&document.path, line);
+        let dock = self.config.settings.editor_in_sidebar;
+        match self.open_pane(job, &command, title, Some(document), None, dock) {
+            Ok(()) => Ok(()),
+            Err((e, document)) => {
+                if let Some(document) = document {
+                    document.discard();
+                }
+                Err(format!("{name}: {e}"))
+            }
+        }
+    }
+
+    /// Runs `command` in a terminal for `job`, beside the tab it belongs to if `dock` and
+    /// there's room, otherwise in a tab of its own. Gives the document back if it can't.
+    pub(super) fn open_pane(
+        &mut self,
+        job: &External,
+        command: &std::process::Command,
+        title: String,
+        document: Option<Document>,
+        agent: Option<String>,
+        dock: bool,
+    ) -> Result<(), (String, Option<Document>)> {
         let id = self.next_id;
-        let dock = if self.config.settings.editor_in_sidebar { self.dock_for(job).ok().filter(|_| self.owner_tab(job).is_some()) } else { None };
+        let dock = if dock { self.dock_for(job).ok().filter(|_| self.owner_tab(job).is_some()) } else { None };
         // Roughly what it will get; it's given its exact size when it's first drawn.
         let size = match dock {
             Some(_) => (dock_width(self.screen.0).saturating_sub(1), self.screen.1.saturating_sub(6)),
             // Everything but the tab bar and the status line.
             None => (self.screen.0, self.screen.1.saturating_sub(2)),
         };
-        let term = match Term::spawn(&command, size, id, self.pty_tx.clone()) {
+        let term = match Term::spawn(command, size, id, self.pty_tx.clone()) {
             Ok(term) => term,
-            Err(e) => {
-                document.discard();
-                return Err(format!("{name}: {e}"));
-            }
+            Err(e) => return Err((e, document)),
         };
         self.next_id += 1;
-        self.editors.push(EditorTab { id, title, term, job: job.clone(), document, docked: dock, focused: true });
+        self.editors.push(EditorTab { id, title, term, job: job.clone(), document, agent, docked: dock, focused: true });
         self.overlay = None;
         // Beside the tab it belongs to: inside it, or as the next tab.
         let owner = self.owner_tab(job).unwrap_or(self.active);
@@ -189,7 +210,7 @@ impl App {
     /// The tab an edit was started from.
     fn owner_tab(&self, job: &External) -> Option<usize> {
         let tab = match job {
-            External::Edit { session, .. } | External::EditInput { session, puppet: None } => Tab::Main(*session),
+            External::Edit { session, .. } | External::EditInput { session, puppet: None } | External::Agent { session, .. } => Tab::Main(*session),
             External::EditInput { session, puppet: Some(name) } => Tab::Puppet(*session, name.clone()),
             External::EditConfig => return None,
         };
@@ -199,6 +220,9 @@ impl App {
     /// Takes an editor and its tab away, keeping the same tab active where it can.
     pub(super) fn remove_editor(&mut self, id: u64) -> Option<EditorTab> {
         let editor = self.editors.remove(self.editors.iter().position(|e| e.id == id)?);
+        if let Some(token) = &editor.agent {
+            self.agents.close(token);
+        }
         if let Some(pos) = self.tabs.iter().position(|t| *t == Tab::Editor(id)) {
             self.tabs.remove(pos);
             if self.active == pos {
@@ -220,13 +244,19 @@ impl App {
             }
             PtyEvent::Exited(ok) => {
                 let Some(editor) = self.remove_editor(id) else { return };
-                let result = if ok {
-                    editor.document.finish()
-                } else {
-                    editor.document.discard();
-                    Err(format!("The editor on {} exited with an error, so nothing was saved", editor.title))
-                };
-                self.finish_edit(editor.job, result);
+                match editor.document {
+                    Some(document) => {
+                        let result = if ok {
+                            document.finish()
+                        } else {
+                            document.discard();
+                            Err(format!("The editor on {} exited with an error, so nothing was saved", editor.title))
+                        };
+                        self.finish_edit(editor.job, result);
+                    }
+                    None if ok => self.toast(&format!("{} finished", editor.title)),
+                    None => self.toast(&format!("{} exited with an error", editor.title)),
+                }
                 if self.tabs.is_empty() {
                     self.open_connect_picker();
                 }
@@ -264,6 +294,7 @@ impl App {
                 }
             }
             External::EditConfig => self.reload_config(),
+            External::Agent { .. } => {}
         }
     }
 
