@@ -156,6 +156,25 @@ internal static class WorldDialog
         panel.Children.Add(Form.Text(character, "name", "Name", changed: Title));
         panel.Children.Add(Form.Text(character, "login", "Login command", "connect name password"));
 
+        var logFile = Form.Text(character, "log_file", "Log file", "None");
+        ToolTipService.SetToolTip(logFile, "Logs to this file whenever the character connects. A name without a folder goes in the logs folder.");
+        var chooseLog = new Button { Content = "Browse…", VerticalAlignment = VerticalAlignment.Bottom };
+        chooseLog.Click += async (_, _) =>
+        {
+            var name = character.Str("name").Length == 0 ? "Log" : character.Str("name");
+            if (await Form.PickSaveFile(name, "Log file", ".log") is { } path) logFile.Text = path;
+        };
+        var logRow = new Grid { ColumnSpacing = 8 };
+        logRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        logRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        Grid.SetColumn(chooseLog, 1);
+        logRow.Children.Add(logFile);
+        logRow.Children.Add(chooseLog);
+        panel.Children.Add(logRow);
+        panel.Children.Add(Stack(
+            Form.Check(character, "log_date", "Put the date in the log’s name", "A new file each day, like Name-2024-12-09.log"),
+            Form.Check(character, "restore_log", "Restore the log", "Show the end of the last session when the character’s tab opens")));
+
         var puppets = new StackPanel { Spacing = 6 };
         if (character["puppet"] is not JsonArray puppetList) character["puppet"] = puppetList = [];
         foreach (var puppet in puppetList.OfType<JsonObject>().ToList()) puppets.Children.Add(PuppetEditor(puppetList, puppet, puppets));

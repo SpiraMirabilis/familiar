@@ -545,6 +545,23 @@ fn puppets_can_open_on_connect() {
 }
 
 #[test]
+fn autolog_starts_on_connect_unless_already_logging() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = config(Rules::default(), Rules::default(), Rules::default());
+    cfg.worlds[0].characters[0].log_file = dir.path().join("C.log").to_string_lossy().into_owned();
+    let (mut e, _rx) = engine(&cfg);
+    assert!(!e.is_logging(), "not before connecting");
+    let out = e.handle_event(SessionEvent::Connected { addr: "127.0.0.1:1".parse().unwrap() });
+    assert!(out.contains(&Output::LoggingChanged(Some(dir.path().join("C.log")))), "{out:?}");
+    e.handle_event(SessionEvent::Line("\x1b[1mhello\x1b[0m".into()));
+    // Reconnecting keeps the same log going.
+    let out = e.handle_event(SessionEvent::Connected { addr: "127.0.0.1:1".parse().unwrap() });
+    assert!(!out.iter().any(|o| matches!(o, Output::LoggingChanged(_))));
+    let text = std::fs::read_to_string(dir.path().join("C.log")).unwrap();
+    assert!(text.lines().nth(1).is_some_and(|l| l.ends_with("] hello")), "{text}");
+}
+
+#[test]
 fn speech_from_triggers_and_settings() {
     let global = Rules {
         triggers: vec![Trigger { matcher: regex(r"(\w+) pages you"), speak: "Page from $1".into(), ..Trigger::default() }],

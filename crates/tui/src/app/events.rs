@@ -2,6 +2,9 @@
 
 use super::*;
 
+/// Option+← and → reach the terminal client on a Mac as Alt+B and Alt+F.
+const MAC_OPTION_ARROWS: bool = cfg!(target_os = "macos");
+
 impl App {
     pub fn on_event(&mut self, event: Event) {
         match event {
@@ -85,6 +88,11 @@ impl App {
             KeyCode::Char(c @ '1'..='9') if alt => return self.switch_to(c as usize - '1' as usize),
             KeyCode::Right if alt => return self.run(Cmd::NextTab),
             KeyCode::Left if alt => return self.run(Cmd::PrevTab),
+            // Terminal.app, iTerm2 and Ghostty send Option+→ and ← as Esc f and Esc b (readline's
+            // word movement), which arrive as Alt+F and Alt+B; on a Mac those switch tabs too.
+            // Not in an editor (above), where Esc then b typed quickly is Vim's word movement.
+            KeyCode::Char('f') if alt && !ctrl && MAC_OPTION_ARROWS => return self.run(Cmd::NextTab),
+            KeyCode::Char('b') if alt && !ctrl && MAC_OPTION_ARROWS => return self.run(Cmd::PrevTab),
             KeyCode::PageDown if ctrl => return self.run(Cmd::NextTab),
             KeyCode::PageUp if ctrl => return self.run(Cmd::PrevTab),
             KeyCode::Char(']') if alt => return self.run(Cmd::NextPanel),

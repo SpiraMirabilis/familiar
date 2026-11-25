@@ -318,6 +318,21 @@ pub struct Character {
     pub rules: Rules,
     #[serde(rename = "puppet", skip_serializing_if = "Vec::is_empty")]
     pub puppets: Vec<Puppet>,
+    /// Log to this file whenever the character connects (unless a log is already running). A
+    /// relative path is in the logs folder; `~/` is the home folder. Empty means no autolog.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub log_file: String,
+    /// Put the date in the log's file name (`Bob.log` becomes `Bob-2024-12-09.log`), starting a
+    /// new file at midnight.
+    #[serde(skip_serializing_if = "is_false")]
+    pub log_date: bool,
+    /// Keep the end of this character's output and show it again when its tab opens.
+    #[serde(skip_serializing_if = "is_false")]
+    pub restore_log: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 /// A second character controlled through this one's connection (e.g. a MUCK zombie or a MUSH
@@ -379,6 +394,18 @@ pub fn agent_dir(world: &str) -> PathBuf {
 
 pub fn log_dir() -> PathBuf {
     data_dir().join("logs")
+}
+
+/// Where a log file named in the settings goes: a relative path is in [`log_dir`]; `~` is the
+/// home folder.
+pub fn log_path(name: &str) -> PathBuf {
+    let path = paths::expand(name);
+    if path.is_absolute() { path } else { log_dir().join(path) }
+}
+
+/// Where a character's restore log (the end of its last session's output) is kept.
+pub fn restore_log_path(world: &str, character: &str) -> PathBuf {
+    data_dir().join("restore").join(format!("{}-{}.txt", paths::file_name(world, "world"), paths::file_name(character, "character")))
 }
 
 impl Config {
@@ -470,6 +497,9 @@ mod tests {
                         ..Rules::default()
                     },
                     puppets: vec![Puppet { name: "Zed".into(), receive_prefix: "Zed>".into(), send_prefix: "z ".into(), ..Puppet::default() }],
+                    log_file: "~/logs/Bob.log".into(),
+                    log_date: true,
+                    restore_log: true,
                 }],
                 ..World::default()
             }],

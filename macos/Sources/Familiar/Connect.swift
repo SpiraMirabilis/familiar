@@ -364,6 +364,26 @@ struct CharacterEditor: View {
                 TextField("Login command", text: $character.str("login"), prompt: Text("connect name password"))
                     .help("Sent right after connecting. It’s stored in your settings file as plain text.")
             }
+            Section {
+                HStack {
+                    TextField("Log file", text: $character.str("log_file"), prompt: Text("None"))
+                        .help("Logs to this file whenever the character connects. A name without a folder goes in the logs folder.")
+                    Button("Choose…") {
+                        let panel = NSSavePanel()
+                        panel.title = "Log File"
+                        panel.canCreateDirectories = true
+                        let current = (character["log_file"].string as NSString).expandingTildeInPath
+                        let logs = AppState.shared.start["log_dir"].string
+                        panel.nameFieldStringValue = current.isEmpty ? "\(character["name"].string).log" : (current as NSString).lastPathComponent
+                        panel.directoryURL = URL(fileURLWithPath: current.hasPrefix("/") ? (current as NSString).deletingLastPathComponent : logs)
+                        if panel.runModal() == .OK, let url = panel.url { character["log_file"] = .string(url.path) }
+                    }
+                }
+                Toggle("Put the date in the log’s name", isOn: $character.flag("log_date"))
+                    .help("A new file each day, like Name-2024-12-09.log")
+                Toggle("Restore the log", isOn: $character.flag("restore_log"))
+                    .help("Show the end of the last session when the character’s tab opens")
+            }
             ForEach(Array(puppets.enumerated()), id: \.offset) { index, puppet in
                 let p = $character.child("puppet").item(index)
                 Section(puppet["name"].string.isEmpty ? "New Puppet" : "Puppet: \(puppet["name"].string)") {

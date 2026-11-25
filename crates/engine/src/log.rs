@@ -1,5 +1,6 @@
-//! Plain-text session logs. One file per world per day, named `<world>-<YYYY-MM-DD>.log`. A new
-//! file starts at midnight.
+//! Plain-text session logs. By default one file per world per day, named
+//! `<world>-<YYYY-MM-DD>.log`; a character's autolog can name its own file, with or without the
+//! date. A dated log starts a new file at midnight.
 
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufWriter, Write};
@@ -8,8 +9,9 @@ use std::path::{Path, PathBuf};
 use chrono::{Local, NaiveDate};
 
 pub struct Logger {
-    dir: PathBuf,
-    name: String,
+    /// The file name without the date.
+    base: PathBuf,
+    dated: bool,
     timestamps: bool,
     date: NaiveDate,
     path: PathBuf,
@@ -17,16 +19,33 @@ pub struct Logger {
 }
 
 impl Logger {
-    pub fn path_for(dir: &Path, name: &str, date: NaiveDate) -> PathBuf {
-        dir.join(format!("{}-{}.log", familiar_config::paths::file_name(name, "log"), date.format("%Y-%m-%d")))
+    /// `base` with the date put before its extension: `Bob.log` becomes `Bob-2024-12-09.log`.
+    fn dated_path(base: &Path, date: NaiveDate) -> PathBuf {
+        let stem = base.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        let name = match base.extension() {
+            Some(ext) => format!("{stem}-{}.{}", date.format("%Y-%m-%d"), ext.to_string_lossy()),
+            None => format!("{stem}-{}", date.format("%Y-%m-%d")),
+        };
+        base.with_file_name(name)
     }
 
     /// Opens (appending) today's log for `name` in `dir`, creating the directory if needed.
     pub fn open(dir: &Path, name: &str, timestamps: bool) -> io::Result<Self> {
+        let base = dir.join(format!("{}.log", familiar_config::paths::file_name(name, "log")));
+        Self::open_path(&base, true, timestamps)
+    }
+
+    /// Opens (appending) the log at `path`, or with `dated`, at `path` with today's date in its
+    /// name.
+    pub fn open_path(path: &Path, dated: bool, timestamps: bool) -> io::Result<Self> {
+        if path.file_name().is_none() {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, format!("{} isn't a file name", path.display())));
+        }
         let date = Local::now().date_naive();
-        let path = Self::path_for(dir, name, date);
+        let base = path.to_path_buf();
+        let path = if dated { Self::dated_path(&base, date) } else { base.clone() };
         let file = Self::open_file(&path)?;
-        let mut logger = Self { dir: dir.into(), name: name.into(), timestamps, date, path, file };
+        let mut logger = Self { base, dated, timestamps, date, path, file };
         logger.banner("Log started")?;
         Ok(logger)
     }
@@ -50,10 +69,10 @@ impl Logger {
     /// Writes one line of plain text (no ANSI codes).
     pub fn line(&mut self, text: &str) -> io::Result<()> {
         let now = Local::now();
-        if now.date_naive() != self.date {
+        if self.dated && now.date_naive() != self.date {
             self.banner("Continued in next file")?;
             self.date = now.date_naive();
-            self.path = Self::path_for(&self.dir, &self.name, self.date);
+            self.path = Self::dated_path(&self.base, self.date);
             self.file = Self::open_file(&self.path)?;
             self.banner("Log continued")?;
         }
@@ -87,6 +106,20 @@ mod tests {
         assert!(lines[0].starts_with("--- Log started"));
         assert_eq!(&lines[1..3], ["hello", "world"]);
         assert!(lines[3].starts_with("--- Log stopped"));
+    }
+
+    #[test]
+    fn named_files_with_and_without_the_date() {
+        let dir = tempfile::tempdir().unwrap();
+        let plain = dir.path().join("sub/StH.log");
+        let log = Logger::open_path(&plain, false, false).unwrap();
+        assert_eq!(log.path(), plain);
+        log.close().unwrap();
+        let log = Logger::open_path(&plain, true, false).unwrap();
+        let today = Local::now().date_naive().format("%Y-%m-%d").to_string();
+        assert_eq!(log.path(), dir.path().join(format!("sub/StH-{today}.log")));
+        let log = Logger::open_path(&dir.path().join("noext"), true, false).unwrap();
+        assert_eq!(log.path(), dir.path().join(format!("noext-{today}")));
     }
 
     #[test]

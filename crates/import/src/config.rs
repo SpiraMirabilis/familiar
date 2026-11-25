@@ -153,7 +153,30 @@ impl Ctx {
                 remove_accidental_prefix: p.flag_or("RemoveAccidentalPrefix", false),
             });
         }
-        Character { name, login, rules, puppets }
+        let log_file = self.log_file(scope.str_or_empty("LogFileName"), &label);
+        Character {
+            name,
+            login,
+            rules,
+            puppets,
+            log_date: !log_file.is_empty() && scope.int("LogFileNameTimeFormat").unwrap_or(0) != 0,
+            log_file,
+            restore_log: scope.flag_or("RestoreLog", true),
+        }
+    }
+
+    /// A character's log file. A Windows path only works on Windows; elsewhere the file goes in
+    /// the logs folder under the same name.
+    fn log_file(&mut self, path: String, label: &str) -> String {
+        let path = path.trim().to_string();
+        if cfg!(windows) || !(path.contains('\\') || path.get(1..2) == Some(":")) {
+            return path;
+        }
+        let name = path.rsplit(['\\', '/']).next().unwrap_or_default().to_string();
+        if !name.is_empty() {
+            self.warn(format!("{label} logged to {path}; it logs to {name} in the logs folder instead"));
+        }
+        name
     }
 
     /// The triggers, aliases and macros in a Connections, server or character scope.

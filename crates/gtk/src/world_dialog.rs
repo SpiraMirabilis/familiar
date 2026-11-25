@@ -16,6 +16,9 @@ struct CharacterRows {
     expander: adw::ExpanderRow,
     name: adw::EntryRow,
     login: adw::PasswordEntryRow,
+    log_file: adw::EntryRow,
+    log_date: adw::SwitchRow,
+    restore_log: adw::SwitchRow,
     puppets: Rc<RefCell<Vec<PuppetRows>>>,
 }
 
@@ -311,8 +314,51 @@ impl WorldDialog {
             .use_markup(false)
             .build();
         expander.add_suffix(&remove);
+        let log_file = adw::EntryRow::builder().title("Log file (empty for none)").text(&character.log_file).build();
+        log_file.set_tooltip_text(Some("Logs to this file whenever the character connects. A name without a folder goes in the logs folder."));
+        let browse = gtk::Button::builder()
+            .icon_name("document-open-symbolic")
+            .tooltip_text("Choose a log file")
+            .valign(gtk::Align::Center)
+            .css_classes(["flat"])
+            .build();
+        log_file.add_suffix(&browse);
+        {
+            let log_file = log_file.clone();
+            browse.connect_clicked(move |button| {
+                let window = button.root().and_downcast::<gtk::Window>();
+                let log_file = log_file.clone();
+                let initial = familiar_config::log_path(&log_file.text());
+                let dialog = gtk::FileDialog::builder().title("Log File").build();
+                if log_file.text().trim().is_empty() {
+                    dialog.set_initial_folder(Some(&gtk::gio::File::for_path(familiar_config::log_dir())));
+                } else {
+                    dialog.set_initial_file(Some(&gtk::gio::File::for_path(initial)));
+                }
+                dialog.save(window.as_ref(), None::<&gtk::gio::Cancellable>, move |result| {
+                    if let Ok(file) = result
+                        && let Some(path) = file.path()
+                    {
+                        log_file.set_text(&path.to_string_lossy());
+                    }
+                });
+            });
+        }
+        let log_date = adw::SwitchRow::builder()
+            .title("Put the date in the log’s name")
+            .subtitle("A new file each day, like Name-2024-12-09.log")
+            .active(character.log_date)
+            .build();
+        let restore_log = adw::SwitchRow::builder()
+            .title("Restore the log")
+            .subtitle("Show the end of the last session when the character’s tab opens")
+            .active(character.restore_log)
+            .build();
         expander.add_row(&name);
         expander.add_row(&login);
+        expander.add_row(&log_file);
+        expander.add_row(&log_date);
+        expander.add_row(&restore_log);
         let add_puppet_row = adw::ButtonRow::builder().title("Add Puppet").start_icon_name("list-add-symbolic").build();
         expander.add_row(&add_puppet_row);
         let puppets: Rc<RefCell<Vec<PuppetRows>>> = Rc::default();
@@ -335,7 +381,7 @@ impl WorldDialog {
             this.characters_group.remove(&row);
             this.characters.borrow_mut().retain(|c| c.expander != row);
         });
-        self.characters.borrow_mut().push(CharacterRows { original: character.clone(), expander, name, login, puppets });
+        self.characters.borrow_mut().push(CharacterRows { original: character.clone(), expander, name, login, log_file, log_date, restore_log, puppets });
     }
 
     fn world(&self) -> World {
@@ -359,6 +405,9 @@ impl WorldDialog {
                 .map(|c| Character {
                     name: c.name.text().trim().to_string(),
                     login: c.login.text().to_string(),
+                    log_file: c.log_file.text().trim().to_string(),
+                    log_date: c.log_date.is_active(),
+                    restore_log: c.restore_log.is_active(),
                     puppets: c.puppets.borrow().iter().map(PuppetRows::puppet).filter(|p| !p.name.is_empty()).collect(),
                     ..c.original.clone()
                 })

@@ -23,6 +23,8 @@ impl Engine {
                         }
                     }
                 }
+                self.start_autolog(&mut out);
+                self.start_restore(&mut out);
                 let on_connect: Vec<String> = self.puppets().filter(|p| p.open_on_connect).map(|p| p.name.clone()).collect();
                 for name in on_connect {
                     self.open_puppet(&name, false, &mut out);
@@ -410,6 +412,7 @@ impl Engine {
         }
         let avatar = self.next_avatar.take();
         if !gag {
+            self.record_restore(text, out);
             match prompt {
                 Some(terminated) => out.push(Output::Prompt { line: line.clone(), terminated }),
                 None => {

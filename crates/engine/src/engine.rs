@@ -14,6 +14,7 @@ use tokio::sync::mpsc::UnboundedReceiver;
 use crate::expand::{Captures, expand};
 use crate::mcp::{AgentTool, Disposition, Mcp, McpEvent};
 use crate::media::{Media, MediaCommand};
+use crate::restore::{self, RestoreLog};
 use crate::rules::CompiledRules;
 use crate::script::{ScriptAction, ScriptContext, ScriptHost};
 use crate::stats::{StatPane, Stats};
@@ -187,6 +188,8 @@ pub struct Engine {
     rules: CompiledRules,
     ansi: AnsiParser,
     logger: Option<Logger>,
+    /// Records output for the character's restore log, while it's connected.
+    restore: Option<RestoreLog>,
     handle: Option<SessionHandle>,
     window_size: Option<(u16, u16)>,
     server_echo: bool,
@@ -248,6 +251,7 @@ impl Engine {
             rules: CompiledRules::default(),
             ansi: AnsiParser::new(),
             logger: None,
+            restore: None,
             handle: None,
             window_size: None,
             server_echo: false,
@@ -280,6 +284,7 @@ impl Engine {
             next_delay_id: 1,
         };
         let mut out = engine.reload(config);
+        engine.replay_restore(&mut out);
         let path = familiar_config::map_path(&engine.world.name);
         match Atlas::load(&path) {
             Ok(map) => engine.map = map,
@@ -299,6 +304,9 @@ impl Engine {
             && let Some(saved) = config.world(&self.world.name).and_then(|w| w.characters.iter().find(|c| c.name == name))
         {
             self.character = Some(saved.clone());
+        }
+        if !self.character.as_ref().is_some_and(|c| c.restore_log) {
+            self.restore = None;
         }
         let mut notices = Vec::new();
         self.puppets = self
@@ -546,6 +554,80 @@ impl Engine {
             self.logger = None;
             out.push(Output::Notice(format!("Logging stopped: {e}")));
             out.push(Output::LoggingChanged(None));
+        }
+    }
+
+    /// Starts the character's autolog when it connects, unless a log is already running.
+    fn start_autolog(&mut self, out: &mut Vec<Output>) {
+        let Some(character) = self.character.as_ref().filter(|c| !c.log_file.trim().is_empty()) else { return };
+        if self.logger.is_some() {
+            return;
+        }
+        let path = familiar_config::log_path(&character.log_file);
+        match Logger::open_path(&path, character.log_date, self.settings.log_timestamps) {
+            Ok(log) => {
+                let path = log.path().to_path_buf();
+                self.logger = Some(log);
+                out.push(Output::LoggingChanged(Some(path.clone())));
+                out.push(Output::Notice(format!("Logging to {}", path.display())));
+            }
+            Err(e) => out.push(Output::Notice(format!("Couldn't start logging to {}: {e}", path.display()))),
+        }
+    }
+
+    fn restore_path(&self) -> Option<PathBuf> {
+        let character = self.character.as_ref().filter(|c| c.restore_log && !c.name.is_empty())?;
+        Some(familiar_config::restore_log_path(&self.world.name, &character.name))
+    }
+
+    /// Shows the end of the character's last sessions, if it keeps a restore log.
+    fn replay_restore(&mut self, out: &mut Vec<Output>) {
+        let Some(path) = self.restore_path() else { return };
+        let entries = match RestoreLog::read(&path) {
+            Ok(entries) => entries,
+            Err(e) => {
+                out.push(Output::Notice(format!("Couldn't read the restore log: {e}")));
+                return;
+            }
+        };
+        if entries.is_empty() {
+            return;
+        }
+        let mut ansi = AnsiParser::new();
+        for entry in entries {
+            match entry {
+                restore::Entry::Start(time) => {
+                    ansi = AnsiParser::new();
+                    out.push(Output::Notice(format!("--- Restored from the session of {} ---", time.format("%Y-%m-%d %H:%M"))));
+                }
+                restore::Entry::Line(raw) => {
+                    let mut line = ansi.parse_line(&raw);
+                    line.linkify();
+                    out.push(Output::Line { line, target: Target::Main });
+                }
+            }
+        }
+        out.push(Output::Notice("--- End of the restored log ---".into()));
+    }
+
+    /// Starts recording the restore log when the character connects.
+    fn start_restore(&mut self, out: &mut Vec<Output>) {
+        if self.restore.is_some() {
+            return;
+        }
+        let Some(path) = self.restore_path() else { return };
+        match RestoreLog::open(&path) {
+            Ok(log) => self.restore = Some(log),
+            Err(e) => out.push(Output::Notice(format!("Couldn't open the restore log: {e}"))),
+        }
+    }
+
+    fn record_restore(&mut self, raw: &str, out: &mut Vec<Output>) {
+        if let Some(log) = self.restore.as_mut()
+            && let Err(e) = log.line(raw)
+        {
+            self.restore = None;
+            out.push(Output::Notice(format!("Stopped keeping the restore log: {e}")));
         }
     }
 

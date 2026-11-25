@@ -90,6 +90,16 @@ internal static class Form
         return (await picker.PickSingleFileAsync())?.Path;
     }
 
+    /// <summary>Asks where to save a file. Null if the user cancelled.</summary>
+    public static async Task<string?> PickSaveFile(string suggestedName, string typeName, string extension)
+    {
+        if (App.Window is null) return null;
+        var picker = new FileSavePicker { SuggestedFileName = suggestedName, SuggestedStartLocation = PickerLocationId.DocumentsLibrary };
+        WinRT.Interop.InitializeWithWindow.Initialize(picker, WinRT.Interop.WindowNative.GetWindowHandle(App.Window));
+        picker.FileTypeChoices.Add(typeName, [extension]);
+        return (await picker.PickSaveFileAsync())?.Path;
+    }
+
     /// <summary>Shows a dialog, unless another is already open (only one can be at a time).</summary>
     public static async Task<ContentDialogResult> Show(ContentDialog dialog)
     {

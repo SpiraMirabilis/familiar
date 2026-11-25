@@ -9,6 +9,7 @@ mod keys;
 pub mod log;
 pub mod mcp;
 pub mod media;
+pub mod restore;
 pub mod rules;
 pub mod script;
 pub mod stats;
