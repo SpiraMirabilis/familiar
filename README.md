@@ -220,6 +220,10 @@ colour, and keeps its worlds in tabs in the title bar.
 - Keyboard macros are written the same way as on Linux ("Ctrl+F5", "Alt+KP_8"), so a config can
   move between systems. Alt is the Option key. ⌘ is never part of a macro.
 - **Web views** work (they use the system's WebKit), unlike on Windows.
+- **LLM agents** (`/agent`) run in a terminal (SwiftTerm) in the side dock, as in the GTK client;
+  ⌘C and ⌘V copy and paste there. The app looks for the agents' programs on the PATH your login
+  shell sets up, so `claude` in `~/.local/bin` is found even when Familiar is opened from the
+  Finder.
 - **Speech** uses the system voice, **sounds** play through the system (WAV, MP3, AAC and more,
   but not Ogg Vorbis) and can loop, and notifications come from Notification Center.
 - The **program editor** highlights MOO, MUF and Lua; other languages are shown as plain text.
@@ -237,8 +241,8 @@ colour, and keeps its worlds in tabs in the title bar.
   right-click it and choose Open (or allow it in System Settings → Privacy & Security); for the
   terminal client, `xattr -d com.apple.quarantine familiar-tui`. Copies you build yourself
   aren't affected.
-- **Building:** `packaging/macos/build.sh` makes `dist/Familiar.app`. It needs Rust and Xcode (or
-  its command line tools), and nothing else.
+- **Building:** `packaging/macos/build.sh` makes `dist/Familiar.app`. It needs Rust and Xcode 26
+  (or its command line tools), and nothing else; Swift fetches SwiftTerm.
 
 ### Optional system packages
 

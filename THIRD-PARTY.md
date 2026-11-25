@@ -19,3 +19,6 @@ The Windows zip and installer also contain what the Windows app runs on: Microso
 Win2D (MIT), the Windows Community Toolkit (MIT), and
 [TextControlBox](https://github.com/FrozenAssassine/TextControlBox-WinUI) (MIT), which the code
 editor is built on.
+
+The macOS app contains [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm) (MIT, Copyright (c)
+2019-2026 Miguel de Icaza, and the xterm.js authors), the terminal LLM agents run in.

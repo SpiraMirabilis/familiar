@@ -99,6 +99,8 @@ struct SideDock: View {
         case .tilemap(let name): TilemapPanel(map: session.tilemaps[name] ?? .null) { session.output.notice($0) }
         case .web(let id):
             if let pane = session.webPanes[id] { WebPaneView(pane: pane) }
+        case .agent:
+            if let pane = session.agent { AgentPaneView(pane: pane) }
         }
     }
 }

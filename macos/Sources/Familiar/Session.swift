@@ -8,6 +8,8 @@ enum SidePanel: Hashable, Identifiable {
     case spawn(String)
     case tilemap(String)
     case web(String)
+    /// An LLM agent's terminal, by the agent's name.
+    case agent(String)
 
     var id: String {
         switch self {
@@ -16,6 +18,7 @@ enum SidePanel: Hashable, Identifiable {
         case .spawn(let name): return "spawn:\(name)"
         case .tilemap(let name): return "tilemap:\(name)"
         case .web(let id): return "web:\(id)"
+        case .agent: return "agent"
         }
     }
 
@@ -23,6 +26,7 @@ enum SidePanel: Hashable, Identifiable {
         switch self {
         case .map: return "Map"
         case .stats(let name), .spawn(let name), .tilemap(let name), .web(let name): return name
+        case .agent(let name): return "✦ \(name)"
         }
     }
 }
@@ -54,6 +58,8 @@ final class Session: ObservableObject {
     let output: OutputBuffer
     private(set) var spawns: [String: OutputBuffer] = [:]
     private(set) var webPanes: [String: WebPane] = [:]
+    /// The LLM agent working on this world, if one is.
+    private(set) var agent: AgentPane?
     private var puppets: [String: PuppetWindowController] = [:]
     private var editors: [String: CodeEditorController] = [:]
     private let sounds = SoundPlayer()
@@ -82,7 +88,8 @@ final class Session: ObservableObject {
     var isConnected: Bool { state == .connected || state == .connecting }
 
     init(world: JSON, character: String?) throws {
-        let opened = try Core.call("session.open", ["world": world, "character": .of(character)])
+        // This app can run agents (/agent) in a terminal.
+        let opened = try Core.call("session.open", ["world": world, "character": .of(character), "agents": true])
         id = opened["id"].int
         info = opened
         let app = AppState.shared
@@ -191,6 +198,8 @@ final class Session: ObservableObject {
         puppets = [:]
         webPanes.values.forEach { $0.closeWindow() }
         webPanes = [:]
+        if let agent { MainActor.assumeIsolated { agent.stop() } }
+        agent = nil
         editors.values.forEach { $0.close() }
         editors = [:]
         do {
@@ -296,6 +305,13 @@ final class Session: ObservableObject {
             case "received": if !webPanes.isEmpty { toPages(["type": "receive", "text": o["text"]]) }
             case "sent": if !webPanes.isEmpty { toPages(["type": "send", "text": o["text"]]) }
             case "config_changed": AppState.shared.reloadFromEngine()
+            case "agent_start": startAgent(o)
+            case "agent_focus":
+                if let agent {
+                    showPanel(.agent(agent.name), select: true)
+                    MainActor.assumeIsolated { agent.focus() }
+                }
+            case "agent_stop": removeAgent(token: o["token"].string)
             default: NSLog("Familiar: an output this app doesn't know: %@", o.text)
             }
         }
@@ -375,6 +391,32 @@ final class Session: ObservableObject {
             if let self, self.editors[reference] === editor { self.editors[reference] = nil }
         }
         editor.showWindow(nil)
+    }
+
+    // MARK: LLM agents
+
+    // Sessions live on the main thread, as SwiftTerm's views must.
+    private func startAgent(_ start: JSON) {
+        let token = start["token"].string
+        let font = self.font
+        let pane = MainActor.assumeIsolated {
+            AgentPane(start: start, font: font) { [weak self] error in
+                guard let self, !self.closed else { return }
+                // The program ended (or never started): its tab goes, and the engine closes its endpoint.
+                self.removeAgent(token: token)
+                _ = self.call("agent.ended", ["token": .of(token), "error": .of(error)])
+            }
+        }
+        agent = pane
+        showPanel(.agent(pane.name), select: true)
+        MainActor.assumeIsolated { pane.focus() }
+    }
+
+    private func removeAgent(token: String) {
+        guard let agent, agent.token == token else { return }
+        MainActor.assumeIsolated { agent.stop() }
+        self.agent = nil
+        removePanel(.agent(agent.name))
     }
 
     // MARK: Web views

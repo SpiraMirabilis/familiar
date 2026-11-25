@@ -49,10 +49,15 @@ pub trait World {
 /// The agent `/agent <wanted>` means: the one with that name, or for no name, the first
 /// installed one in the order the settings give.
 pub fn choose(settings: &Settings, wanted: &str) -> Result<Agent, String> {
+    choose_in(settings, wanted, None)
+}
+
+/// [`choose`], looking for programs in `path` (as in PATH) instead of this process's PATH.
+fn choose_in(settings: &Settings, wanted: &str, path: Option<&str>) -> Result<Agent, String> {
     let agents = settings.agents();
     let wanted = wanted.trim();
     if wanted.is_empty() {
-        return first_installed(&agents, &settings.agent_order).cloned().ok_or_else(|| {
+        return first_installed(&agents, &settings.agent_order, path).cloned().ok_or_else(|| {
             format!("None of the agents is installed ({}); /agent <name> runs one by name", settings.agent_order.join(", "))
         });
     }
@@ -103,6 +108,8 @@ pub struct Agents {
     server: Option<AgentServer>,
     /// Calls sent to a world, by session and call id.
     calls: HashMap<(u64, u64), oneshot::Sender<(bool, String)>>,
+    /// Where to look for agents' programs, if not this process's PATH.
+    search_path: Option<String>,
 }
 
 impl Agents {
@@ -110,16 +117,30 @@ impl Agents {
     /// The server runs on `runtime`, or if that's `None`, on the runtime the first
     /// [`Agents::launch`] is called in.
     pub fn new(requests: mpsc::UnboundedSender<AgentRequest>, runtime: Option<tokio::runtime::Handle>) -> Self {
-        Self { requests, runtime, server: None, calls: HashMap::new() }
+        Self { requests, runtime, server: None, calls: HashMap::new(), search_path: None }
+    }
+
+    /// Looks for agents' programs in `path` (as in PATH), and runs them with it as their PATH.
+    /// For apps that don't inherit the user's shell's PATH, such as a Mac app opened from the
+    /// Finder: see [`login_shell_path`].
+    pub fn set_search_path(&mut self, path: Option<String>) {
+        self.search_path = path;
+    }
+
+    /// [`choose`], looking for programs where [`Agents::set_search_path`] said.
+    pub fn choose(&self, settings: &Settings, wanted: &str) -> Result<Agent, String> {
+        choose_in(settings, wanted, self.search_path.as_deref())
     }
 
     /// Gets `agent` ready to work on `world` (session `session`): starts the server if it
     /// isn't running, opens an endpoint, and makes the agent's folder. On success the caller
     /// runs the [`Launch`], and closes its token if that fails.
     pub fn launch(&mut self, agent: &Agent, session: u64, world: &str) -> Result<Launch, String> {
-        let Some(program) = agent.command.first().filter(|p| !p.is_empty()).cloned() else {
+        let Some(program) = agent.command.first().filter(|p| !p.is_empty()) else {
             return Err(format!("The agent {} has no command", agent.name));
         };
+        // A full path, for frontends that start programs without searching PATH.
+        let program = find_program(program, self.search_path.as_deref()).map_or_else(|| program.clone(), |p| p.to_string_lossy().into_owned());
         if self.server.is_none() {
             let runtime = match &self.runtime {
                 Some(runtime) => runtime.clone(),
@@ -137,7 +158,10 @@ impl Agents {
             return Err(format!("Couldn't write {}'s files in {}: {e}", agent.name, dir.display()));
         }
         let args = agent.command_for(&url, world).split_off(1);
-        let env = vec![("FAMILIAR_MCP_URL".to_string(), url.clone()), ("FAMILIAR_WORLD".to_string(), world.to_string())];
+        let mut env = vec![("FAMILIAR_MCP_URL".to_string(), url.clone()), ("FAMILIAR_WORLD".to_string(), world.to_string())];
+        if let Some(path) = &self.search_path {
+            env.push(("PATH".to_string(), path.clone()));
+        }
         Ok(Launch { name: agent.name.clone(), token, url, program, args, dir, env })
     }
 
@@ -214,24 +238,76 @@ fn prepare_folder(dir: &Path, world: &str) -> std::io::Result<()> {
 }
 
 /// The first agent in `order` whose program is installed.
-fn first_installed<'a>(agents: &'a [Agent], order: &[String]) -> Option<&'a Agent> {
+fn first_installed<'a>(agents: &'a [Agent], order: &[String], path: Option<&str>) -> Option<&'a Agent> {
     order
         .iter()
         .filter_map(|name| agents.iter().find(|a| a.name.eq_ignore_ascii_case(name)))
-        .find(|a| a.command.first().is_some_and(|program| installed(program)))
+        .find(|a| a.command.first().is_some_and(|program| find_program(program, path).is_some()))
 }
 
 /// Whether `program` can be run: a path to a file, or the name of one on the PATH.
 pub fn installed(program: &str) -> bool {
+    find_program(program, None).is_some()
+}
+
+/// Where `program` is: itself if it's a path to a file, or the first file of that name in
+/// `path` (as in PATH; this process's PATH if `None`).
+fn find_program(program: &str, path: Option<&str>) -> Option<PathBuf> {
     let program = Path::new(program);
     if program.components().count() > 1 {
-        return program.is_file();
+        return program.is_file().then(|| program.to_path_buf());
     }
-    let Some(path) = std::env::var_os("PATH") else { return false };
-    std::env::split_paths(&path).any(|dir| {
+    let path = match path {
+        Some(path) => path.into(),
+        None => std::env::var_os("PATH")?,
+    };
+    std::env::split_paths(&path).find_map(|dir| {
         let file = dir.join(program);
-        file.is_file() || (cfg!(windows) && ["exe", "cmd", "bat"].iter().any(|ext| file.with_extension(ext).is_file()))
+        if file.is_file() {
+            return Some(file);
+        }
+        if cfg!(windows) {
+            return ["exe", "cmd", "bat"].iter().map(|ext| file.with_extension(ext)).find(|f| f.is_file());
+        }
+        None
     })
+}
+
+/// The PATH the user's shell sets up, which a Mac app opened from the Finder doesn't get. The
+/// shell runs as an interactive login shell, so it reads the files where installers add to
+/// PATH (zsh's .zshrc is read only by interactive shells). `None` if the shell can't be run or
+/// takes longer than a few seconds. Unix only.
+pub fn login_shell_path() -> Option<String> {
+    #[cfg(unix)]
+    {
+        use std::io::Read;
+        use std::process::{Command, Stdio};
+        const MARK: &str = "__FAMILIAR_PATH__";
+        let shell = std::env::var("SHELL").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "/bin/sh".into());
+        let mut child = Command::new(shell)
+            .args(["-i", "-l", "-c", &format!("printf '{MARK}%s{MARK}' \"$PATH\"")])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .ok()?;
+        // Interactive shells can be slow to start (plugins, prompts).
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while child.try_wait().ok()?.is_none() {
+            if std::time::Instant::now() > deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let mut out = String::new();
+        child.stdout.take()?.read_to_string(&mut out).ok()?;
+        let path = out.split(MARK).nth(1)?;
+        (!path.is_empty()).then(|| path.to_string())
+    }
+    #[cfg(not(unix))]
+    None
 }
 
 /// Writes an agent's files (its MCP configuration, say) into its folder. Paths must stay
@@ -270,17 +346,30 @@ mod tests {
         let missing = dir.join("missing").to_string_lossy().to_string();
         let agents = [agent("a", &missing), agent("b", &there), agent("c", &there)];
         let order = |names: &[&str]| names.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        assert_eq!(first_installed(&agents, &order(&["a", "b", "c"])).map(|a| a.name.as_str()), Some("b"));
-        assert_eq!(first_installed(&agents, &order(&["C", "b"])).map(|a| a.name.as_str()), Some("c"));
-        assert!(first_installed(&agents, &order(&["a", "nobody"])).is_none());
+        assert_eq!(first_installed(&agents, &order(&["a", "b", "c"]), None).map(|a| a.name.as_str()), Some("b"));
+        assert_eq!(first_installed(&agents, &order(&["C", "b"]), None).map(|a| a.name.as_str()), Some("c"));
+        assert!(first_installed(&agents, &order(&["a", "nobody"]), None).is_none());
 
         let mut settings = Settings { agents: agents.to_vec(), agent_order: order(&["a", "c"]), ..Settings::default() };
         assert_eq!(choose(&settings, "").unwrap().name, "c");
         assert_eq!(choose(&settings, " A ").unwrap().name, "a");
         assert!(choose(&settings, "nobody").unwrap_err().contains("there's claude, codex, agy, grok, a, b, c"));
+        // By name, in a search path of our own.
+        let named = [agent("d", "there")];
+        let dir_path = dir.to_string_lossy().to_string();
+        assert!(first_installed(&named, &order(&["d"]), None).is_none());
+        assert_eq!(first_installed(&named, &order(&["d"]), Some(&dir_path)).map(|a| a.name.as_str()), Some("d"));
+        assert_eq!(find_program("there", Some(&dir_path)), Some(dir.join("there")));
         settings.agent_order = order(&["a"]);
         assert!(choose(&settings, "").unwrap_err().starts_with("None of the agents is installed (a)"));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_login_shell_has_a_path() {
+        let path = login_shell_path().expect("a PATH from the login shell");
+        assert!(path.split(':').any(|dir| dir.starts_with('/')), "{path}");
     }
 
     #[test]

@@ -17,6 +17,8 @@
     messages to the objects registered with `:set_handler`.
 - GTK: `/agent` too, with the agent in a terminal (VTE) in the side dock. VTE for GTK 4 is a
   new dependency (the default `agents` feature).
+- macOS: `/agent` too, in a terminal (SwiftTerm) in the side dock. Agents' programs are looked
+  for on the login shell's PATH, since an app opened from the Finder doesn't get it.
 - Only clients that can run agents offer MOOs `dns-com-familiar-agent`. The agent server and
   launching live in a new crate, `familiar-agent`, for every frontend.
 - The terminal client's embedded terminal passes on a command's environment and working

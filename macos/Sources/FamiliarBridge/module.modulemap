@@ -1,6 +1,5 @@
 // The Rust engine (crates/bridge), built as a static library by `cargo build -p familiar-bridge`.
 module FamiliarBridge {
     header "../../../crates/bridge/include/familiar_bridge.h"
-    link "familiar_bridge"
     export *
 }

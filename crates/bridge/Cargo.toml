@@ -14,6 +14,7 @@ publish = false
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [dependencies]
+familiar-agent = { version = "0.4.0", path = "../agent" }
 familiar-ansi = { version = "0.4.0", path = "../ansi" }
 familiar-code = { version = "0.4.0", path = "../code" }
 familiar-config = { version = "0.4.0", path = "../config" }

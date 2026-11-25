@@ -32,8 +32,11 @@ else
     ARCHS=()
 fi
 
-swift build --package-path macos -c release ${ARCHS[@]+"${ARCHS[@]}"}
 BINARY="$(swift build --package-path macos -c release ${ARCHS[@]+"${ARCHS[@]}"} --show-bin-path)/Familiar"
+# SwiftPM doesn't know the app depends on the Rust library, so it wouldn't relink after a change
+# to the engine alone.
+rm -f "$BINARY"
+swift build --package-path macos -c release ${ARCHS[@]+"${ARCHS[@]}"}
 
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"

@@ -21,6 +21,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
+use familiar_agent::{AgentRequest, Agents};
 use familiar_ansi::{AnsiParser, Palette};
 use familiar_config::{Address, Config, World};
 use familiar_engine::{Engine, KeyChord, Output, Target};
@@ -52,6 +53,8 @@ struct Inbox {
     events: Mutex<VecDeque<(u64, SessionEvent)>>,
     /// A wake has been sent and not yet answered by a poll.
     woken: AtomicBool,
+    /// LLM agents' requests of this world, answered at the next poll.
+    agent: Mutex<VecDeque<AgentRequest>>,
 }
 
 impl Inbox {
@@ -73,6 +76,10 @@ struct Session {
     pending: Vec<Output>,
     /// The task that wakes us for the next script timer or /delay, and when.
     timer: Option<(tokio::task::JoinHandle<()>, Instant)>,
+    /// The LLM agent working on this world: its name and endpoint token.
+    agent: Option<(String, String)>,
+    /// The last lines of the world's window as plain text, for agents (world_output).
+    recent: VecDeque<String>,
 }
 
 struct State {
@@ -83,9 +90,32 @@ struct State {
     palette: Palette,
     sessions: HashMap<u64, Session>,
     next_id: u64,
+    /// LLM agents: the MCP server and the calls waiting on worlds. Started by the first /agent.
+    agents: Agents,
+    /// The sessions' inboxes, where agents' requests are delivered (from the runtime).
+    inboxes: Arc<Mutex<HashMap<u64, Arc<Inbox>>>>,
+    /// Whether agents' programs are looked for in the login shell's PATH yet (macOS).
+    search_path_set: bool,
 }
 
 type Reply = Result<Value, String>;
+
+/// A session as LLM agents see it.
+struct AgentWorld<'a>(&'a mut Session);
+
+impl familiar_agent::World for AgentWorld<'_> {
+    fn agent_tools(&self) -> Option<&[familiar_engine::AgentTool]> {
+        self.0.engine.agent_tools()
+    }
+
+    fn agent_call(&mut self, tool: &str, args: &Value) -> Result<u64, String> {
+        self.0.engine.agent_call(tool, args)
+    }
+
+    fn last_lines(&self, n: usize) -> Vec<String> {
+        self.0.recent.iter().skip(self.0.recent.len().saturating_sub(n)).cloned().collect()
+    }
+}
 
 fn text<'a>(args: &'a Value, key: &str) -> Result<&'a str, String> {
     args.get(key).and_then(Value::as_str).ok_or_else(|| format!("missing \"{key}\""))
@@ -110,7 +140,32 @@ impl State {
             Ok(config) => (config, None),
             Err(e) => (Config::default(), Some(e.to_string())),
         };
-        Self { config, config_path, load_error, palette: Palette::default(), sessions: HashMap::new(), next_id: 1 }
+        // Agents' requests go to their world's inbox, to be answered on the main thread.
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<AgentRequest>();
+        let inboxes: Arc<Mutex<HashMap<u64, Arc<Inbox>>>> = Arc::default();
+        let deliver = inboxes.clone();
+        runtime().spawn(async move {
+            while let Some(request) = rx.recv().await {
+                let id = request.session;
+                let inbox = deliver.lock().unwrap().get(&id).cloned();
+                // A world that's gone drops the request, and the agent hears it was closed.
+                if let Some(inbox) = inbox {
+                    inbox.agent.lock().unwrap().push_back(request);
+                    inbox.wake(id);
+                }
+            }
+        });
+        Self {
+            config,
+            config_path,
+            load_error,
+            palette: Palette::default(),
+            sessions: HashMap::new(),
+            next_id: 1,
+            agents: Agents::new(tx, Some(runtime().handle().clone())),
+            inboxes,
+            search_path_set: false,
+        }
     }
 
     fn save(&self) -> Result<(), String> {
@@ -178,6 +233,9 @@ impl State {
         while let Some(output) = queue.pop_front() {
             let v = match output {
                 Output::Line { line, target } => {
+                    if target == Target::Main {
+                        self.remember(id, &line.text);
+                    }
                     let target = match target {
                         Target::Main => Value::Null,
                         Target::Spawn(name) => name.into(),
@@ -185,8 +243,14 @@ impl State {
                     json!({ "t": "line", "target": target, "plain": line.text, "bell": line.bell, "line": json::line(&line, &self.palette) })
                 }
                 Output::Prompt { line, terminated } => json!({ "t": "prompt", "line": json::line(&line, &self.palette), "terminated": terminated }),
-                Output::Notice(text) => json!({ "t": "notice", "text": text }),
-                Output::Echo(text) => json!({ "t": "echo", "text": text }),
+                Output::Notice(text) => {
+                    self.remember(id, &text);
+                    json!({ "t": "notice", "text": text })
+                }
+                Output::Echo(text) => {
+                    self.remember(id, &text);
+                    json!({ "t": "echo", "text": text })
+                }
                 Output::Bell => json!({ "t": "bell" }),
                 Output::PasswordMode(on) => json!({ "t": "password", "on": on }),
                 Output::Status(status) => json!({ "t": "status", "status": json::status(&status) }),
@@ -238,9 +302,20 @@ impl State {
                 Output::Gmcp { package, data } => json!({ "t": "gmcp", "package": package, "data": data }),
                 Output::Received(text) => json!({ "t": "received", "text": text }),
                 Output::Sent(text) => json!({ "t": "sent", "text": text }),
-                // Agent tools are only served by the TUI for now.
-                // Agents aren't supported here yet (the engine is never told they are).
-                Output::AgentTools(_) | Output::AgentResult { .. } | Output::Agent(_) => continue,
+                Output::Agent(args) => {
+                    let (shown_now, more) = self.agent_command(id, &args);
+                    shown.extend(shown_now);
+                    queue.extend(more);
+                    continue;
+                }
+                Output::AgentTools(_) => {
+                    self.agents.tools_changed(id);
+                    continue;
+                }
+                Output::AgentResult { id: call, ok, content } => {
+                    self.agents.result(id, call, ok, content);
+                    continue;
+                }
             };
             shown.push(v);
         }
@@ -273,12 +348,80 @@ impl State {
         session.timer = Some((task, deadline));
     }
 
+    /// Keeps a line of the world's window for agents, as plain text.
+    fn remember(&mut self, id: u64, text: &str) {
+        let Some(session) = self.sessions.get_mut(&id) else { return };
+        for line in text.lines() {
+            if session.recent.len() == familiar_agent::MAX_OUTPUT_LINES {
+                session.recent.pop_front();
+            }
+            session.recent.push_back(line.to_string());
+        }
+    }
+
+    /// `/agent [name]`, `/agent stop`, `/agent list`: what to show, and outputs to run through.
+    /// Running an agent is the app's job: it gets an agent_start with the program to run in a
+    /// terminal, and calls agent.ended when the program ends.
+    fn agent_command(&mut self, id: u64, args: &str) -> (Vec<Value>, Vec<Output>) {
+        let notice = |text: String| (Vec::new(), vec![Output::Notice(text)]);
+        let Some(session) = self.sessions.get_mut(&id) else { return (Vec::new(), Vec::new()) };
+        match args.trim() {
+            "list" => notice(format!("Agents: {} ([[settings.agent]] in the config adds more)", familiar_agent::names(&self.config.settings))),
+            "stop" => match session.agent.take() {
+                Some((name, token)) => {
+                    self.agents.close(&token);
+                    (vec![json!({ "t": "agent_stop", "token": token })], vec![Output::Notice(format!("Stopped {name}"))])
+                }
+                None => notice("There's no agent working on this world".into()),
+            },
+            wanted => {
+                if session.agent.is_some() {
+                    return (vec![json!({ "t": "agent_focus" })], vec![Output::Notice("This world has an agent already (/agent stop stops it)".into())]);
+                }
+                // A Mac app opened from the Finder doesn't have the user's PATH.
+                if cfg!(target_os = "macos") && !self.search_path_set {
+                    self.agents.set_search_path(familiar_agent::login_shell_path());
+                    self.search_path_set = true;
+                }
+                let agent = match self.agents.choose(&self.config.settings, wanted) {
+                    Ok(agent) => agent,
+                    Err(e) => return notice(e),
+                };
+                let Some(session) = self.sessions.get_mut(&id) else { return (Vec::new(), Vec::new()) };
+                let world = session.engine.world().name.clone();
+                let world = if world.is_empty() { session.engine.title() } else { world };
+                let launch = match self.agents.launch(&agent, id, &world) {
+                    Ok(launch) => launch,
+                    Err(e) => return notice(e),
+                };
+                session.agent = Some((launch.name.clone(), launch.token.clone()));
+                let mut more = Vec::new();
+                if session.engine.agent_tools().is_none() {
+                    more.push(Output::Notice("This world offers no tools (its MOO needs the dns-com-familiar-agent package), so the agent can only read its output".into()));
+                }
+                let env: serde_json::Map<String, Value> = launch.env.iter().map(|(k, v)| (k.clone(), Value::from(v.as_str()))).collect();
+                let start = json!({
+                    "t": "agent_start",
+                    "name": launch.name,
+                    "token": launch.token,
+                    "program": launch.program,
+                    "args": launch.args,
+                    "dir": launch.dir.to_string_lossy(),
+                    "env": env,
+                });
+                (vec![start], more)
+            }
+        }
+    }
+
     fn outputs(&mut self, id: u64, outputs: Vec<Output>) -> Reply {
         Ok(json!({ "outputs": self.finish(id, outputs) }))
     }
 
     fn poll(&mut self, args: &Value) -> Reply {
-        let (id, session) = self.session(args)?;
+        let (id, _) = self.session(args)?;
+        let Self { sessions, agents, .. } = self;
+        let Some(session) = sessions.get_mut(&id) else { return Err(format!("no session {id}")) };
         session.inbox.woken.store(false, Ordering::SeqCst);
         let mut out = std::mem::take(&mut session.pending);
         let events: Vec<SessionEvent> = {
@@ -288,6 +431,10 @@ impl State {
         };
         for event in events {
             out.extend(session.engine.handle_event(event));
+        }
+        let requests: Vec<AgentRequest> = session.inbox.agent.lock().unwrap().drain(..).collect();
+        for request in requests {
+            agents.answer(request, Some(&mut AgentWorld(session)));
         }
         let now = Instant::now();
         if session.engine.next_deadline().is_some_and(|due| due <= now) {
@@ -307,8 +454,12 @@ impl State {
         engine.set_webviews_supported(true);
         let id = self.next_id;
         self.next_id += 1;
-        let inbox = Arc::new(Inbox { events: Mutex::default(), woken: AtomicBool::new(false) });
-        self.sessions.insert(id, Session { engine, generation: 0, inbox, pending: Vec::new(), timer: None });
+        // Only apps that can run agents (in a terminal) say so: the engine then offers MOOs the
+        // agent package and passes /agent on.
+        engine.set_agents_supported(flag(args, "agents"));
+        let inbox = Arc::new(Inbox { events: Mutex::default(), woken: AtomicBool::new(false), agent: Mutex::default() });
+        self.inboxes.lock().unwrap().insert(id, inbox.clone());
+        self.sessions.insert(id, Session { engine, generation: 0, inbox, pending: Vec::new(), timer: None, agent: None, recent: VecDeque::new() });
         out.extend(self.start_scripting(id));
         let outputs = self.finish(id, out);
         let mut info = self.info(id)?;
@@ -341,6 +492,12 @@ impl State {
         if let Some((task, _)) = session.timer.take() {
             task.abort();
         }
+        // The app stops the agent's program with the tab.
+        if let Some((_, token)) = session.agent.take() {
+            self.agents.close(&token);
+        }
+        self.agents.forget(id);
+        self.inboxes.lock().unwrap().remove(&id);
         self.sessions.remove(&id);
         saved.map(|_| Value::Null)
     }
@@ -518,6 +675,19 @@ impl State {
                 let (_, session) = self.session(args)?;
                 session.engine.set_puppet_open(text(args, "name")?, flag(args, "open"));
                 Ok(Value::Null)
+            }
+            // The agent the app was running for a world ended (or never started, with "error").
+            // "token" is the one from its agent_start, so a late report is ignored.
+            "agent.ended" => {
+                let (id, session) = self.session(args)?;
+                let token = text(args, "token")?;
+                let Some((name, _)) = session.agent.take_if(|(_, t)| t == token) else { return self.outputs(id, Vec::new()) };
+                self.agents.close(token);
+                let message = match args.get("error").and_then(Value::as_str) {
+                    Some(error) => format!("Couldn't run {name}: {error}"),
+                    None => format!("{name} stopped"),
+                };
+                self.outputs(id, vec![Output::Notice(message)])
             }
             "session.restart_scripts" => {
                 let (id, _) = self.session(args)?;
@@ -776,7 +946,25 @@ mod tests {
         let key = call("session.macro", &json!({ "id": id, "key": "F5" })).unwrap();
         assert_eq!(key["handled"], false);
         assert_eq!(call("session.poll", &json!({ "id": id })).unwrap()["more"], false);
+        // Without "agents", /agent is an unknown command.
+        let reply = call("session.submit", &json!({ "id": id, "text": "/agent list" })).unwrap();
+        assert!(reply["outputs"][0]["text"].as_str().unwrap().starts_with("Unknown command /agent"), "{reply}");
         call("session.close", &json!({ "id": id })).unwrap();
         assert!(call("session.poll", &json!({ "id": id })).is_err());
+
+        // With it, the bridge handles /agent; starting one is the app's job (agent_start).
+        let opened = call("session.open", &json!({ "world": { "name": "", "host": "127.0.0.1", "port": 9 }, "agents": true })).unwrap();
+        let id = opened["id"].as_u64().unwrap();
+        let notice = |text: &str| {
+            let reply = call("session.submit", &json!({ "id": id, "text": text })).unwrap();
+            reply["outputs"].as_array().unwrap().iter().filter(|o| o["t"] == "notice").map(|o| o["text"].as_str().unwrap().to_string()).collect::<Vec<_>>().join("\n")
+        };
+        assert!(notice("/agent list").starts_with("Agents: claude, codex, agy, grok"));
+        assert_eq!(notice("/agent stop"), "There's no agent working on this world");
+        assert!(notice("/agent nobody").starts_with("There's no agent called nobody"));
+        // A report about an agent that isn't running is ignored.
+        let ended = call("agent.ended", &json!({ "id": id, "token": "old" })).unwrap();
+        assert_eq!(ended["outputs"], json!([]));
+        call("session.close", &json!({ "id": id })).unwrap();
     }
 }

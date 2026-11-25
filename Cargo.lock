@@ -837,6 +837,7 @@ version = "0.4.0"
 name = "familiar-bridge"
 version = "0.4.0"
 dependencies = [
+ "familiar-agent",
  "familiar-ansi",
  "familiar-code",
  "familiar-config",
