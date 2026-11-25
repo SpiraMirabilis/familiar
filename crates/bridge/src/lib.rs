@@ -239,7 +239,8 @@ impl State {
                 Output::Received(text) => json!({ "t": "received", "text": text }),
                 Output::Sent(text) => json!({ "t": "sent", "text": text }),
                 // Agent tools are only served by the TUI for now.
-                Output::AgentTools(_) | Output::AgentResult { .. } => continue,
+                // Agents aren't supported here yet (the engine is never told they are).
+                Output::AgentTools(_) | Output::AgentResult { .. } | Output::Agent(_) => continue,
             };
             shown.push(v);
         }

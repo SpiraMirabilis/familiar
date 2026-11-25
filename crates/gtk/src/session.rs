@@ -20,6 +20,11 @@ use crate::stats_pane::StatsPane;
 #[cfg(feature = "webview")]
 use crate::webview::PageEvent;
 
+#[cfg(feature = "agents")]
+mod agent;
+#[cfg(feature = "agents")]
+pub use agent::AgentHost;
+
 /// Without web views there are no pages to send events to.
 #[cfg(not(feature = "webview"))]
 #[allow(dead_code)]
@@ -77,6 +82,12 @@ pub struct SessionView {
     font_class: String,
     on_open_uri: RefCell<Option<Box<dyn Fn(&str)>>>,
     on_logging_changed: RefCell<Option<Box<dyn Fn()>>>,
+    /// This world's number for agents' requests (see `AgentHost`).
+    #[cfg(feature = "agents")]
+    id: u64,
+    /// The LLM agent working on this world, in the side dock.
+    #[cfg(feature = "agents")]
+    agent: RefCell<Option<agent::AgentPane>>,
 }
 
 impl SessionView {
@@ -84,6 +95,9 @@ impl SessionView {
         let font_class = crate::app::world_class(&world.name);
         let (mut engine, notices) = Engine::new(&state.config.borrow(), world, character);
         engine.set_webviews_supported(cfg!(feature = "webview"));
+        engine.set_agents_supported(cfg!(feature = "agents"));
+        #[cfg(feature = "agents")]
+        let id = state.agents.new_id();
         let settings = state.config.borrow().settings.clone();
         let output = OutputView::new(Palette::default(), settings.scrollback_lines);
         let input = InputView::new(settings.input_history_size, settings.spellcheck);
@@ -145,7 +159,13 @@ impl SessionView {
             font_class,
             on_open_uri: RefCell::default(),
             on_logging_changed: RefCell::default(),
+            #[cfg(feature = "agents")]
+            id,
+            #[cfg(feature = "agents")]
+            agent: RefCell::default(),
         });
+        #[cfg(feature = "agents")]
+        this.state.agents.register(id, &this);
         this.setup();
         this.apply(notices);
         this.start_scripting();
@@ -545,8 +565,15 @@ impl SessionView {
                 Output::Gmcp { package, data } => self.to_pages(|| PageEvent::Gmcp { package: &package, data: &data }),
                 Output::Received(text) => self.to_pages(|| PageEvent::Receive(&text)),
                 Output::Sent(text) => self.to_pages(|| PageEvent::Send(&text)),
-                // Agent tools are only served by the TUI for now.
-                Output::AgentTools(_) | Output::AgentResult { .. } => {}
+                #[cfg(feature = "agents")]
+                Output::Agent(args) => self.agent_command(&args),
+                #[cfg(feature = "agents")]
+                Output::AgentTools(_) => self.agent_tools_changed(),
+                #[cfg(feature = "agents")]
+                Output::AgentResult { id, ok, content } => self.agent_result(id, ok, content),
+                // Without agents the engine doesn't offer them, so none of these come.
+                #[cfg(not(feature = "agents"))]
+                Output::Agent(_) | Output::AgentTools(_) | Output::AgentResult { .. } => {}
             }
         }
     }
@@ -747,6 +774,14 @@ impl SessionView {
             if width > 0 {
                 self.root.set_position(width * 2 / 3);
             }
+        }
+    }
+
+    /// Shows a tab of the side dock.
+    #[cfg(feature = "agents")]
+    fn select_side_tab(&self, widget: &impl IsA<gtk::Widget>) {
+        if let Some(n) = self.side.page_num(widget) {
+            self.side.set_current_page(Some(n));
         }
     }
 

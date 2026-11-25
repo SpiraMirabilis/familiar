@@ -85,15 +85,12 @@ impl App {
                     self.switch_to(pos);
                 }
             }
+            Effect::Agent(args) => self.agent_command(&args),
             Effect::AgentTools => {
-                if let Some(server) = &self.agent_server {
-                    server.tools_changed(id);
-                }
+                self.agents.tools_changed(id);
             }
             Effect::AgentResult { id: call, ok, content } => {
-                if let Some(reply) = self.agent_calls.remove(&(id, call)) {
-                    let _ = reply.send((ok, content));
-                }
+                self.agents.result(id, call, ok, content);
             }
             Effect::ShowPanel(panel) => {
                 let explicit = panel == Panel::Map;

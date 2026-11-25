@@ -1,6 +1,5 @@
 //! A terminal MU* client on the same engine as the GTK one.
 
-mod agent;
 mod app;
 mod buffer;
 mod clipboard;

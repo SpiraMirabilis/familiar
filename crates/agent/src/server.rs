@@ -4,7 +4,7 @@
 //! `/<token>/mcp`, where the random token says which world the agent works on. The tools are
 //! the ones the world offers through the dns-com-familiar-agent MCP (MUD Client Protocol)
 //! package, plus `world_output`, which reads the world's window. Requests go to the main loop
-//! as [`AgentRequest`]s, since the sessions live there.
+//! as [`AgentRequest`]s, since the sessions live there; [`crate::Agents`] answers them.
 
 use std::collections::HashMap;
 use std::convert::Infallible;
@@ -67,16 +67,19 @@ pub struct AgentServer {
 }
 
 impl AgentServer {
-    /// Starts serving on a free port. Must be called inside the tokio runtime.
-    pub fn start(requests: mpsc::UnboundedSender<AgentRequest>) -> std::io::Result<Self> {
+    /// Starts serving on a free port, on the tokio runtime `runtime`.
+    pub fn start(requests: mpsc::UnboundedSender<AgentRequest>, runtime: &tokio::runtime::Handle) -> std::io::Result<Self> {
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
         listener.set_nonblocking(true)?;
         let port = listener.local_addr()?.port();
-        let listener = tokio::net::TcpListener::from_std(listener)?;
+        let listener = {
+            let _runtime = runtime.enter();
+            tokio::net::TcpListener::from_std(listener)?
+        };
         let (notes, _) = broadcast::channel(16);
         let shared = Arc::new(Shared { tokens: Mutex::new(HashMap::new()), requests, notes });
         let app = router(shared.clone());
-        tokio::spawn(async move {
+        runtime.spawn(async move {
             let _ = axum::serve(listener, app).await;
         });
         Ok(Self { port, shared })
@@ -370,7 +373,7 @@ mod tests {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let (tx, rx) = mpsc::unbounded_channel();
         fake_world(rx);
-        let server = AgentServer::start(tx).unwrap();
+        let server = AgentServer::start(tx, &tokio::runtime::Handle::current()).unwrap();
         let (token, url) = server.open(7);
         let address = url.trim_start_matches("http://").split('/').next().unwrap().to_string();
         let path = format!("/{token}/mcp");

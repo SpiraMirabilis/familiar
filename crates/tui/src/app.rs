@@ -11,7 +11,7 @@ use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyEvent
 use ratatui::layout::{Position, Rect};
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::agent::{AgentRequest, AgentServer};
+use familiar_agent::{AgentRequest, Agents};
 use crate::buffer::{Buffer, Cell, Selection};
 use crate::editor::Document;
 use crate::syntax::{Editor, Installed};
@@ -294,11 +294,8 @@ pub struct App {
     pub external: Option<External>,
     pub editors: Vec<EditorTab>,
     pty_tx: PtySender,
-    agent_tx: UnboundedSender<AgentRequest>,
-    /// Serves the worlds' tools to agents; started by the first /agent.
-    agent_server: Option<AgentServer>,
-    /// Agent tool calls waiting for their results, by (session, call id).
-    agent_calls: std::collections::HashMap<(u64, u64), tokio::sync::oneshot::Sender<(bool, String)>>,
+    /// LLM agents: the MCP server that serves them the worlds' tools, and their calls.
+    agents: Agents,
     /// The size of the whole terminal at the last draw.
     pub screen: (u16, u16),
     /// Text being selected (or last selected) with the mouse.
@@ -350,10 +347,8 @@ impl App {
             external: None,
             editors: Vec::new(),
             pty_tx,
-            agent_tx,
-            agent_server: None,
-            agent_calls: Default::default(),
-            screen: (80, 24),
+            agents: Agents::new(agent_tx, None),
+                    screen: (80, 24),
             selection: None,
             press: None,
             drag: None,
@@ -534,7 +529,7 @@ impl App {
                     }
                 }
                 // Calls still waiting fail: their results can't arrive now.
-                self.agent_calls.retain(|(session, _), _| *session != id);
+                self.agents.forget(id);
                 if let Some(i) = self.session_index(id) {
                     let mut s = self.sessions.remove(i);
                     let _ = s.engine.save_map();

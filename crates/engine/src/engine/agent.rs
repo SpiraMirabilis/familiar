@@ -31,9 +31,10 @@ fn summarize(args: &serde_json::Value) -> String {
 }
 
 impl Engine {
-    /// The tools the server offers, or None if it doesn't speak dns-com-familiar-agent.
+    /// The tools the server offers, or None if it doesn't speak dns-com-familiar-agent (or the
+    /// frontend can't run agents, so it wasn't offered).
     pub fn agent_tools(&self) -> Option<&[AgentTool]> {
-        (self.world.mcp && self.mcp.server_supports(AGENT)).then_some(self.agent_tools.as_slice())
+        (self.agents_supported && self.world.mcp && self.mcp.server_supports(AGENT)).then_some(self.agent_tools.as_slice())
     }
 
     /// Calls a tool on the server. Its result comes later as [`Output::AgentResult`] with the

@@ -60,10 +60,10 @@ sudo make install         # PREFIX=/usr/local by default; DESTDIR is honoured
 ```
 
 Building the GTK client needs Rust 1.92 or newer and the development files for GTK 4 (4.14+),
-libadwaita (1.6+), GtkSourceView 5, libspelling, WebKitGTK 6.0 and GStreamer. On Arch:
-`pacman -S gtk4 libadwaita gtksourceview5 libspelling webkitgtk-6.0 gstreamer gst-plugins-base`.
+libadwaita (1.6+), GtkSourceView 5, libspelling, WebKitGTK 6.0, VTE for GTK 4 and GStreamer. On Arch:
+`pacman -S gtk4 libadwaita gtksourceview5 libspelling webkitgtk-6.0 vte4 gstreamer gst-plugins-base`.
 The terminal client needs only Rust. `cargo build --no-default-features -p familiar-gtk` leaves out
-WebKitGTK (and web views).
+WebKitGTK, libspelling and VTE (and web views, spellcheck and agents).
 
 At runtime, speech needs `speech-dispatcher` with a voice such as `espeak-ng`, spell checking needs a
 Hunspell dictionary (`hunspell-en_us`), and sounds need `gst-plugins-good` (GTK) or `pw-play`,
@@ -119,6 +119,10 @@ Client commands start with `/`: `/set`, `/unset`, `/echo`, `/log`, `/clear`, `/r
 When a MOO sends code with MCP simpleedit (`type: moo-code`), it opens in a small code editor (GtkSourceView): syntax highlighting, line numbers, bracket matching, search (Ctrl+F), and auto-indent that re-indents each line as you press Enter (Ctrl+Shift+I re-indents everything). Ctrl+S sends it back without closing; compile errors in the reply (`Line 3: …`, or FuzzBall's `Error in line 3: …`) are marked on their lines. `/edit [language]` opens a scratch editor whose text is sent line by line, for `@program`-style uploads. Plain text (descriptions) opens without highlighting.
 
 Languages: **MOO (Stunt)** built from the Stunt lexer (keywords, `/* */` and string-statement comments, `$#colour` and `b"bytes"` literals, string escapes, maps and bitwise operators, built-in variables and all 209 built-in functions), **MUF**, and GtkSourceView's built-in languages such as Lua. Each world has a program language. Add your own GtkSourceView `.lang` files to `~/.local/share/familiar/language-specs/`.
+
+### LLM agents
+
+`/agent` runs an LLM coding agent (Claude Code, Codex, Antigravity or Grok Build) in a terminal in the side dock, and serves it the world's tools over MCP (Model Context Protocol), as in [the terminal client](#the-terminal-client). The tab closes when the agent quits, on `/agent stop`, or when the world's tab closes. In the agent's terminal, Ctrl+Shift+C and Ctrl+Shift+V copy and paste; Ctrl+C goes to the agent.
 
 ### Map
 
@@ -242,6 +246,7 @@ colour, and keeps its worlds in tabs in the title bar.
 - `speech-dispatcher` and a voice such as `espeak-ng`: speech.
 - `hunspell-en_us` (or another Hunspell dictionary): spellcheck.
 - `webkitgtk-6.0`: web views (on by default). Without it, build with `cargo run -p familiar-gtk --no-default-features`.
+- `vte4`: the terminal LLM agents run in (on by default; the `agents` feature).
 
 ## Development
 
@@ -257,9 +262,10 @@ colour, and keeps its worlds in tabs in the title bar.
 | `familiar-import` | Reads BeipMU's `Config.txt` (worlds, characters, puppets, triggers, aliases, macros, variables) and `.atlas` maps (plain or zipped XML), reporting anything that can't be carried over. |
 | `familiar-speech` | Text to speech on a background thread: speech-dispatcher on Linux, the built-in voice on Windows and macOS. |
 | `familiar-platform` | Sounds, notifications, opening links and finding an editor, done each system's way. |
+| `familiar-agent` | LLM agents beside a world: the MCP (Model Context Protocol) server that serves them the world's tools, choosing which agent to run and preparing its folder, and routing its calls to the world. |
 | `familiar-bridge` | The engine behind a small C interface (a method name and JSON in, JSON out), as a static library or a DLL. The macOS app, in [`macos/`](macos), is Swift on top of it; the Windows app, in [`windows/`](windows), is C#. |
 | `familiar-code` | Editing support shared by frontends: block-aware auto-indentation for MOO, MUF and Lua. |
-| `familiar-gtk` | GTK4/libadwaita client: a tab per connection, ANSI and full Unicode output with clickable links, a side dock with spawn windows and GMCP stat panes, input with history, password mode, NAWS, logging, sounds (trigger and server-driven), notifications, an MCP status line and text editor, web views, and a rules editor. |
+| `familiar-gtk` | GTK4/libadwaita client: a tab per connection, ANSI and full Unicode output with clickable links, a side dock with spawn windows and GMCP stat panes, input with history, password mode, NAWS, logging, sounds (trigger and server-driven), notifications, an MCP status line and text editor, web views, LLM agents in a terminal (VTE), and a rules editor. |
 | `familiar-tui` | Full-screen terminal client (ratatui) on the same engine: tabs, a sidebar with the map, stat bars and spawn windows, a command palette and fuzzy pickers, `/` completion, and `$EDITOR` for MCP editing. |
 | `familiar-cli` | Terminal client for testing against real servers. |
 

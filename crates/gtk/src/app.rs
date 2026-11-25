@@ -18,6 +18,9 @@ pub struct AppState {
     /// Set if the config file exists but couldn't be read. We then refuse to save, so we don't
     /// overwrite the user's file with defaults.
     load_error: Option<String>,
+    /// LLM agents beside worlds (/agent): the MCP server, and the worlds it answers for.
+    #[cfg(feature = "agents")]
+    pub agents: std::rc::Rc<crate::session::AgentHost>,
 }
 
 impl AppState {
@@ -31,7 +34,15 @@ impl AppState {
         if let Some(display) = gdk::Display::default() {
             gtk::style_context_add_provider_for_display(&display, &css, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
         }
-        let state = Self { config: RefCell::new(config), speaker: familiar_speech::Speaker::new(crate::APP_NAME), path, css, load_error };
+        let state = Self {
+            config: RefCell::new(config),
+            speaker: familiar_speech::Speaker::new(crate::APP_NAME),
+            path,
+            css,
+            load_error,
+            #[cfg(feature = "agents")]
+            agents: crate::session::AgentHost::new(),
+        };
         state.apply_css();
         state
     }

@@ -220,8 +220,8 @@ impl App {
     /// Takes an editor and its tab away, keeping the same tab active where it can.
     pub(super) fn remove_editor(&mut self, id: u64) -> Option<EditorTab> {
         let editor = self.editors.remove(self.editors.iter().position(|e| e.id == id)?);
-        if let (Some(token), Some(server)) = (&editor.agent, &self.agent_server) {
-            server.close(token);
+        if let Some(token) = &editor.agent {
+            self.agents.close(token);
         }
         if let Some(pos) = self.tabs.iter().position(|t| *t == Tab::Editor(id)) {
             self.tabs.remove(pos);

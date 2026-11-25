@@ -20,6 +20,7 @@ path = "src/main.rs"
 adw = { version = "0.9.2", package = "libadwaita", features = ["v1_6"] }
 gtk = { version = "0.11.5", package = "gtk4", features = ["v4_14"] }
 libspelling = { version = "0.5.0", optional = true }
+familiar-agent = { version = "0.4.0", path = "../agent", optional = true }
 familiar-ansi = { version = "0.4.0", path = "../ansi" }
 familiar-code = { version = "0.4.0", path = "../code" }
 familiar-config = { version = "0.4.0", path = "../config" }
@@ -33,11 +34,14 @@ pangocairo = "0.22"
 serde_json = { version = "1.0.154", optional = true }
 sourceview5 = "0.11.3"
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "net", "time", "sync"] }
+vte4 = { version = "0.10.0", optional = true }
 webkit6 = { version = "0.6.1", optional = true }
 
 [features]
-default = ["webview", "spelling"]
+default = ["webview", "spelling", "agents"]
 # Spell checking in the input, through libspelling.
 spelling = ["dep:libspelling"]
 # Embedded web views (GMCP webview.open, /webview). Needs WebKitGTK 6 (webkitgtk-6.0).
 webview = ["dep:webkit6", "dep:serde_json"]
+# LLM agents (/agent) in a terminal in the side dock. Needs VTE for GTK 4 (vte-2.91-gtk4).
+agents = ["dep:familiar-agent", "dep:vte4", "dep:serde_json"]

@@ -24,7 +24,8 @@ Check with `makepkg -f` and `namcap` on the PKGBUILD and the package.
 
 ## Flatpak (`flatpak/`)
 
-The manifest builds against the GNOME runtime and adds libspelling, which the runtime lacks. Crates
+The manifest builds against the GNOME runtime and adds libspelling, which the runtime lacks. It leaves out
+LLM agents (`/agent`), which need VTE and programs on the host. Crates
 are vendored from `cargo-sources.json`; regenerate it whenever `Cargo.lock` changes:
 
 ```sh

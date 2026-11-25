@@ -771,6 +771,7 @@ fn simpleedit_through_a_core_that_colours_every_line() {
 /// tools. Returns it with the auth key.
 fn agent_engine() -> (Engine, UnboundedReceiver<SessionCommand>, String) {
     let (mut e, mut rx) = engine(&config(Rules::default(), Rules::default(), Rules::default()));
+    e.set_agents_supported(true);
     assert_eq!(e.agent_tools(), None);
     e.handle_event(SessionEvent::Line("#$#mcp version: 2.1 to: 2.1".into()));
     let key = sent(&mut rx)[0].split_whitespace().nth(2).unwrap().to_string();
@@ -870,4 +871,24 @@ fn agent_calls_fail_on_timeout_and_disconnect() {
     assert!(out.iter().any(|o| matches!(o, Output::AgentResult { id, ok: false, .. } if *id == pending)));
     assert!(out.contains(&Output::AgentTools(Vec::new())));
     assert!(e.agent_call("list_verb", &serde_json::json!({})).is_err());
+}
+
+#[test]
+fn agents_only_where_the_frontend_runs_them() {
+    let (mut e, mut rx) = engine(&config(Rules::default(), Rules::default(), Rules::default()));
+    e.handle_event(SessionEvent::Line("#$#mcp version: 2.1 to: 2.1".into()));
+    let offered = sent(&mut rx);
+    assert!(!offered.iter().any(|l| l.contains("dns-com-familiar-agent")), "{offered:?}");
+    let key = offered[0].split_whitespace().nth(2).unwrap().to_string();
+    e.handle_event(SessionEvent::Line(format!("#$#mcp-negotiate-can {key} package: dns-com-familiar-agent min-version: 1.0 max-version: 1.0")));
+    e.handle_event(SessionEvent::Line(format!("#$#mcp-negotiate-end {key}")));
+    assert!(sent(&mut rx).is_empty());
+    assert_eq!(e.agent_tools(), None);
+    let out = e.submit("/agent claude", false);
+    assert!(matches!(&out[..], [Output::Notice(n)] if n.starts_with("Unknown command /agent")), "{out:?}");
+    assert!(!matches!(&e.submit("/help", false)[..], [Output::Notice(n)] if n.contains("/agent")));
+
+    e.set_agents_supported(true);
+    assert_eq!(e.submit("/agent  codex ", false), vec![Output::Agent("codex".into())]);
+    assert!(matches!(&e.submit("/help", false)[..], [Output::Notice(n)] if n.contains("/agent")));
 }

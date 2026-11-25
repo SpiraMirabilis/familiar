@@ -123,6 +123,15 @@ pub struct Mcp {
     /// Packages the server says it supports, with their max version.
     server_packages: HashMap<String, String>,
     next_tag: u32,
+    /// Whether to offer dns-com-familiar-agent: only frontends that can run agents do.
+    agents: bool,
+}
+
+impl Mcp {
+    /// A new MCP state; `agents` offers dns-com-familiar-agent.
+    pub fn new(agents: bool) -> Self {
+        Self { agents, ..Self::default() }
+    }
 }
 
 fn random_key() -> String {
@@ -244,6 +253,9 @@ impl Mcp {
             self.pending.clear();
             self.server_packages.clear();
             for (name, min, max) in PACKAGES {
+                if name == AGENT && !self.agents {
+                    continue;
+                }
                 out.extend(self.format("mcp-negotiate-can", &[("package", name), ("min-version", min), ("max-version", max)], &[]));
             }
             out.extend(self.format("mcp-negotiate-end", &[], &[]));
@@ -305,7 +317,7 @@ impl Mcp {
                 }
             }
             "mcp-negotiate-end" => {
-                if self.server_supports(AGENT) {
+                if self.agents && self.server_supports(AGENT) {
                     sends.extend(self.format("dns-com-familiar-agent-list", &[], &[]));
                 }
                 if self.server_supports("dns-com-vmoo-client") {

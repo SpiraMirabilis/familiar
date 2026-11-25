@@ -816,6 +816,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "af9673d8203fcb076b19dfd17e38b3d4ae9f44959416ea532ce72415a6020365"
 
 [[package]]
+name = "familiar-agent"
+version = "0.4.0"
+dependencies = [
+ "axum",
+ "familiar-config",
+ "familiar-engine",
+ "futures-util",
+ "getrandom 0.3.4",
+ "serde_json",
+ "tokio",
+ "tower",
+]
+
+[[package]]
 name = "familiar-ansi"
 version = "0.4.0"
 
@@ -889,6 +903,7 @@ dependencies = [
 name = "familiar-gtk"
 version = "0.4.0"
 dependencies = [
+ "familiar-agent",
  "familiar-ansi",
  "familiar-code",
  "familiar-config",
@@ -905,6 +920,7 @@ dependencies = [
  "serde_json",
  "sourceview5",
  "tokio",
+ "vte4",
  "webkit6",
 ]
 
@@ -985,8 +1001,8 @@ dependencies = [
 name = "familiar-tui"
 version = "0.4.0"
 dependencies = [
- "axum",
  "clap",
+ "familiar-agent",
  "familiar-ansi",
  "familiar-config",
  "familiar-engine",
@@ -995,13 +1011,10 @@ dependencies = [
  "familiar-platform",
  "familiar-script",
  "familiar-speech",
- "futures-util",
- "getrandom 0.3.4",
  "portable-pty",
  "ratatui",
  "serde_json",
  "tokio",
- "tower",
  "unicode-segmentation",
  "unicode-width",
  "vt100",
@@ -1610,6 +1623,12 @@ dependencies = [
  "quote",
  "syn 3.0.10",
 ]
+
+[[package]]
+name = "io-lifetimes"
+version = "2.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "06432fb54d3be7964ecd3649233cddf80db2832f47fec34c01f65b3d9d774983"
 
 [[package]]
 name = "is_terminal_polyfill"
@@ -3913,6 +3932,40 @@ checksum = "a5924018406ce0063cd67f8e008104968b74b563ee1b85dde3ed1f7cb87d3dbd"
 dependencies = [
  "arrayvec",
  "memchr",
+]
+
+[[package]]
+name = "vte4"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c61732974d4915c5112a82506cdc86e19a83d786497c2c8bcd80d065825c695d"
+dependencies = [
+ "cairo-rs",
+ "gdk4",
+ "gio",
+ "glib",
+ "gtk4",
+ "io-lifetimes",
+ "libc",
+ "pango",
+ "vte4-sys",
+]
+
+[[package]]
+name = "vte4-sys"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bd99766524f740945b1b3fc516dc2ee76311be2efa8d7a1238f35f04330b9afd"
+dependencies = [
+ "cairo-sys-rs",
+ "gdk4-sys",
+ "gio-sys",
+ "glib-sys",
+ "gobject-sys",
+ "gtk4-sys",
+ "libc",
+ "pango-sys",
+ "system-deps 7.0.8",
 ]
 
 [[package]]

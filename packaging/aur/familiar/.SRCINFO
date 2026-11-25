@@ -19,6 +19,7 @@ pkgbase = familiar
 	depends = libsoup3
 	depends = libspelling
 	depends = pango
+	depends = vte4
 	depends = webkitgtk-6.0
 	optdepends = gst-plugins-good: more sound formats
 	optdepends = speech-dispatcher: text to speech
