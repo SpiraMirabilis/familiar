@@ -33,44 +33,51 @@
                         ToolTipService.ToolTip="Menu">
                         <FontIcon Glyph="&#xE712;" FontSize="16" />
                         <Button.Flyout>
-                            <MenuFlyout Placement="BottomEdgeAlignedRight" Opening="OnMenuOpening">
-                                <MenuFlyoutItem Text="Connect…" Click="OnConnect" KeyboardAcceleratorTextOverride="Ctrl+O">
+                            <MenuFlyout x:Name="Menu" Placement="BottomEdgeAlignedRight" Opening="OnMenuOpening">
+                                <!-- Each item's Tag is the action it runs (keymap.rs), which also gives it its key. -->
+                                <MenuFlyoutItem Text="Connect…" Tag="connect" Click="OnMenuItem">
                                     <MenuFlyoutItem.Icon><FontIcon Glyph="&#xE774;" /></MenuFlyoutItem.Icon>
                                 </MenuFlyoutItem>
-                                <MenuFlyoutItem x:Name="ReconnectItem" Text="Reconnect" Click="OnReconnect" KeyboardAcceleratorTextOverride="Ctrl+R">
+                                <MenuFlyoutItem x:Name="ReconnectItem" Text="Reconnect" Tag="reconnect" Click="OnMenuItem">
                                     <MenuFlyoutItem.Icon><FontIcon Glyph="&#xE72C;" /></MenuFlyoutItem.Icon>
                                 </MenuFlyoutItem>
-                                <MenuFlyoutItem x:Name="DisconnectItem" Text="Disconnect" Click="OnDisconnect" KeyboardAcceleratorTextOverride="Ctrl+Shift+D">
+                                <MenuFlyoutItem x:Name="DisconnectItem" Text="Disconnect" Tag="disconnect" Click="OnMenuItem">
                                     <MenuFlyoutItem.Icon><FontIcon Glyph="&#xF384;" /></MenuFlyoutItem.Icon>
                                 </MenuFlyoutItem>
                                 <MenuFlyoutSeparator />
-                                <MenuFlyoutItem x:Name="FindItem" Text="Find…" Click="OnFind" KeyboardAcceleratorTextOverride="Ctrl+F">
+                                <MenuFlyoutItem x:Name="FindItem" Text="Find…" Tag="find" Click="OnMenuItem">
                                     <MenuFlyoutItem.Icon><FontIcon Glyph="&#xE721;" /></MenuFlyoutItem.Icon>
                                 </MenuFlyoutItem>
-                                <MenuFlyoutItem x:Name="ClearItem" Text="Clear Output" Click="OnClear" KeyboardAcceleratorTextOverride="Ctrl+Shift+L">
+                                <MenuFlyoutItem x:Name="ClearItem" Text="Clear Output" Tag="clear" Click="OnMenuItem">
                                     <MenuFlyoutItem.Icon><FontIcon Glyph="&#xE894;" /></MenuFlyoutItem.Icon>
                                 </MenuFlyoutItem>
-                                <ToggleMenuFlyoutItem x:Name="LogItem" Text="Log to File" Click="OnToggleLog" KeyboardAcceleratorTextOverride="Ctrl+Shift+G" />
-                                <MenuFlyoutItem Text="Open Log Folder" Click="OnOpenLogFolder">
+                                <ToggleMenuFlyoutItem x:Name="LogItem" Text="Log to File" Tag="toggle-log" Click="OnMenuItem" />
+                                <MenuFlyoutItem Text="Open Log Folder" Tag="open-logs" Click="OnMenuItem">
                                     <MenuFlyoutItem.Icon><FontIcon Glyph="&#xE838;" /></MenuFlyoutItem.Icon>
                                 </MenuFlyoutItem>
-                                <MenuFlyoutItem Text="Stop Speaking" Click="OnStopSpeaking" KeyboardAcceleratorTextOverride="Ctrl+.">
+                                <MenuFlyoutItem Text="Stop Speaking" Tag="stop-speech" Click="OnMenuItem">
                                     <MenuFlyoutItem.Icon><FontIcon Glyph="&#xE74F;" /></MenuFlyoutItem.Icon>
                                 </MenuFlyoutItem>
                                 <MenuFlyoutSeparator />
-                                <MenuFlyoutItem Text="Triggers, Aliases &amp; Macros" Click="OnRules" KeyboardAcceleratorTextOverride="Ctrl+T">
+                                <MenuFlyoutItem Text="Command Palette…" Tag="palette" Click="OnMenuItem">
+                                    <MenuFlyoutItem.Icon><FontIcon Glyph="&#xE756;" /></MenuFlyoutItem.Icon>
+                                </MenuFlyoutItem>
+                                <MenuFlyoutItem Text="Triggers, Aliases &amp; Macros" Tag="rules" Click="OnMenuItem">
                                     <MenuFlyoutItem.Icon><FontIcon Glyph="&#xE945;" /></MenuFlyoutItem.Icon>
                                 </MenuFlyoutItem>
-                                <MenuFlyoutItem Text="Settings" Click="OnSettings" KeyboardAcceleratorTextOverride="Ctrl+,">
+                                <MenuFlyoutItem Text="Settings" Tag="preferences" Click="OnMenuItem">
                                     <MenuFlyoutItem.Icon><FontIcon Glyph="&#xE713;" /></MenuFlyoutItem.Icon>
                                 </MenuFlyoutItem>
-                                <MenuFlyoutItem Text="Import from BeipMU…" Click="OnImport">
+                                <MenuFlyoutItem Text="Import from BeipMU…" Tag="import-beipmu" Click="OnMenuItem">
                                     <MenuFlyoutItem.Icon><FontIcon Glyph="&#xE8B5;" /></MenuFlyoutItem.Icon>
                                 </MenuFlyoutItem>
-                                <MenuFlyoutItem Text="Keyboard Shortcuts" Click="OnShortcuts">
+                                <MenuFlyoutItem Text="Keyboard Shortcuts" Tag="keyboard" Click="OnMenuItem">
                                     <MenuFlyoutItem.Icon><FontIcon Glyph="&#xE765;" /></MenuFlyoutItem.Icon>
                                 </MenuFlyoutItem>
-                                <MenuFlyoutItem Text="About Familiar" Click="OnAbout">
+                                <MenuFlyoutItem Text="Help" Tag="help" Click="OnMenuItem">
+                                    <MenuFlyoutItem.Icon><FontIcon Glyph="&#xE897;" /></MenuFlyoutItem.Icon>
+                                </MenuFlyoutItem>
+                                <MenuFlyoutItem Text="About Familiar" Tag="about" Click="OnMenuItem">
                                     <MenuFlyoutItem.Icon><FontIcon Glyph="&#xE946;" /></MenuFlyoutItem.Icon>
                                 </MenuFlyoutItem>
                             </MenuFlyout>

@@ -123,7 +123,18 @@ internal sealed partial class Session
     public void AgentStop() => Call("agent.stop");
 
     public void PuppetSubmit(string name, string text) => Call("session.puppet_submit", Json.Args(("name", name), ("text", text)));
-    public void SaveEdit(JsonNode request, string content) => Call("session.save_edit", Json.Args(("request", request), ("content", content)));
+    public void SaveEdit(JsonNode request, string content)
+    {
+        // Remembered, so it can be reopened if the server finds errors in it.
+        var sent = request.DeepClone();
+        sent["content"] = content;
+        LastEdit = (sent, null);
+        Call("session.save_edit", Json.Args(("request", request), ("content", content)));
+    }
+
+    /// <summary>The last program sent back from an editor, and the first compile error the
+    /// server reported in it since (line, message).</summary>
+    public (JsonNode Request, (int Line, string Message)? Error)? LastEdit { get; private set; }
 
     /// <summary>The user closed a puppet's tab.</summary>
     public void PuppetClosed(string name)
@@ -261,7 +272,11 @@ internal sealed partial class Session
                 case "puppet_echo":
                     if (Puppets.TryGetValue(o.Str("name"), out var echoed)) echoed.Echo(o.Str("text"));
                     break;
-                case "tilemap" or "map_changed" or "show_map" or "stats" or "edit" or "compile_error" or "webview"
+                case "compile_error":
+                    if (LastEdit is { Error: null } last) LastEdit = (last.Request, (o.Int("line"), o.Str("message")));
+                    ToView(o);
+                    break;
+                case "tilemap" or "map_changed" or "show_map" or "stats" or "edit" or "webview"
                     or "agent_start" or "agent_output" or "agent_stop" or "agent_focus":
                     ToView(o);
                     break;

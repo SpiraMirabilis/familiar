@@ -469,6 +469,13 @@ internal sealed class OutputView : UserControl
         ShowMatch();
     }
 
+    /// <summary>The next (1) or previous (-1) match, opening the find bar if it's closed.</summary>
+    public void FindAgain(int by)
+    {
+        if (!IsFinding) ShowFind();
+        else Step(by);
+    }
+
     public bool IsFinding => findBar.Visibility == Visibility.Visible;
 
     /// <summary>Raised when the find bar closes, so the input box can have the keyboard back.</summary>

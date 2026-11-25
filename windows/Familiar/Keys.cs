@@ -85,6 +85,9 @@ internal sealed class History(int limit)
 
     public int Limit { get; set; } = Math.Max(limit, 1);
 
+    /// <summary>Oldest first.</summary>
+    public IReadOnlyList<string> Entries => entries;
+
     public void Push(string line)
     {
         position = null;

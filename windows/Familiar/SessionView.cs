@@ -27,6 +27,8 @@ internal sealed class SessionView : UserControl
     /// <summary>The LLM agent working on this world, in the dock.</summary>
     private AgentPane? agent;
     private double dockWidth = 340;
+    /// <summary>The user hid the dock: what the world adds to it doesn't bring it back.</summary>
+    private bool dockHidden;
 
     /// <summary>Asks the window for a tab beside this session's (a puppet's). The last argument
     /// says whether to switch to it.</summary>
@@ -164,27 +166,65 @@ internal sealed class SessionView : UserControl
             dock.TabItems.Add(tab);
         }
         if (select || dock.SelectedItem is null) dock.SelectedItem = tab;
-        if (dock.Visibility == Visibility.Collapsed)
-        {
-            dock.Visibility = splitter.Visibility = Visibility.Visible;
-            dockColumn.Width = new GridLength(dockWidth);
-            dockColumn.MinWidth = 180;
-        }
+        if (select || !dockHidden) OpenDock();
         return tab;
     }
 
-    private void RemovePanel(string id)
+    private void OpenDock()
     {
-        if (!panels.Remove(id, out var tab)) return;
-        dock.TabItems.Remove(tab);
-        if (dock.TabItems.Count > 0) return;
+        dockHidden = false;
+        if (dock.Visibility == Visibility.Visible) return;
+        dock.Visibility = splitter.Visibility = Visibility.Visible;
+        dockColumn.Width = new GridLength(dockWidth);
+        dockColumn.MinWidth = 180;
+    }
+
+    private void CloseDock()
+    {
+        if (dock.Visibility == Visibility.Collapsed) return;
         dockWidth = Math.Max(180, dockColumn.ActualWidth);
         dockColumn.MinWidth = 0;
         dockColumn.Width = new GridLength(0);
         dock.Visibility = splitter.Visibility = Visibility.Collapsed;
     }
 
-    private void ShowMap(bool select)
+    /// <summary>Shows or hides the dock.</summary>
+    public void ToggleDock()
+    {
+        if (dock.TabItems.Count == 0)
+        {
+            Session.Output.Notice("The side dock is empty: it shows the map, and the panes and windows the world sends.");
+        }
+        else if (dock.Visibility == Visibility.Visible)
+        {
+            dockHidden = true;
+            CloseDock();
+            Input.FocusInput();
+        }
+        else OpenDock();
+    }
+
+    /// <summary>The dock's next (1) or previous (-1) tab, showing the dock if it's hidden.</summary>
+    public void StepPanel(int by)
+    {
+        var count = dock.TabItems.Count;
+        if (count == 0)
+        {
+            ToggleDock();
+            return;
+        }
+        if (dock.Visibility == Visibility.Collapsed) OpenDock();
+        else dock.SelectedIndex = (Math.Max(dock.SelectedIndex, 0) + by + count) % count;
+    }
+
+    private void RemovePanel(string id)
+    {
+        if (!panels.Remove(id, out var tab)) return;
+        dock.TabItems.Remove(tab);
+        if (dock.TabItems.Count == 0) CloseDock();
+    }
+
+    public void ShowMap(bool select)
     {
         var tab = ShowPanel("map", "Map", "", () => new MapView(Session), select);
         (tab.Content as MapView)?.Reload();
@@ -295,13 +335,31 @@ internal sealed class SessionView : UserControl
             existing.Reload(request);
             return;
         }
-        var editor = new CodeEditorWindow(Session, request);
+        Open(new CodeEditorWindow(Session, request));
+    }
+
+    private void Open(CodeEditorWindow editor)
+    {
+        var reference = editor.Reference;
         editors[reference] = editor;
         editor.Closed += (_, _) =>
         {
             if (editors.TryGetValue(reference, out var current) && ReferenceEquals(current, editor)) editors.Remove(reference);
         };
         editor.Activate();
+    }
+
+    /// <summary>Opens the last program sent from an editor again, at the first error the server
+    /// found in it.</summary>
+    public void ReopenEditor()
+    {
+        if (Session.LastEdit is not { } last)
+        {
+            Session.Output.Notice("Nothing to reopen: no program has been edited here yet.");
+            return;
+        }
+        if (editors.TryGetValue(last.Request.Str("reference"), out var open)) open.Reopen(last.Error?.Line);
+        else Open(new CodeEditorWindow(Session, last.Request, last.Error));
     }
 
     // MARK: Web views
