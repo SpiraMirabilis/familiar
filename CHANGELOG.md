@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.0 (2026-11-25)
 
 - Terminal client:
   - `/agent` runs an LLM agent (Claude Code, Codex, Antigravity or Grok Build built in; any

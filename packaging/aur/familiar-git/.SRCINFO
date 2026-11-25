@@ -1,6 +1,6 @@
 pkgbase = familiar-git
 	pkgdesc = Client for MUDs, MUSHes, MUCKs and MOOs, with GTK and terminal interfaces (latest code)
-	pkgver = 0.4.0.r0.g0000000
+	pkgver = 0.5.0.r0.g0000000
 	pkgrel = 1
 	url = https://github.com/SpiraMirabilis/familiar
 	arch = x86_64
