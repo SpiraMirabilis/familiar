@@ -20,6 +20,7 @@ use crate::script::{ScriptAction, ScriptContext, ScriptHost};
 use crate::stats::{StatPane, Stats};
 use crate::tilemap::{Tilemap, Tilemaps};
 use familiar_map::{Atlas, RoomId, RoomInfo};
+use crate::keymap::{self, Keymap};
 use crate::{KeyChord, Logger};
 
 /// A trigger that sends more often than this is suspended for the session, so a trigger that
@@ -208,6 +209,9 @@ pub struct Engine {
     mcp_debug: bool,
     webviews_supported: bool,
     agents_supported: bool,
+    /// Whose shortcuts to mention in notices: the desktop app's, unless the terminal client
+    /// says otherwise.
+    keymap_platform: keymap::Platform,
     script: Option<Box<dyn ScriptHost>>,
     puppets: Vec<(Puppet, Option<fancy_regex::Regex>)>,
     /// Puppets whose tabs are open.
@@ -266,6 +270,7 @@ impl Engine {
             mcp_debug: false,
             webviews_supported: false,
             agents_supported: false,
+            keymap_platform: keymap::Platform::desktop(),
             script: None,
             puppets: Vec::new(),
             open_puppets: Default::default(),
@@ -386,6 +391,23 @@ impl Engine {
     pub fn set_agents_supported(&mut self, supported: bool) {
         self.agents_supported = supported;
         self.mcp = Mcp::new(supported);
+    }
+
+    /// Which app's shortcuts notices should mention ([`keymap::Platform::Terminal`] for the
+    /// terminal client).
+    pub fn set_keymap_platform(&mut self, platform: keymap::Platform) {
+        self.keymap_platform = platform;
+    }
+
+    /// How to reconnect, for notices: "Press Ctrl+R or type /reconnect to reconnect."
+    pub(crate) fn reconnect_hint(&self) -> String {
+        if self.keymap_platform.is_terminal() {
+            return "Press Enter on an empty line or type /reconnect to reconnect.".into();
+        }
+        match Keymap::new(&self.settings, self.keymap_platform).label("reconnect") {
+            Some(key) => format!("Press {key} or type /reconnect to reconnect."),
+            None => "Type /reconnect to reconnect.".into(),
+        }
     }
 
     pub fn is_logging(&self) -> bool {

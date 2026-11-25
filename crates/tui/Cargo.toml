@@ -18,6 +18,7 @@ familiar-agent = { version = "0.5.0", path = "../agent" }
 familiar-ansi = { version = "0.5.0", path = "../ansi" }
 familiar-config = { version = "0.5.0", path = "../config" }
 familiar-engine = { version = "0.5.0", path = "../engine" }
+familiar-import = { version = "0.5.0", path = "../import" }
 familiar-map = { version = "0.5.0", path = "../map" }
 familiar-platform = { version = "0.5.0", path = "../platform" }
 familiar-net = { version = "0.5.0", path = "../net" }

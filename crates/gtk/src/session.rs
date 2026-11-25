@@ -10,9 +10,10 @@ use adw::prelude::*;
 use gtk::{gio, glib};
 use familiar_ansi::Palette;
 use familiar_config::{Character, World};
-use familiar_engine::{Engine, Output, Status, Target, WebViewCommand};
+use familiar_engine::{EditRequest, Engine, KeyChord, Output, Status, Target, WebViewCommand};
 
 use crate::app::AppState;
+use crate::find_bar::FindBar;
 use crate::input::InputView;
 use crate::media_player::MediaPlayer;
 use crate::output::OutputView;
@@ -45,6 +46,8 @@ pub struct SessionView {
     pub root: gtk::Paned,
     pub output: Rc<OutputView>,
     pub input: Rc<InputView>,
+    /// Finding text in the output (Ctrl+F).
+    find_bar: Rc<FindBar>,
     state: Rc<AppState>,
     engine: Rc<RefCell<Engine>>,
     page: RefCell<Option<adw::TabPage>>,
@@ -74,6 +77,9 @@ pub struct SessionView {
     avatars: RefCell<HashMap<String, Vec<(glib::WeakRef<gtk::Picture>, AvatarLink)>>>,
     /// Open code editors by reference ("" for the latest scratch editor), for compile errors.
     editors: RefCell<HashMap<String, Weak<crate::code_editor::CodeEditor>>>,
+    /// The last program sent from an editor, and its first compile error (line, message), to
+    /// reopen it at (Alt+E).
+    last_edit: RefCell<Option<(EditRequest, Option<(u32, String)>)>>,
     /// The pending script timer and when it fires.
     timer: RefCell<Option<(glib::SourceId, Instant)>>,
     #[cfg(feature = "webview")]
@@ -114,7 +120,9 @@ impl SessionView {
             .css_classes(["caption", "dim-label"])
             .visible(false)
             .build();
+        let find_bar = FindBar::new(output.clone());
         let main = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        main.append(&find_bar.bar);
         main.append(&output.scrolled);
         main.append(&status);
         main.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
@@ -134,6 +142,7 @@ impl SessionView {
             root,
             output,
             input,
+            find_bar,
             state,
             engine: Rc::new(RefCell::new(engine)),
             page: RefCell::default(),
@@ -148,6 +157,7 @@ impl SessionView {
             media: Rc::default(),
             timer: RefCell::default(),
             editors: RefCell::default(),
+            last_edit: RefCell::default(),
             map: RefCell::default(),
             puppets: RefCell::default(),
             on_open_tab: RefCell::default(),
@@ -189,7 +199,7 @@ impl SessionView {
     }
 
     /// Adds the map tab if needed, and switches to it if `select`.
-    fn show_map(self: &Rc<Self>, select: bool) {
+    pub fn show_map(self: &Rc<Self>, select: bool) {
         let existing = self.map.borrow().clone();
         let view = match existing {
             Some(view) => view,
@@ -248,6 +258,17 @@ impl SessionView {
         *timer = Some((source, deadline));
     }
 
+    /// Imports a BeipMU .atlas map into this world's map.
+    pub fn import_map(self: &Rc<Self>, path: &std::path::Path) {
+        let out = self.engine.borrow_mut().map_import(path);
+        self.apply(out);
+    }
+
+    /// Restarts scripting, as /script reload does.
+    pub fn restart_scripts(self: &Rc<Self>) {
+        self.apply(vec![Output::ReloadScripts]);
+    }
+
     pub fn title(&self) -> String {
         self.engine.borrow().title()
     }
@@ -270,6 +291,21 @@ impl SessionView {
 
     pub fn is_logging(&self) -> bool {
         self.engine.borrow().is_logging()
+    }
+
+    /// The world this tab is connected to, as it was when the tab opened.
+    pub fn world(&self) -> World {
+        self.engine.borrow().world().clone()
+    }
+
+    /// Opens the find bar over the output.
+    pub fn find(&self) {
+        self.find_bar.open();
+    }
+
+    /// The previous (`backward`) or next match in the output.
+    pub fn find_again(&self, backward: bool) {
+        self.find_bar.find(backward);
     }
 
     pub fn scopes(&self) -> Vec<familiar_config::Scope> {
@@ -300,7 +336,16 @@ impl SessionView {
         });
 
         let weak = Rc::downgrade(self);
-        self.input.connect_key(move |key, state| weak.upgrade().is_some_and(|this| this.run_macro(key, state)));
+        self.input.connect_key(move |chord| weak.upgrade().is_some_and(|this| this.run_macro(chord)));
+
+        // Closing the find bar goes back to the live output.
+        let weak = Rc::downgrade(self);
+        self.find_bar.connect_close(move || {
+            if let Some(this) = weak.upgrade() {
+                this.output.scroll_to_end();
+                this.input.grab_focus();
+            }
+        });
 
         let weak = Rc::downgrade(self);
         self.output.connect_link(move |uri| {
@@ -312,9 +357,9 @@ impl SessionView {
         // Typing while the output has focus goes to the input. Macros work there too.
         let keys = gtk::EventControllerKey::new();
         let weak = Rc::downgrade(self);
-        keys.connect_key_pressed(move |_, key, _, state| {
+        keys.connect_key_pressed(move |controller, key, keycode, state| {
             let Some(this) = weak.upgrade() else { return glib::Propagation::Proceed };
-            if this.run_macro(key, state) {
+            if crate::keys::chord(controller, key, keycode, state).is_some_and(|chord| this.run_macro(&chord)) {
                 return glib::Propagation::Stop;
             }
             if state.intersects(gtk::gdk::ModifierType::CONTROL_MASK | gtk::gdk::ModifierType::ALT_MASK) {
@@ -344,9 +389,8 @@ impl SessionView {
         });
     }
 
-    fn run_macro(self: &Rc<Self>, key: gtk::gdk::Key, state: gtk::gdk::ModifierType) -> bool {
-        let Some(chord) = crate::keys::chord(key, state) else { return false };
-        let Some(out) = self.engine.borrow_mut().run_macro(&chord) else { return false };
+    fn run_macro(self: &Rc<Self>, chord: &KeyChord) -> bool {
+        let Some(out) = self.engine.borrow_mut().run_macro(chord) else { return false };
         self.output.scroll_to_end();
         self.apply(out);
         true
@@ -556,6 +600,11 @@ impl SessionView {
                 }
                 Output::Edit(request) => self.open_editor(request),
                 Output::CompileError { reference, line, message } => {
+                    if let Some((sent, first @ None)) = &mut *self.last_edit.borrow_mut()
+                        && sent.reference == reference
+                    {
+                        *first = Some((line, message.clone()));
+                    }
                     let editor = self.editors.borrow().get(&reference).and_then(Weak::upgrade);
                     if let Some(editor) = editor {
                         editor.add_error(line, &message);
@@ -597,7 +646,7 @@ impl SessionView {
         view
     }
 
-    fn open_editor(self: &Rc<Self>, request: familiar_engine::EditRequest) {
+    fn open_editor(self: &Rc<Self>, request: EditRequest) {
         // The server sending the same program again reuses its editor.
         if !request.is_local() {
             let existing = self.editors.borrow().get(&request.reference).and_then(Weak::upgrade);
@@ -609,11 +658,36 @@ impl SessionView {
                 return;
             }
         }
+        self.new_editor(&request);
+    }
+
+    /// Reopens the last program sent from an editor, at its first compile error. False if
+    /// nothing has been sent from one in this tab.
+    pub fn reopen_editor(self: &Rc<Self>) -> bool {
+        let Some((request, error)) = self.last_edit.borrow().clone() else { return false };
+        let open = self.editors.borrow().get(&request.reference).and_then(Weak::upgrade);
+        let editor = match open {
+            Some(editor) => {
+                editor.present();
+                editor
+            }
+            None => self.new_editor(&request),
+        };
+        if let Some((line, message)) = error {
+            editor.clear_errors();
+            editor.add_error(line, &message);
+        }
+        true
+    }
+
+    fn new_editor(self: &Rc<Self>, request: &EditRequest) -> Rc<crate::code_editor::CodeEditor> {
         let parent = self.root.root().and_downcast::<gtk::Window>();
         let weak = Rc::downgrade(self);
         let sent = request.clone();
-        let editor = crate::code_editor::CodeEditor::open(parent.as_ref(), &request, move |text| {
+        let editor = crate::code_editor::CodeEditor::open(parent.as_ref(), self.state.clone(), request, move |text| {
             if let Some(this) = weak.upgrade() {
+                // Remembered so it can be reopened at its first compile error.
+                *this.last_edit.borrow_mut() = Some((EditRequest { content: text.clone(), ..sent.clone() }, None));
                 let out = this.engine.borrow_mut().save_edit(&sent, &text);
                 this.apply(out);
             }
@@ -625,6 +699,7 @@ impl SessionView {
         editor.window.connect_destroy(move |_| {
             keep.borrow_mut().take();
         });
+        editor
     }
 
     pub fn connect_open_tab<F: Fn(&gtk::Widget, &str) -> adw::TabPage + 'static>(&self, f: F) {
@@ -775,6 +850,28 @@ impl SessionView {
                 self.root.set_position(width * 2 / 3);
             }
         }
+    }
+
+    /// Shows or hides the side dock. False if there's nothing in it to show.
+    pub fn toggle_side(&self) -> bool {
+        if self.side.n_pages() == 0 {
+            return false;
+        }
+        self.side.set_visible(!self.side.is_visible());
+        true
+    }
+
+    /// Switches the side dock to its next (`step` 1) or previous (-1) tab, wrapping around,
+    /// and shows the dock if it was hidden. False if there's nothing in it.
+    pub fn cycle_side(&self, step: i32) -> bool {
+        let n = self.side.n_pages() as i32;
+        if n == 0 {
+            return false;
+        }
+        let at = self.side.current_page().map_or(0, |p| p as i32);
+        self.side.set_current_page(Some(((at + step).rem_euclid(n)) as u32));
+        self.side.set_visible(true);
+        true
     }
 
     /// Shows a tab of the side dock.

@@ -413,8 +413,15 @@ struct CharacterEditor: View {
     }
 }
 
+/// Which tab of the Settings window is showing ("general" or "keyboard").
+final class SettingsPage: ObservableObject {
+    static let shared = SettingsPage()
+    @Published var tab = "general"
+}
+
 struct PreferencesView: View {
     @ObservedObject private var app = AppState.shared
+    @ObservedObject private var page = SettingsPage.shared
 
     /// A binding to one setting that saves as it changes.
     private func setting<T>(_ key: String, _ get: @escaping (JSON) -> T, _ set: @escaping (T) -> JSON) -> Binding<T> {
@@ -425,6 +432,15 @@ struct PreferencesView: View {
     private func number(_ key: String) -> Binding<Int> { setting(key, { $0.int }, { .int(max($0, 0)) }) }
 
     var body: some View {
+        TabView(selection: $page.tab) {
+            general.tabItem { Text("General") }.tag("general")
+            KeyboardSettings().tabItem { Text("Keyboard") }.tag("keyboard")
+        }
+        .padding(12)
+        .frame(width: 560, height: 620)
+    }
+
+    private var general: some View {
         Form {
             Section("Appearance") {
                 FontPicker(title: "Font", description: setting("font", { $0.string }, { .string($0) }))
@@ -451,6 +467,5 @@ struct PreferencesView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 480, height: 520)
     }
 }

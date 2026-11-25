@@ -51,7 +51,8 @@ public partial class App : Application
             timer.Tick += (_, _) => window.OpenInPlace(world, null);
             timer.Start();
         }
-        if (Environment.GetEnvironmentVariable("FAMILIAR_TEST_SETTINGS") is not null) window.ShowSettings();
+        // FAMILIAR_TEST_SETTINGS=keyboard opens them at the keyboard shortcuts.
+        if (Environment.GetEnvironmentVariable("FAMILIAR_TEST_SETTINGS") is { } settings) window.ShowSettings(keyboard: settings == "keyboard");
         var rules = Environment.GetEnvironmentVariable("FAMILIAR_TEST_RULES") is not null ? window.ShowRules() : null;
         // FAMILIAR_TEST_EDIT opens an editor: "trigger" (with FAMILIAR_TEST_RULES) or "world".
         var edit = Environment.GetEnvironmentVariable("FAMILIAR_TEST_EDIT");
@@ -66,6 +67,8 @@ public partial class App : Application
                 new CodeEditorWindow(shown.Session, Json.Args(("reference", "test"), ("name", "#62:look_self"), ("kind", "local"), ("content", code), ("language", "moo"))).Activate();
             }
             if (edit == "world" && AppState.Worlds.FirstOrDefault() is { } first) await WorldDialog.Edit(window.Content.XamlRoot, first, false);
+            // FAMILIAR_TEST_RECORD (with FAMILIAR_TEST_SETTINGS=keyboard): records a key for this action, as its + button does.
+            if (Environment.GetEnvironmentVariable("FAMILIAR_TEST_RECORD") is { } record) window.CurrentSettings?.Record(record);
         });
         var commands = (Environment.GetEnvironmentVariable("FAMILIAR_TEST_INPUT") ?? "").Split('\n', StringSplitOptions.RemoveEmptyEntries);
         var queue = window.DispatcherQueue;
@@ -89,7 +92,7 @@ public partial class App : Application
             {
                 Directory.CreateDirectory(folder);
                 var session = window.CurrentView?.Session;
-                File.WriteAllText(Path.Combine(folder, "output.txt"), $"title: {session?.Title}\nstate: {session?.State}\nview: {window.CurrentView?.Output.Debug}\nmap: {window.CurrentView?.MapDebug}\ninput: [{window.CurrentView?.Input.Text}] focused: {Microsoft.UI.Xaml.Input.FocusManager.GetFocusedElement(window.Content.XamlRoot)?.GetType().Name} inputHasFocus: {window.CurrentView?.Input.HasFocus} placeholder: {(Microsoft.UI.Xaml.Input.FocusManager.GetFocusedElement(window.Content.XamlRoot) as Microsoft.UI.Xaml.Controls.TextBox)?.PlaceholderText}\n---\n{session?.Output.Text}\n");
+                File.WriteAllText(Path.Combine(folder, "output.txt"), $"title: {session?.Title}\nstate: {session?.State}\nview: {window.CurrentView?.Output.Debug}\nmap: {window.CurrentView?.MapDebug}\ninput: [{window.CurrentView?.Input.Text}] focused: {Microsoft.UI.Xaml.Input.FocusManager.GetFocusedElement(window.Content.XamlRoot)?.GetType().Name} inputHasFocus: {window.CurrentView?.Input.HasFocus} placeholder: {(Microsoft.UI.Xaml.Input.FocusManager.GetFocusedElement(window.Content.XamlRoot) as Microsoft.UI.Xaml.Controls.TextBox)?.PlaceholderText} recording: {Shortcuts.Recording}\n---\n{session?.Output.Text}\n");
             });
         });
         return true;

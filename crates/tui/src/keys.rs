@@ -1,6 +1,63 @@
 //! Smoothing over differences in how terminals report keys.
 
+use familiar_engine::KeyChord;
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+
+/// Punctuation keys and GDK's names for them, which shortcuts and macros are written with.
+const PUNCTUATION: &[(char, &str)] = &[
+    (',', "comma"),
+    ('.', "period"),
+    ('/', "slash"),
+    (';', "semicolon"),
+    ('\'', "apostrophe"),
+    ('[', "bracketleft"),
+    (']', "bracketright"),
+    ('\\', "backslash"),
+    ('-', "minus"),
+    ('=', "equal"),
+    ('`', "grave"),
+    ('?', "question"),
+    ('+', "plus"),
+];
+
+/// GDK's name for a punctuation key ("bracketright" for `]`), or "space".
+pub fn punctuation_name(c: char) -> Option<&'static str> {
+    if c == ' ' {
+        return Some("space");
+    }
+    PUNCTUATION.iter().find(|(p, _)| *p == c).map(|(_, name)| *name)
+}
+
+/// A key as people read it: "Alt+→", "Ctrl+PgDn", "Alt+]".
+pub fn pretty(chord: &KeyChord) -> String {
+    let name = match chord.key.as_str() {
+        "Left" => "←".to_string(),
+        "Right" => "→".to_string(),
+        "Up" => "↑".to_string(),
+        "Down" => "↓".to_string(),
+        "Page_Up" => "PgUp".to_string(),
+        "Page_Down" => "PgDn".to_string(),
+        "Return" => "Enter".to_string(),
+        "Escape" => "Esc".to_string(),
+        "BackSpace" => "Backspace".to_string(),
+        "space" => "Space".to_string(),
+        key => PUNCTUATION.iter().find(|(_, name)| *name == key).map_or_else(|| key.to_string(), |(c, _)| c.to_string()),
+    };
+    KeyChord { key: name, ..chord.clone() }.to_string()
+}
+
+/// A key written as in the config ("Alt+bracketright"), the way people read it.
+pub fn pretty_text(key: &str) -> String {
+    KeyChord::parse(key).map_or_else(|| key.to_string(), |c| pretty(&c))
+}
+
+/// A key as short as it can be written, for the status line: "^K" for Ctrl and a letter.
+pub fn compact(chord: &KeyChord) -> String {
+    if chord.ctrl && !chord.alt && !chord.shift && !chord.cmd && chord.key.chars().count() == 1 {
+        return format!("^{}", chord.key);
+    }
+    pretty(chord)
+}
 
 /// The fewest keys arriving at once that can count as a paste. Nobody types this many between
 /// two reads of the keyboard.
@@ -65,6 +122,19 @@ mod tests {
 
     fn keys(text: &str) -> Vec<Event> {
         text.chars().map(|c| press(if c == '\n' { KeyCode::Enter } else { KeyCode::Char(c) }, KeyModifiers::NONE)).collect()
+    }
+
+    #[test]
+    fn keys_are_shown_the_way_people_read_them() {
+        let show = |text: &str| pretty(&KeyChord::parse(text).unwrap());
+        assert_eq!(show("Alt+Right"), "Alt+→");
+        assert_eq!(show("Ctrl+Page_Down"), "Ctrl+PgDn");
+        assert_eq!(show("Alt+bracketright"), "Alt+]");
+        assert_eq!(show("Shift+F3"), "Shift+F3");
+        assert_eq!(compact(&KeyChord::parse("Ctrl+K").unwrap()), "^K");
+        assert_eq!(compact(&KeyChord::parse("Ctrl+Shift+K").unwrap()), "Ctrl+Shift+K");
+        assert_eq!(punctuation_name(']'), Some("bracketright"));
+        assert_eq!(punctuation_name('a'), None);
     }
 
     #[test]

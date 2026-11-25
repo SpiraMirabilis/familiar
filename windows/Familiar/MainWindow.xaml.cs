@@ -14,6 +14,10 @@ public sealed partial class MainWindow : Window
     [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool SetForegroundWindow(nint window);
 
+    [LibraryImport("user32", EntryPoint = "PostMessageW")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool PostMessage(nint window, uint message, nint wParam, nint lParam);
+
     private bool active = true;
     private bool closing;
 
@@ -49,42 +53,16 @@ public sealed partial class MainWindow : Window
         };
         AppWindow.Closing += OnClosing;
 
-        Accelerator(VirtualKey.O, VirtualKeyModifiers.Control, () => OnConnect(this, new RoutedEventArgs()));
-        Accelerator(VirtualKey.R, VirtualKeyModifiers.Control, () => Showing?.Session.Connect());
-        Accelerator(VirtualKey.D, VirtualKeyModifiers.Control | VirtualKeyModifiers.Shift, () => Showing?.Session.Disconnect());
-        Accelerator(VirtualKey.L, VirtualKeyModifiers.Control | VirtualKeyModifiers.Shift, () => Showing?.Session.Output.Clear());
-        Accelerator(VirtualKey.G, VirtualKeyModifiers.Control | VirtualKeyModifiers.Shift, () => Showing?.Session.ToggleLog());
-        Accelerator(VirtualKey.W, VirtualKeyModifiers.Control, () =>
-        {
-            if (Tabs.SelectedItem is TabViewItem tab) CloseTab(tab);
-        });
-        Accelerator((VirtualKey)190, VirtualKeyModifiers.Control, () => Showing?.Session.StopSounds());
-        Accelerator((VirtualKey)188, VirtualKeyModifiers.Control, () => OnSettings(this, new RoutedEventArgs()));
-        Accelerator(VirtualKey.T, VirtualKeyModifiers.Control, () => OnRules(this, new RoutedEventArgs()));
-        Accelerator(VirtualKey.F, VirtualKeyModifiers.Control, () => ShownOutput?.ShowFind());
-        Accelerator(VirtualKey.Tab, VirtualKeyModifiers.Control, () => NextTab(1));
-        Accelerator(VirtualKey.Tab, VirtualKeyModifiers.Control | VirtualKeyModifiers.Shift, () => NextTab(-1));
-        // Alt+← and → switch tabs, as in the terminal client. They're caught on the way down,
-        // before the tab strip (which moves between tabs' buttons with the arrow keys) or
-        // anything else can take them; unused, Windows only beeps at them.
+        // Every shortcut goes through the keymap (keymap.rs), before keyboard macros. They're
+        // caught on the way down, before the tab strip (which moves between tabs' buttons with
+        // the arrow keys) or the input box can take them.
         Root.PreviewKeyDown += (_, e) =>
         {
-            if (e.Key is not (VirtualKey.Left or VirtualKey.Right) || !(Keys.Alt || e.KeyStatus.IsMenuKeyDown) || Keys.Ctrl || Keys.Shift) return;
-            NextTab(e.Key == VirtualKey.Right ? 1 : -1);
+            if (Shortcuts.Match("window", e) is not { } action) return;
             e.Handled = true;
+            Run(action);
         };
         OpenConnect();
-    }
-
-    private void Accelerator(VirtualKey key, VirtualKeyModifiers modifiers, Action action)
-    {
-        var accelerator = new KeyboardAccelerator { Key = key, Modifiers = modifiers };
-        accelerator.Invoked += (_, e) =>
-        {
-            action();
-            e.Handled = true;
-        };
-        Root.KeyboardAccelerators.Add(accelerator);
     }
 
     /// <summary>The output of the tab that's showing: a session's or a puppet's.</summary>
@@ -96,6 +74,14 @@ public sealed partial class MainWindow : Window
     };
 
     private SessionView? Showing => (Tabs.SelectedItem as TabViewItem)?.Content as SessionView;
+
+    /// <summary>The input box of the tab that's showing: a session's or a puppet's.</summary>
+    private InputBox? ShownInput => (Tabs.SelectedItem as TabViewItem)?.Content switch
+    {
+        SessionView view => view.Input,
+        PuppetView puppet => puppet.Input,
+        _ => null,
+    };
 
     private IEnumerable<SessionView> Views => Tabs.TabItems.OfType<TabViewItem>().Select(t => t.Content).OfType<SessionView>();
 
@@ -290,60 +276,174 @@ public sealed partial class MainWindow : Window
         }
     }
 
+    // MARK: Actions
+
+    /// <summary>Runs one of the client's commands (an action in keymap.rs), from a key, the
+    /// menu or the command palette.</summary>
+    internal async void Run(string action)
+    {
+        var view = Showing;
+        var session = view?.Session;
+        switch (action)
+        {
+            case "connect": OpenConnect(); break;
+            case "new-world": await WorldDialog.Edit(Root.XamlRoot, NewWorld(), isNew: true); break;
+            case "edit-world": await EditWorld(session); break;
+            case "reconnect": session?.Connect(); break;
+            case "disconnect": session?.Disconnect(); break;
+            case "close-tab":
+                if (Tabs.SelectedItem is TabViewItem tab) CloseTab(tab);
+                break;
+            case "next-tab": NextTab(1); break;
+            case "prev-tab": NextTab(-1); break;
+            case ['t', 'a', 'b', '-', var digit] when digit is >= '1' and <= '9':
+                if (digit - '1' < Tabs.TabItems.Count) Tabs.SelectedIndex = digit - '1';
+                break;
+            case "find": ShownOutput?.ShowFind(); break;
+            case "find-next": ShownOutput?.FindAgain(1); break;
+            case "find-previous": ShownOutput?.FindAgain(-1); break;
+            case "clear": session?.Output.Clear(); break;
+            case "toggle-log": session?.ToggleLog(); break;
+            case "open-logs": OpenFolder(AppState.Start.Str("log_dir")); break;
+            case "toggle-sidebar": view?.ToggleDock(); break;
+            case "next-panel": view?.StepPanel(1); break;
+            case "prev-panel": view?.StepPanel(-1); break;
+            case "show-map": view?.ShowMap(select: true); break;
+            case "palette": await ShowPalette(); break;
+            case "history-search": await SearchHistory(); break;
+            case "rules": OnRules(); break;
+            case "reopen-editor": view?.ReopenEditor(); break;
+            case "restart-scripts": session?.RestartScripts(); break;
+            case "stop-speech":
+                if (session is not null) session.StopSounds();
+                else Core.Send("speech.stop");
+                break;
+            case "import-beipmu": await SettingsPage.ImportBeipMU(Root.XamlRoot); break;
+            case "import-map": await ImportMap(view); break;
+            case "preferences": ShowSettings(); break;
+            case "keyboard": ShowSettings(keyboard: true); break;
+            case "open-settings-folder": OpenFolder(AppState.Start.Str("config_dir")); break;
+            case "help": Session.OpenUri("https://github.com/SpiraMirabilis/familiar#readme"); break;
+            case "about": await ShowAbout(); break;
+            // As the close button does, so open worlds are asked about first.
+            case "quit": PostMessage(WinRT.Interop.WindowNative.GetWindowHandle(this), 0x0010, 0, 0); break;
+        }
+    }
+
+    private static JsonNode NewWorld() => AppState.Defaults.Get("world")?.DeepClone() ?? new JsonObject();
+
+    /// <summary>The world of the tab that's showing; one that isn't saved (a quick connection) is
+    /// offered as a new one to save.</summary>
+    private async Task EditWorld(Session? session)
+    {
+        if (session is null) await WorldDialog.Edit(Root.XamlRoot, NewWorld(), isNew: true);
+        else if (session.Info.Bool("saved") && AppState.World(session.WorldName) is { } saved) await WorldDialog.Edit(Root.XamlRoot, saved, isNew: false);
+        else await WorldDialog.Edit(Root.XamlRoot, session.Info.Get("world")?.DeepClone() ?? NewWorld(), isNew: true);
+    }
+
+    private async Task ImportMap(SessionView? view)
+    {
+        if (view is null)
+        {
+            await Alert("Open a world first", "A map belongs to a world: connect to it, then import its map.");
+            return;
+        }
+        if (await Form.PickFile(".atlas") is not { } path) return;
+        view.Session.Call("map.import", Json.Args(("path", path)));
+        view.ShowMap(select: true);
+    }
+
+    private static void OpenFolder(string folder)
+    {
+        Directory.CreateDirectory(folder);
+        Session.OpenUri(folder);
+    }
+
+    /// <summary>The app's own client commands, besides the engine's.</summary>
+    private static readonly (string Usage, string About)[] AppCommands =
+    [
+        ("/agent [<name>|stop|list]", "run an LLM agent (claude, codex, agy, grok) beside the world, with the world's tools"),
+    ];
+
+    /// <summary>Everything the app can do, the saved worlds, the tabs and the client commands, to search.</summary>
+    private async Task ShowPalette()
+    {
+        var items = new List<Picker.Item>();
+        foreach (var action in Shortcuts.Actions)
+        {
+            var id = action.Str("id");
+            // Tab N is under Tabs below, for the tabs there are.
+            if (action.Str("scope") != "window" || id == "palette" || id.StartsWith("tab-")) continue;
+            items.Add(new("Commands", action.Str("label"), Shortcuts.Label(id), () => Run(id)));
+        }
+        foreach (var world in AppState.Worlds)
+        {
+            var address = $"{world.Str("host")}:{world.Int("port")}";
+            var characters = world.Arr("character");
+            if (characters.Count == 0) items.Add(new("Worlds", world.Str("name"), address, () => OpenInPlace(world!, null)));
+            foreach (var character in characters)
+            {
+                var name = character.Str("name");
+                items.Add(new("Worlds", $"{name} @ {world.Str("name")}", address, () => OpenInPlace(world!, name)));
+            }
+        }
+        foreach (var (tab, i) in Tabs.TabItems.OfType<TabViewItem>().Select((t, i) => (t, i)))
+        {
+            items.Add(new("Tabs", $"Switch to {tab.Header}", i < 9 ? Shortcuts.Label($"tab-{i + 1}") : "", () => Tabs.SelectedItem = tab));
+        }
+        // [usage, description] pairs.
+        static string At(JsonNode? pair, int i) => pair.Items().ElementAtOrDefault(i) is JsonValue v && v.TryGetValue<string>(out var text) ? text : "";
+        var commands = AppState.Start.Arr("commands").Select(c => (Usage: At(c, 0), About: At(c, 1)));
+        foreach (var (usage, about) in commands.Concat(AppCommands))
+        {
+            items.Add(new("Client commands", usage, about, () => InsertCommand(usage)));
+        }
+        await Picker.Show(Root.XamlRoot, "Search commands, worlds and tabs", items, "Nothing matches.");
+    }
+
+    /// <summary>A client command in the input box, ready for its arguments: "/map " for
+    /// "/map [go|here] ...", as the terminal client's palette does.</summary>
+    private void InsertCommand(string usage)
+    {
+        if (ShownInput is not { } input) return;
+        var literal = new List<string>();
+        var more = false;
+        foreach (var (token, i) in usage.Split(' ').Select((t, i) => (t, i)))
+        {
+            if (i > 0 && (token.IndexOfAny(['<', '[', '|']) >= 0 || token == "..."))
+            {
+                more = true;
+                break;
+            }
+            var cut = token.IndexOf('<') is var at and >= 0 ? token[..at] : token;
+            literal.Add(cut);
+            if (cut.Length < token.Length) break;
+        }
+        input.Text = string.Join(' ', literal) + (more ? " " : "");
+        input.FocusInput();
+    }
+
+    /// <summary>Searches what was typed in this tab, newest first; the one chosen goes in the
+    /// input box, to send or change.</summary>
+    private async Task SearchHistory()
+    {
+        if (ShownInput is not { } input) return;
+        var items = input.PastCommands.Reverse().Distinct().Select(line => new Picker.Item("History", line.Replace('\n', '⏎'), "", () =>
+        {
+            input.Text = line;
+            input.FocusInput();
+        })).ToList();
+        await Picker.Show(Root.XamlRoot, "Search what you’ve typed", items, "Nothing typed here yet.");
+        input.FocusInput();
+    }
+
     // MARK: The menu
 
     private void OnAddTab(TabView sender, object args) => OpenConnect();
-    private void OnConnect(object sender, RoutedEventArgs e) => OpenConnect();
 
-    private void OnSettings(object sender, RoutedEventArgs e)
+    private void OnMenuItem(object sender, RoutedEventArgs e)
     {
-        if (Tabs.TabItems.OfType<TabViewItem>().FirstOrDefault(t => t.Content is SettingsPage) is not { } tab)
-        {
-            tab = new TabViewItem { Header = "Settings", IconSource = new FontIconSource { Glyph = "\uE713" }, Content = new SettingsPage() };
-            Tabs.TabItems.Add(tab);
-        }
-        Tabs.SelectedItem = tab;
-    }
-
-    private void OnRules(object sender, RoutedEventArgs e)
-    {
-        if (Tabs.TabItems.OfType<TabViewItem>().FirstOrDefault(t => t.Content is RulesPage) is not { } tab)
-        {
-            // It opens on the rules of the world being looked at.
-            var session = Showing?.Session;
-            var page = new RulesPage(session?.Info.Bool("saved") == true ? session.WorldName : null, session?.Info.OptStr("character"));
-            tab = new TabViewItem { Header = "Triggers, Aliases & Macros", IconSource = new FontIconSource { Glyph = "\uE945" }, Content = page };
-            Tabs.TabItems.Add(tab);
-        }
-        Tabs.SelectedItem = tab;
-    }
-
-    private async void OnImport(object sender, RoutedEventArgs e) => await SettingsPage.ImportBeipMU(Root.XamlRoot);
-
-    private async void OnShortcuts(object sender, RoutedEventArgs e)
-    {
-        (string Keys, string What)[] shortcuts =
-        [
-            ("Ctrl+O", "Connect to a world"), ("Ctrl+R", "Reconnect"), ("Ctrl+Shift+D", "Disconnect"), ("Ctrl+W", "Close the tab"),
-            ("Ctrl+Tab", "Next tab"), ("Ctrl+F", "Find in the output"), ("Ctrl+Shift+L", "Clear the output"), ("Ctrl+Shift+G", "Log to a file"), ("Ctrl+.", "Stop speaking"),
-            ("Ctrl+T", "Triggers, aliases and macros"), ("Ctrl+,", "Settings"), ("Up, Down", "Earlier and later commands"), ("Shift+Enter", "A new line in the input"),
-            ("Page Up, Page Down", "Scroll the output"), ("Escape", "Clear the input"),
-        ];
-        var grid = new Grid { ColumnSpacing = 24, RowSpacing = 8, MinWidth = 360 };
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        foreach (var (keys, what) in shortcuts)
-        {
-            grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-            var key = new TextBlock { Text = keys, Style = Form.Style("BodyStrongTextBlockStyle") };
-            var text = new TextBlock { Text = what };
-            Grid.SetRow(key, grid.RowDefinitions.Count - 1);
-            Grid.SetRow(text, grid.RowDefinitions.Count - 1);
-            Grid.SetColumn(text, 1);
-            grid.Children.Add(key);
-            grid.Children.Add(text);
-        }
-        await Form.Show(Form.Dialog(Root.XamlRoot, "Keyboard Shortcuts", grid, close: "Close"));
+        if (sender is FrameworkElement { Tag: string action }) Run(action);
     }
 
     private void OnMenuOpening(object sender, object e)
@@ -355,37 +455,45 @@ public sealed partial class MainWindow : Window
         FindItem.IsEnabled = ShownOutput is not null;
         LogItem.IsEnabled = session is not null;
         LogItem.IsChecked = session?.Logging == true;
+        // The keys as they are now: the user may have changed them.
+        foreach (var item in ((MenuFlyout)sender).Items.OfType<MenuFlyoutItem>())
+        {
+            if (item.Tag is string action) item.KeyboardAcceleratorTextOverride = Shortcuts.Label(action);
+        }
     }
 
-    private void OnReconnect(object sender, RoutedEventArgs e) => Showing?.Session.Connect();
-    private void OnDisconnect(object sender, RoutedEventArgs e) => Showing?.Session.Disconnect();
-    private void OnFind(object sender, RoutedEventArgs e) => ShownOutput?.ShowFind();
-    private void OnClear(object sender, RoutedEventArgs e) => Showing?.Session.Output.Clear();
-    private void OnToggleLog(object sender, RoutedEventArgs e) => Showing?.Session.ToggleLog();
-    private void OnStopSpeaking(object sender, RoutedEventArgs e) => Core.Send("speech.stop");
-
-    private void OnOpenLogFolder(object sender, RoutedEventArgs e)
+    /// <summary>The settings tab, at the keyboard shortcuts if `keyboard`.</summary>
+    internal void ShowSettings(bool keyboard = false)
     {
-        var folder = AppState.Start.Str("log_dir");
-        Directory.CreateDirectory(folder);
-        Session.OpenUri(folder);
+        if (Tabs.TabItems.OfType<TabViewItem>().FirstOrDefault(t => t.Content is SettingsPage) is not { } tab)
+        {
+            tab = new TabViewItem { Header = "Settings", IconSource = new FontIconSource { Glyph = "" }, Content = new SettingsPage() };
+            Tabs.TabItems.Add(tab);
+        }
+        Tabs.SelectedItem = tab;
+        if (keyboard) (tab.Content as SettingsPage)?.ShowKeyboard();
     }
 
-    private async void OnAbout(object sender, RoutedEventArgs e)
+    private void OnRules()
+    {
+        if (Tabs.TabItems.OfType<TabViewItem>().FirstOrDefault(t => t.Content is RulesPage) is not { } tab)
+        {
+            // It opens on the rules of the world being looked at.
+            var session = Showing?.Session;
+            var page = new RulesPage(session?.Info.Bool("saved") == true ? session.WorldName : null, session?.Info.OptStr("character"));
+            tab = new TabViewItem { Header = "Triggers, Aliases & Macros", IconSource = new FontIconSource { Glyph = "" }, Content = page };
+            Tabs.TabItems.Add(tab);
+        }
+        Tabs.SelectedItem = tab;
+    }
+
+    private async Task ShowAbout()
     {
         var panel = new StackPanel { Spacing = 4 };
         panel.Children.Add(new TextBlock { Text = $"Version {AppState.Start.Str("version")}" });
         panel.Children.Add(new TextBlock { Text = "A client for MUDs, MUSHes, MUCKs and MOOs.", TextWrapping = TextWrapping.Wrap });
         panel.Children.Add(new HyperlinkButton { Content = "github.com/SpiraMirabilis/familiar", NavigateUri = new Uri("https://github.com/SpiraMirabilis/familiar"), Padding = new Thickness(0), Margin = new Thickness(0, 8, 0, 0) });
-        var dialog = new ContentDialog { XamlRoot = Root.XamlRoot, Title = "Familiar", Content = panel, CloseButtonText = "Close", DefaultButton = ContentDialogButton.Close };
-        try
-        {
-            await dialog.ShowAsync();
-        }
-        catch (Exception)
-        {
-            // Another dialog is already open.
-        }
+        await Form.Show(new ContentDialog { XamlRoot = Root.XamlRoot, Title = "Familiar", Content = panel, CloseButtonText = "Close", DefaultButton = ContentDialogButton.Close });
     }
 
     internal Task Alert(string title, string detail) => AppState.Alert(Root.XamlRoot, title, detail);
@@ -398,10 +506,10 @@ public sealed partial class MainWindow : Window
 
     internal SessionView? CurrentView => Showing;
     internal OutputView? CurrentOutput => ShownOutput;
-    internal void ShowSettings() => OnSettings(this, new RoutedEventArgs());
+    internal SettingsPage? CurrentSettings => (Tabs.SelectedItem as TabViewItem)?.Content as SettingsPage;
     internal RulesPage? ShowRules()
     {
-        OnRules(this, new RoutedEventArgs());
+        OnRules();
         return (Tabs.SelectedItem as TabViewItem)?.Content as RulesPage;
     }
 }

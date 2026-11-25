@@ -1,5 +1,6 @@
-//! A small fuzzy matcher for pickers: the query's characters must appear in order. Matches at
-//! word starts and runs of consecutive characters score higher.
+//! A small fuzzy matcher for the frontends' pickers (the command palette, history search): the
+//! query's characters must appear in order. Matches at word starts and runs of consecutive
+//! characters score higher.
 
 /// The score and the matched character positions, or None if `query` doesn't match.
 pub fn score(query: &str, text: &str) -> Option<(i64, Vec<usize>)> {

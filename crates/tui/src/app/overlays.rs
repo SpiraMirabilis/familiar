@@ -4,20 +4,8 @@ use super::*;
 
 impl App {
     pub fn open_connect_picker(&mut self) {
-        let mut items = vec![Item { group: "Saved worlds", label: "＋ New world…".into(), detail: "Ctrl+N".into(), action: Action::Run(Cmd::NewWorld) }];
-        for w in &self.config.worlds {
-            if w.characters.is_empty() {
-                items.push(Item { group: "Saved worlds", label: w.name.clone(), detail: format!("{}:{}", w.host, w.port), action: Action::Connect { world: Box::new(w.clone()), character: None } });
-            }
-            for c in &w.characters {
-                items.push(Item {
-                    group: "Saved worlds",
-                    label: format!("{} @ {}", c.name, w.name),
-                    detail: format!("{}:{}", w.host, w.port),
-                    action: Action::Connect { world: Box::new(w.clone()), character: Some(c.name.clone()) },
-                });
-            }
-        }
+        let mut items = vec![Item { group: "Saved worlds", label: "＋ New world…".into(), detail: "Ctrl+N".into(), action: Action::Run("new-world") }];
+        items.extend(self.saved_world_items("Saved worlds"));
         for e in familiar_config::directory::entries() {
             if self.config.worlds.iter().any(|w| w.host.eq_ignore_ascii_case(&e.host) && w.port == e.port) {
                 continue;
@@ -27,11 +15,36 @@ impl App {
         self.overlay = Some(Overlay::Picker(Box::new(Picker::new(PickerKind::Connect, "Connect", items))));
     }
 
-    pub(super) fn open_palette(&mut self) {
-        let mut items: Vec<Item> = PALETTE.iter().map(|(cmd, label, keys)| Item { group: "Commands", label: label.to_string(), detail: keys.to_string(), action: Action::Run(*cmd) }).collect();
-        for (i, tab) in self.tabs.iter().enumerate() {
-            items.push(Item { group: "Tabs", label: format!("Switch to {}", self.tab_title(tab)), detail: format!("Alt+{}", i + 1), action: Action::Insert(format!("\u{0}tab{i}")) });
+    /// Each saved world (with characters, each character) as an item that connects to it.
+    fn saved_world_items(&self, group: &'static str) -> Vec<Item> {
+        let mut items = Vec::new();
+        for w in &self.config.worlds {
+            if w.characters.is_empty() {
+                items.push(Item { group, label: w.name.clone(), detail: format!("{}:{}", w.host, w.port), action: Action::Connect { world: Box::new(w.clone()), character: None } });
+            }
+            for c in &w.characters {
+                items.push(Item {
+                    group,
+                    label: format!("{} @ {}", c.name, w.name),
+                    detail: format!("{}:{}", w.host, w.port),
+                    action: Action::Connect { world: Box::new(w.clone()), character: Some(c.name.clone()) },
+                });
+            }
         }
+        items
+    }
+
+    pub(super) fn open_palette(&mut self) {
+        // Every shortcut's action, with its key. Tab 1 to 9 are under Tabs, by name.
+        let mut items: Vec<Item> = familiar_engine::keymap::actions(Platform::Terminal)
+            .filter(|a| !a.id.starts_with("tab-"))
+            .map(|a| Item { group: "Commands", label: a.label.to_string(), detail: self.key_for(a.id).unwrap_or_default(), action: Action::Run(a.id) })
+            .collect();
+        for (i, tab) in self.tabs.iter().enumerate() {
+            let key = self.key_for(&format!("tab-{}", i + 1)).unwrap_or_default();
+            items.push(Item { group: "Tabs", label: format!("Switch to {}", self.tab_title(tab)), detail: key, action: Action::Insert(format!("\u{0}tab{i}")) });
+        }
+        items.extend(self.saved_world_items("Worlds"));
         for (usage, description) in familiar_engine::COMMANDS.iter().chain(TUI_COMMANDS) {
             items.push(Item { group: "Client commands", label: usage.to_string(), detail: description.to_string(), action: Action::Insert(insert_for(usage)) });
         }
@@ -79,7 +92,7 @@ impl App {
         let item = picker.items.swap_remove(index);
         match item.action {
             Action::Connect { world, character } => self.open_session(*world, character),
-            Action::Run(cmd) => self.run(cmd),
+            Action::Run(id) => self.run(id),
             Action::Insert(text) => {
                 if let Some(i) = text.strip_prefix("\u{0}tab").and_then(|n| n.parse().ok()) {
                     self.switch_to(i);
@@ -87,81 +100,6 @@ impl App {
                     input.set(&text);
                 }
             }
-        }
-    }
-
-    pub fn run(&mut self, cmd: Cmd) {
-        let current = self.current();
-        match cmd {
-            Cmd::Connect => self.open_connect_picker(),
-            Cmd::NewWorld => self.overlay = Some(Overlay::World(Box::new(WorldForm::new(None, None, false)))),
-            Cmd::EditWorld => match current {
-                Some((i, _)) => {
-                    let world = self.sessions[i].engine.world().clone();
-                    let saved = self.config.worlds.iter().find(|w| w.name.eq_ignore_ascii_case(&world.name)).cloned();
-                    let character = self.sessions[i].engine.character_name();
-                    let form = match &saved {
-                        Some(w) => WorldForm::new(Some(w), character.as_deref(), true),
-                        // A quick connection: offer to save it.
-                        None => WorldForm::new(Some(&world), character.as_deref(), false),
-                    };
-                    self.overlay = Some(Overlay::World(Box::new(form)));
-                }
-                None => self.run(Cmd::NewWorld),
-            },
-            Cmd::History => self.open_history(),
-            Cmd::NextTab if !self.tabs.is_empty() => self.switch_to((self.active + 1) % self.tabs.len()),
-            Cmd::PrevTab if !self.tabs.is_empty() => self.switch_to((self.active + self.tabs.len() - 1) % self.tabs.len()),
-            Cmd::CloseTab => self.close_tab(),
-            Cmd::Reconnect => {
-                if let Some((i, _)) = current {
-                    self.connect(i);
-                }
-            }
-            Cmd::Disconnect => {
-                if let Some((i, _)) = current {
-                    self.sessions[i].engine.disconnect();
-                }
-            }
-            Cmd::Clear => {
-                if let Some(b) = self.current_buffer() {
-                    b.clear();
-                }
-            }
-            Cmd::ToggleSidebar => self.sidebar = !self.sidebar,
-            Cmd::NextPanel => {
-                if let Some((i, _)) = current {
-                    let s = &mut self.sessions[i];
-                    let n = s.panels().len().max(1);
-                    s.panel = (s.panel + 1) % n;
-                    self.sidebar = true;
-                }
-            }
-            Cmd::ShowMap => {
-                if let Some((i, _)) = current {
-                    let out = self.sessions[i].engine.submit("/map", false);
-                    self.apply(i, out);
-                }
-            }
-            Cmd::ToggleLog => {
-                if let Some((i, _)) = current {
-                    let out = self.sessions[i].engine.toggle_log();
-                    self.apply(i, out);
-                }
-            }
-            Cmd::EditInput => {
-                if let Some((i, puppet)) = current {
-                    self.edit(External::EditInput { session: self.sessions[i].id, puppet });
-                }
-            }
-            Cmd::EditConfig => self.edit(External::EditConfig),
-            Cmd::EditorFocus => self.toggle_editor_focus(),
-            Cmd::MoveEditor => self.move_editor(),
-            Cmd::Rules => self.open_rules(),
-            Cmd::StopSpeech => self.speaker.stop(),
-            Cmd::Help => self.overlay = Some(Overlay::Help),
-            Cmd::Quit => self.quit = true,
-            Cmd::NextTab | Cmd::PrevTab => {}
         }
     }
 

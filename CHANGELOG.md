@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Every keyboard shortcut can be changed, in every app: Preferences → Keyboard (F1; ⌘⌥/ on a
+  Mac) in the desktop apps, and a key editor (F1 or `/keys`) in the terminal client. A command
+  can have several keys; keys shared with another command or a keyboard macro are marked (the
+  shortcut wins). Changes go in `[settings.keys]`, or `[settings.terminal_keys]` for the
+  terminal client.
+- Every app now has every command, each with a key: a command palette (Ctrl+K or Ctrl+Shift+P;
+  ⇧⌘P) and input history search (Ctrl+Shift+R; ⇧⌘R) in the desktop apps, find in the output in
+  the GTK app and the terminal client, Alt+1…9 for tabs, keys for the side dock and its tabs, the
+  map, editing and adding worlds, restarting scripts, and reopening the last program sent from
+  the editor at its first error (Alt+E). The terminal client gets `/import` for BeipMU settings.
+- Notices about reconnecting name the app's actual Reconnect key.
 - Autologging per character, as in BeipMU: a character can name a log file that it logs to
   whenever it connects, optionally with the date in its name (a new file each day). Set it in
   the Connect dialog, or with `log_file` and `log_date` in `config.toml`.

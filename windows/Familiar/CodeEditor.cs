@@ -77,7 +77,8 @@ internal sealed class CodeEditorWindow : Window
     private string saved = "";
     private bool closing;
 
-    public CodeEditorWindow(Session session, JsonNode request)
+    /// <summary>`error` is one to show once the program is loaded (it's being reopened to fix it).</summary>
+    public CodeEditorWindow(Session session, JsonNode request, (int Line, string Message)? error = null)
     {
         this.session = session;
         this.request = request.DeepClone();
@@ -89,9 +90,9 @@ internal sealed class CodeEditorWindow : Window
         AppWindow.Resize(new Windows.Graphics.SizeInt32((int)(860 * scale), (int)(680 * scale)));
 
         var bar = new CommandBar { DefaultLabelPosition = CommandBarDefaultLabelPosition.Right, HorizontalAlignment = HorizontalAlignment.Left, Background = new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.Transparent) };
-        bar.PrimaryCommands.Add(Command("Send", Symbol.Send, "Ctrl+S", Send));
-        bar.PrimaryCommands.Add(Command("Re-indent", Symbol.AlignLeft, "Ctrl+Shift+I", Reindent));
-        bar.PrimaryCommands.Add(Command("Find", Symbol.Find, "Ctrl+F", ShowFind));
+        bar.PrimaryCommands.Add(Command("Send", Symbol.Send, "editor-send", Send));
+        bar.PrimaryCommands.Add(Command("Re-indent", Symbol.AlignLeft, "editor-reindent", Reindent));
+        bar.PrimaryCommands.Add(Command("Find", Symbol.Find, "editor-find", ShowFind));
         languages = Form.Choice(null, CodeLanguages.All, language, id =>
         {
             language = id;
@@ -110,8 +111,8 @@ internal sealed class CodeEditorWindow : Window
         var previous = new Button { Content = new FontIcon { Glyph = "\uE70E", FontSize = 14 } };
         var next = new Button { Content = new FontIcon { Glyph = "\uE70D", FontSize = 14 } };
         var done = new Button { Content = new FontIcon { Glyph = "\uE711", FontSize = 14 } };
-        ToolTipService.SetToolTip(previous, "Previous (Shift+F3)");
-        ToolTipService.SetToolTip(next, "Next (F3)");
+        ToolTipService.SetToolTip(previous, Shortcuts.Tip("Previous", "editor-find-previous"));
+        ToolTipService.SetToolTip(next, Shortcuts.Tip("Next", "editor-find-next"));
         previous.Click += (_, _) => editor.FindPrevious();
         next.Click += (_, _) => editor.FindNext();
         done.Click += (_, _) => HideFind();
@@ -161,37 +162,40 @@ internal sealed class CodeEditorWindow : Window
         root.Children.Add(errors);
         Content = root;
 
-        Accelerator(root, VirtualKey.S, VirtualKeyModifiers.Control, Send);
-        Accelerator(root, VirtualKey.I, VirtualKeyModifiers.Control | VirtualKeyModifiers.Shift, Reindent);
-        Accelerator(root, VirtualKey.F, VirtualKeyModifiers.Control, ShowFind);
-        Accelerator(root, VirtualKey.F3, VirtualKeyModifiers.None, () => editor.FindNext());
-        Accelerator(root, VirtualKey.F3, VirtualKeyModifiers.Shift, () => editor.FindPrevious());
+        // The editor's shortcuts (scope "editor" in the keymap), caught on the way down so the
+        // text box doesn't take them first.
+        root.PreviewKeyDown += (_, e) =>
+        {
+            Action? act = Shortcuts.Match("editor", e) switch
+            {
+                "editor-send" => Send,
+                "editor-reindent" => Reindent,
+                "editor-find" => ShowFind,
+                "editor-find-next" => () => editor.FindNext(),
+                "editor-find-previous" => () => editor.FindPrevious(),
+                _ => null,
+            };
+            if (act is null) return;
+            act();
+            e.Handled = true;
+        };
 
         editor.Loaded += _ =>
         {
             ApplyLanguage();
             Load();
+            if (error is { } e) AddError(e.Line, e.Message);
         };
         AppWindow.Closing += OnClosing;
     }
 
-    private static AppBarButton Command(string label, Symbol icon, string keys, Action act)
+    /// <summary>A button on the bar, with its action's key in the tooltip.</summary>
+    private static AppBarButton Command(string label, Symbol icon, string action, Action act)
     {
         var button = new AppBarButton { Label = label, Icon = new SymbolIcon(icon) };
-        ToolTipService.SetToolTip(button, $"{label} ({keys})");
+        ToolTipService.SetToolTip(button, Shortcuts.Tip(label, action));
         button.Click += (_, _) => act();
         return button;
-    }
-
-    private static void Accelerator(UIElement on, VirtualKey key, VirtualKeyModifiers modifiers, Action act)
-    {
-        var accelerator = new KeyboardAccelerator { Key = key, Modifiers = modifiers };
-        accelerator.Invoked += (_, e) =>
-        {
-            act();
-            e.Handled = true;
-        };
-        on.KeyboardAccelerators.Add(accelerator);
     }
 
     /// <summary>The language a request is in: its own, or the world's, or MOO.</summary>
@@ -210,6 +214,15 @@ internal sealed class CodeEditorWindow : Window
         editor.ClearUndoRedoHistory();
         ClearErrors();
         Title = $"{request.Str("name")} – Familiar";
+    }
+
+    public string Reference => request.Str("reference");
+
+    /// <summary>Comes to the front, at a line if there is one (an error's).</summary>
+    public void Reopen(int? line)
+    {
+        Activate();
+        if (line is { } at) GoTo(at);
     }
 
     /// <summary>The server sent the program again.</summary>

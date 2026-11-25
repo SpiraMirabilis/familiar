@@ -47,6 +47,8 @@ final class Session: ObservableObject {
     @Published private(set) var logging = false
     @Published private(set) var panels: [SidePanel] = []
     @Published var selectedPanel: SidePanel?
+    /// The user hid the side dock (it shows again when something asks to be seen).
+    @Published private(set) var dockHidden = false
     @Published private(set) var stats: [String: JSON] = [:]
     @Published private(set) var tilemaps: [String: JSON] = [:]
     /// Bumped whenever the map or the current room changes, so the map view redraws.
@@ -62,6 +64,9 @@ final class Session: ObservableObject {
     private(set) var agent: AgentPane?
     private var puppets: [String: PuppetWindowController] = [:]
     private var editors: [String: CodeEditorController] = [:]
+    /// The last program sent back from an editor, and the first compile error the server
+    /// reported for it, so it can be reopened there.
+    private var lastEdit: (request: JSON, error: (line: Int, message: String)?)?
     private let sounds = SoundPlayer()
     private var mapSaver: Timer?
     private var closed = false
@@ -146,6 +151,9 @@ final class Session: ObservableObject {
     }
 
     func saveEdit(_ request: JSON, content: String) {
+        var sent = request
+        sent["content"] = .of(content)
+        lastEdit = (sent, nil)
         _ = call("session.save_edit", ["request": request, "content": .of(content)])
     }
 
@@ -222,6 +230,17 @@ final class Session: ObservableObject {
     func showPanel(_ panel: SidePanel, select: Bool) {
         if !panels.contains(panel) { panels.append(panel) }
         if select || selectedPanel == nil { selectedPanel = panel }
+        if select { dockHidden = false }
+    }
+
+    func toggleDock() { dockHidden.toggle() }
+
+    /// Selects the dock's next tab (`step` 1) or previous one (-1), going round, and shows the dock.
+    func cyclePanel(by step: Int) {
+        guard !panels.isEmpty else { return }
+        let at = selectedPanel.flatMap { panels.firstIndex(of: $0) } ?? 0
+        selectedPanel = panels[((at + step) % panels.count + panels.count) % panels.count]
+        dockHidden = false
     }
 
     func removePanel(_ panel: SidePanel) {
@@ -268,7 +287,9 @@ final class Session: ObservableObject {
                 input.focus()
             case "clear": output.clear()
             case "logging": logging = !o["path"].isNull
-            case "compile_error": editors[o["reference"].string]?.addError(line: o["line"].int, message: o["message"].string)
+            case "compile_error":
+                editors[o["reference"].string]?.addError(line: o["line"].int, message: o["message"].string)
+                if let last = lastEdit, last.error == nil { lastEdit = (last.request, (o["line"].int, o["message"].string)) }
             case "line_avatar": output.setNextAvatar(o["avatar"])
             case "avatar_updated": output.updateAvatar(o["avatar"])
             case "inline_image": output.appendImage(url: o["url"].string)
@@ -385,12 +406,31 @@ final class Session: ObservableObject {
             existing.reload(request)
             return
         }
+        newEditor(request).showWindow(nil)
+    }
+
+    private func newEditor(_ request: JSON) -> CodeEditorController {
+        let reference = request["reference"].string
         let editor = CodeEditorController(session: self, request: request)
         editors[reference] = editor
         editor.onClose = { [weak self, weak editor] in
             if let self, self.editors[reference] === editor { self.editors[reference] = nil }
         }
+        return editor
+    }
+
+    /// Opens the last program sent from an editor again, at its first compile error: its
+    /// editor if that's still open, otherwise a new one with what was sent.
+    func reopenEditor() {
+        guard let (request, error) = lastEdit else {
+            return output.notice("Nothing to reopen: no program has been edited here yet")
+        }
+        if request["kind"].string != "local", let existing = editors[request["reference"].string] {
+            return existing.reveal(line: error?.line)
+        }
+        let editor = newEditor(request)
         editor.showWindow(nil)
+        if let error { editor.addError(line: error.line, message: error.message) }
     }
 
     // MARK: LLM agents
