@@ -530,7 +530,10 @@ impl MainWindow {
         let mut items = Vec::new();
         {
             let keymap = self.state.keymap();
-            for action in keymap::actions(Platform::Linux).filter(|a| a.scope == Scope::Window && a.id != "palette") {
+            // Tab N only for tabs there are.
+            let tabs = self.tab_view.n_pages();
+            let exists = |id: &str| id.strip_prefix("tab-").and_then(|n| n.parse::<i32>().ok()).is_none_or(|n| n <= tabs);
+            for action in keymap::actions(Platform::Linux).filter(|a| a.scope == Scope::Window && a.id != "palette" && exists(a.id)) {
                 let weak = Rc::downgrade(self);
                 let id = action.id;
                 items.push(Item {

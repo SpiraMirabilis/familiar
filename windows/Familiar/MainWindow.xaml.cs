@@ -372,7 +372,8 @@ public sealed partial class MainWindow : Window
         foreach (var action in Shortcuts.Actions)
         {
             var id = action.Str("id");
-            if (action.Str("scope") != "window" || id == "palette") continue;
+            // Tab N is under Tabs below, for the tabs there are.
+            if (action.Str("scope") != "window" || id == "palette" || id.StartsWith("tab-")) continue;
             items.Add(new("Commands", action.Str("label"), Shortcuts.Label(id), () => Run(id)));
         }
         foreach (var world in AppState.Worlds)

@@ -435,8 +435,8 @@ internal sealed class OutputView : UserControl
         var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 2 };
         row.Children.Add(findBox);
         row.Children.Add(findCount);
-        row.Children.Add(Tool("\uE70E", "Previous (Shift+Enter)", () => Step(-1)));
-        row.Children.Add(Tool("\uE70D", "Next (Enter)", () => Step(1)));
+        row.Children.Add(Tool("\uE70E", "Older match (Enter)", () => Step(-1)));
+        row.Children.Add(Tool("\uE70D", "Newer match (Shift+Enter)", () => Step(1)));
         row.Children.Add(Tool("\uE711", "Close (Escape)", HideFind));
         findBar.Child = row;
         findBar.Background = Form.Brush("AcrylicInAppFillColorDefaultBrush");
@@ -450,7 +450,9 @@ internal sealed class OutputView : UserControl
         };
         findBox.KeyDown += (_, e) =>
         {
-            if (e.Key == VirtualKey.Enter) Step(Keys.Shift ? -1 : 1);
+            // The search starts at the newest match, so Enter goes on back to older ones, as in
+            // the other apps; Find Next (F3) goes to newer ones.
+            if (e.Key == VirtualKey.Enter) Step(Keys.Shift ? 1 : -1);
             else if (e.Key == VirtualKey.Escape) HideFind();
             else return;
             e.Handled = true;
