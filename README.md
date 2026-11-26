@@ -39,9 +39,6 @@ Applications), and `familiar-tui-…-macos.tar.gz`, the terminal client on its o
 (`cargo install familiar-tui` works too). Both run on Apple silicon and Intel Macs, macOS 14 or
 newer. See [macOS notes](#macos-notes) for what differs.
 
-**Arch Linux (AUR):** `familiar` (releases) or `familiar-git` (latest code), for example
-`paru -S familiar`. The PKGBUILDs are in [`packaging/aur`](packaging/aur).
-
 **Flatpak:** each release has a `.flatpak` bundle (`flatpak install --user familiar-*.flatpak`;
 it uses the GNOME 51 runtime from Flathub). The manifest is in [`packaging/flatpak`](packaging/flatpak).
 The Flatpak keeps its own settings, separate from a native install.
