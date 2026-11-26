@@ -145,7 +145,7 @@ impl SessionView {
     fn agent_pane(self: &Rc<Self>, launch: &Launch) -> AgentPane {
         let terminal = vte4::Terminal::builder().hexpand(true).vexpand(true).build();
         let font = self.state.config.borrow().settings.font.clone();
-        terminal.set_font(Some(&gtk::pango::FontDescription::from_string(&font)));
+        terminal.set_font(Some(&monospace_font(&terminal, &font)));
         terminal.set_scrollback_lines(10_000);
         copy_and_paste_keys(&terminal);
         let root = gtk::ScrolledWindow::builder().child(&terminal).hscrollbar_policy(gtk::PolicyType::Never).build();
@@ -226,6 +226,20 @@ impl SessionView {
         self.state.agents.agents.borrow_mut().forget(self.id);
         self.state.agents.worlds.borrow_mut().remove(&self.id);
     }
+}
+
+/// The output font, for the terminal, if it names a monospace family that is installed; else
+/// the system monospace font at its size. VTE sizes every cell from the font, so a proportional
+/// one (which is what fontconfig substitutes for a family it doesn't have) spreads the text out.
+fn monospace_font(terminal: &vte4::Terminal, font: &str) -> gtk::pango::FontDescription {
+    let mut desc = gtk::pango::FontDescription::from_string(font);
+    let families = terminal.pango_context().font_map().map(|map| map.list_families()).unwrap_or_default();
+    let wanted = desc.family().map(|f| f.to_string()).unwrap_or_default();
+    let installed = wanted.split(',').map(str::trim).find(|name| {
+        families.iter().any(|f| f.is_monospace() && f.name().eq_ignore_ascii_case(name))
+    });
+    desc.set_family(installed.unwrap_or("Monospace"));
+    desc
 }
 
 /// Ctrl+Shift+C and Ctrl+Shift+V copy and paste, as in other terminals. (Ctrl+C goes to the
