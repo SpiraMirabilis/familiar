@@ -1,6 +1,6 @@
 # Maintainer: Michael Munson <michael.d.munson@gmail.com>
 pkgname=familiar
-pkgver=0.6.0
+pkgver=0.7.0
 pkgrel=1
 pkgdesc="Client for MUDs, MUSHes, MUCKs and MOOs, with GTK and terminal interfaces"
 arch=('x86_64' 'aarch64')

@@ -15,8 +15,8 @@ publish = false
 [dependencies]
 anyhow = "1.0.104"
 clap = { version = "4.6.9", features = ["derive"] }
-familiar-ansi = { version = "0.6.0", path = "../ansi" }
-familiar-net = { version = "0.6.0", path = "../net" }
-familiar-telnet = { version = "0.6.0", path = "../telnet" }
+familiar-ansi = { version = "0.7.0", path = "../ansi" }
+familiar-net = { version = "0.7.0", path = "../net" }
+familiar-telnet = { version = "0.7.0", path = "../telnet" }
 terminal_size = "0.4.4"
 tokio = { version = "1.54.1", features = ["full"] }

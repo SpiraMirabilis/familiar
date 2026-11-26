@@ -1,7 +1,7 @@
 # Maintainer: Michael Munson <michael.d.munson@gmail.com>
 pkgname=familiar-git
 _pkgname=familiar
-pkgver=0.6.0.r0.g0000000
+pkgver=0.7.0.r0.g0000000
 pkgrel=1
 pkgdesc="Client for MUDs, MUSHes, MUCKs and MOOs, with GTK and terminal interfaces (latest code)"
 arch=('x86_64' 'aarch64')
@@ -28,7 +28,7 @@ pkgver() {
   if git describe --long --tags >/dev/null 2>&1; then
     git describe --long --tags | sed 's/^v//;s/\([^-]*-g\)/r\1/;s/-/./g'
   else
-    printf "0.6.0.r%s.g%s" "$(git rev-list --count HEAD)" "$(git rev-parse --short=7 HEAD)"
+    printf "0.7.0.r%s.g%s" "$(git rev-list --count HEAD)" "$(git rev-parse --short=7 HEAD)"
   fi
 }
 
