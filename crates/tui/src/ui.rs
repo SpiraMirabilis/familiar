@@ -607,16 +607,53 @@ fn draw_input(f: &mut Frame, app: &mut App, area: Rect) {
         f.set_cursor_position((text_area.x, text_area.y));
         return;
     }
-    let (rows, (cx, cy)) = input.layout(text_area.width);
+    let (rows, (cx, cy)) = input.layout_rows(text_area.width);
     let first = (cy as usize + 1).saturating_sub(text_area.height as usize);
+    let selection = input.selection();
     let lines: Vec<Line> = rows
         .iter()
         .skip(first)
         .take(text_area.height as usize)
-        .map(|r| if password { Line::raw("•".repeat(r.width())) } else { highlight_command(r) })
+        .map(|(start, r)| {
+            // The selection, as a byte range in this row.
+            let selected = selection.as_ref().map(|s| s.start.saturating_sub(*start).min(r.len())..s.end.saturating_sub(*start).min(r.len()));
+            if password {
+                let dots = |s: &str| "•".repeat(s.width());
+                match selected.filter(|s| !s.is_empty()) {
+                    Some(s) => Line::from(vec![
+                        Span::raw(dots(&r[..s.start])),
+                        Span::styled(dots(&r[s.clone()]), Style::new().add_modifier(Modifier::REVERSED)),
+                        Span::raw(dots(&r[s.end..])),
+                    ]),
+                    None => Line::raw(dots(r)),
+                }
+            } else {
+                mark_selected(highlight_command(r), selected)
+            }
+        })
         .collect();
     f.render_widget(Paragraph::new(lines), text_area);
     f.set_cursor_position((text_area.x + cx, text_area.y + cy - first as u16));
+}
+
+/// Shows `selected` (a byte range in the line's text) in reverse video.
+fn mark_selected(line: Line<'static>, selected: Option<std::ops::Range<usize>>) -> Line<'static> {
+    let Some(selected) = selected.filter(|s| !s.is_empty()) else { return line };
+    let mut spans = Vec::new();
+    let mut at = 0;
+    for span in line.spans {
+        let text = span.content.as_ref();
+        let range = at..at + text.len();
+        let (from, to) = (selected.start.clamp(range.start, range.end) - at, selected.end.clamp(range.start, range.end) - at);
+        for (part, on) in [(&text[..from], false), (&text[from..to], true), (&text[to..], false)] {
+            if !part.is_empty() {
+                let style = if on { span.style.add_modifier(Modifier::REVERSED) } else { span.style };
+                spans.push(Span::styled(part.to_string(), style));
+            }
+        }
+        at = range.end;
+    }
+    Line::from(spans)
 }
 
 /// Colours a client command's name as you type it.
@@ -738,7 +775,7 @@ fn draw_overlay(f: &mut Frame, app: &mut App, area: Rect) {
             draw_picker(f, p, r, true, &mut hits);
             app.hits.picker_items = hits;
         }
-        Some(Overlay::Help) => draw_help(f, app, centered(area, 96, 29)),
+        Some(Overlay::Help) => draw_help(f, app, centered(area, 96, 33)),
         Some(Overlay::World(form)) => draw_world_form(f, form, centered(area, 72, 21)),
         _ => {}
     }
@@ -1166,7 +1203,9 @@ fn draw_help(f: &mut Frame, app: &App, area: Rect) {
             (first(&["edit-input", "reopen-editor"]), "$EDITOR: the input · fix the last program"),
             (keys("editor-focus"), "between the world and an editor beside it"),
             (keys("move-editor"), "move the editor between a tab and the sidebar"),
-            ("Ctrl+A E U K W Y".into(), "readline editing"),
+            ("Shift+← → Home End".into(), "select (with Ctrl: by word)"),
+            (first(&["select-all", "copy", "cut", "paste"]), "select all · copy · cut · paste"),
+            ("Ctrl+E U K W Y".into(), "readline editing"),
             ("Esc Esc · Ctrl+C".into(), "clear the input"),
         ]),
         ("Reading", vec![

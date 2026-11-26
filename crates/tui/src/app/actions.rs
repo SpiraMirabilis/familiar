@@ -105,6 +105,34 @@ impl App {
                     self.edit(External::EditInput { session: self.sessions[i].id, puppet });
                 }
             }
+            "select-all" => {
+                if let Some(input) = self.current_input() {
+                    input.select_all();
+                }
+            }
+            "copy" | "cut" => {
+                // Not a password: that stays off the clipboard.
+                let hidden = current.is_some_and(|(i, puppet)| puppet.is_none() && self.sessions[i].password);
+                let Some(input) = self.current_input() else { return };
+                match input.selected_text().map(str::to_string) {
+                    Some(_) if hidden => self.toast("A password isn't copied"),
+                    Some(text) => {
+                        if id == "cut" {
+                            input.delete_selection();
+                        }
+                        self.clipboard = Some(text);
+                        self.toast(if id == "cut" { "Cut" } else { "Copied" });
+                    }
+                    None => self.toast("Select some of the input first (Shift+arrows, or select all)"),
+                }
+            }
+            "paste" => match crate::clipboard::paste() {
+                Some(text) => match self.current_input() {
+                    Some(input) => input.insert(&text.replace("\r\n", "\n").replace('\r', "\n")),
+                    None => self.toast("Paste in a world's tab"),
+                },
+                None => self.toast("Can't read the clipboard here: use your terminal's paste key"),
+            },
             "editor-focus" => self.toggle_editor_focus(),
             "move-editor" => self.move_editor(),
             "import-beipmu" => self.insert_command("/import "),

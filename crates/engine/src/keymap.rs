@@ -135,6 +135,7 @@ const fn editor(id: &'static str, label: &'static str, linux_windows: &'static [
 const WORLDS: &str = "Worlds";
 const TABS: &str = "Tabs";
 const OUTPUT: &str = "Output";
+const INPUT: &str = "Input";
 const DOCK: &str = "Side Dock";
 const TOOLS: &str = "Tools";
 const APP: &str = "Familiar";
@@ -179,6 +180,10 @@ pub const ACTIONS: &[Action] = &[
     action("clear", "Clear Output", OUTPUT, &["Ctrl+Shift+L"], &["Cmd+K"], &[]),
     action("toggle-log", "Log to a File", OUTPUT, &["Ctrl+Shift+G"], &["Cmd+Shift+L"], &[]),
     action("open-logs", "Show the Logs Folder", OUTPUT, &[], &[], &[]),
+    terminal("select-all", "Select All of the Input", INPUT, &["Ctrl+A"]),
+    terminal("copy", "Copy the Selected Input", INPUT, &["Ctrl+C"]),
+    terminal("cut", "Cut the Selected Input", INPUT, &["Ctrl+X"]),
+    terminal("paste", "Paste", INPUT, &["Ctrl+V"]),
     action("toggle-sidebar", "Show or Hide the Side Dock", DOCK, &["Ctrl+B"], &["Cmd+Ctrl+S"], &["Ctrl+B"]),
     action("next-panel", "Next Side Dock Tab", DOCK, &["Alt+bracketright"], &["Cmd+Alt+bracketright"], &["Alt+bracketright"]),
     action("prev-panel", "Previous Side Dock Tab", DOCK, &["Alt+bracketleft"], &["Cmd+Alt+bracketleft"], &["Alt+bracketleft"]),
