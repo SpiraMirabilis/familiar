@@ -54,6 +54,15 @@
     <content_attribute id="social-info">mild</content_attribute>
   </content_rating>
   <releases>
+    <release version="0.7.0" date="2026-11-26">
+      <description>
+        <p>Agents that can work on any world.</p>
+        <ul>
+          <li>Agents can type commands into the world and read what it says back, on every MUD, MUSH, MUCK and MOO</li>
+          <li>An agent can install Familiar's agent tools on a MOO itself, with a wizard character</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.6.0" date="2026-11-25">
       <description>
         <p>Keyboard shortcuts you can change, and logs that start by themselves.</p>

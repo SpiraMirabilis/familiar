@@ -11,8 +11,8 @@ rust-version.workspace = true
 
 [dependencies]
 axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "tokio"] }
-familiar-config = { version = "0.6.0", path = "../config" }
-familiar-engine = { version = "0.6.0", path = "../engine" }
+familiar-config = { version = "0.7.0", path = "../config" }
+familiar-engine = { version = "0.7.0", path = "../engine" }
 futures-util = { version = "0.3.34", default-features = false }
 getrandom = "0.3.4"
 serde_json = "1.0.154"

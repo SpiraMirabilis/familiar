@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.7.0 (2026-11-26)
 
 - Agents (`/agent`) get `send_command`, which types commands into the world and returns what
   the world says back, waiting until it goes quiet or says some text. It works on every world,
