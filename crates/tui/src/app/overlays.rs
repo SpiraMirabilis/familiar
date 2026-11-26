@@ -110,7 +110,8 @@ impl App {
         }
         let s = &self.sessions[i];
         let text = &s.input.text;
-        if !text.starts_with('/') || text.starts_with("//") || text.contains('\n') || s.password {
+        // Not for a command brought back from history, so that ↑ goes on through it.
+        if !text.starts_with('/') || text.starts_with("//") || text.contains('\n') || s.password || s.input.recalled {
             return Vec::new();
         }
         let (word, rest) = text.split_once(' ').map_or((text.as_str(), None), |(w, r)| (w, Some(r)));

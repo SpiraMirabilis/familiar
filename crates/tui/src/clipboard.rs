@@ -1,4 +1,4 @@
-//! Putting text on the system clipboard.
+//! The system clipboard.
 
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -29,6 +29,27 @@ pub fn copy(text: &str) {
             return;
         }
     }
+}
+
+/// The clipboard's text, from the desktop's own tool. None where there isn't one, as over ssh:
+/// terminals that let a program read the clipboard (OSC 52 again) are few, and their own paste
+/// key works everywhere.
+pub fn paste() -> Option<String> {
+    let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some();
+    let x11 = std::env::var_os("DISPLAY").is_some();
+    // PowerShell writes in the console's code page unless told otherwise.
+    let windows = "[Console]::OutputEncoding = [Text.Encoding]::UTF8; [Console]::Write((Get-Clipboard -Raw))";
+    let tools: &[(&str, &[&str], bool)] = &[
+        ("pbpaste", &[], cfg!(target_os = "macos")),
+        ("wl-paste", &["--no-newline"], cfg!(unix) && wayland),
+        ("xclip", &["-selection", "clipboard", "-o"], cfg!(unix) && x11),
+        ("xsel", &["--clipboard", "--output"], cfg!(unix) && x11),
+        ("powershell", &["-NoProfile", "-Command", windows], cfg!(windows)),
+    ];
+    tools.iter().filter(|t| t.2).find_map(|(tool, args, _)| {
+        let out = Command::new(tool).args(*args).stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
+        out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+    })
 }
 
 fn base64(bytes: &[u8]) -> String {

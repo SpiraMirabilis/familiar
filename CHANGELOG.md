@@ -9,6 +9,16 @@
   and `world_output` takes `new` to read only what the agent hasn't seen.
 - An agent's folder now has `familiar-moo/`, the MOO side of the agent tools with a guide to
   installing it, so the agent can install the tools on a MOO itself (as a wizard).
+- **Terminal client:** text in the input box can be selected, with Shift and the arrow keys,
+  Home and End (and Ctrl for a word at a time), or all of it with Ctrl+A. Typing, Backspace or
+  Delete replace it; Ctrl+C copies it, Ctrl+X cuts it and Ctrl+V pastes (from `pbpaste`,
+  `wl-paste`, `xclip` or `xsel`, or PowerShell on Windows; over ssh, the terminal's own paste
+  key). Ctrl+C with nothing selected still clears the input, or quits when pressed twice. The
+  four keys can be changed in the key editor, under Input. Ctrl+A is no longer readline's start
+  of the line unless select all is moved to another key; Home still is.
+- **Terminal client:** ↑ and ↓ go on through the input history past a `/` command, instead of
+  stopping to move through the command list that popped up for it. The list comes back once the
+  command is changed.
 
 ## 0.6.0 (2026-11-25)
 

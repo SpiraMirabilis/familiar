@@ -57,7 +57,20 @@ impl App {
             }
             return;
         }
-        // Ctrl+C clears the input, or (pressed twice) quits. It can't be a shortcut.
+        // Selecting, copying and pasting in the input box, even with text typed (Ctrl+A is
+        // otherwise readline's start of the line). With nothing selected, copy and cut do
+        // nothing, and Ctrl+C goes on to clear the input below.
+        if let Some(action) = action.filter(|a| matches!(*a, "select-all" | "copy" | "cut" | "paste")) {
+            let selected = self.current_input().is_some_and(|i| i.selection().is_some());
+            if selected || !matches!(action, "copy" | "cut") {
+                return self.run(action);
+            }
+            if !(key.code == KeyCode::Char('c') && ctrl) {
+                return;
+            }
+        }
+        // Ctrl+C clears the input, or (pressed twice) quits. It can't be a shortcut, except
+        // to copy the selection.
         if key.code == KeyCode::Char('c') && ctrl {
             match self.current_input() {
                 Some(input) if !input.is_empty() => {
@@ -201,6 +214,12 @@ impl App {
             KeyCode::Backspace if ctrl || alt => input.kill_word(),
             KeyCode::Backspace => input.backspace(),
             KeyCode::Delete => input.delete(),
+            KeyCode::Left if ctrl && shift => input.select(Input::word_left),
+            KeyCode::Right if ctrl && shift => input.select(Input::word_right),
+            KeyCode::Left if shift => input.select(Input::left),
+            KeyCode::Right if shift => input.select(Input::right),
+            KeyCode::Home if shift => input.select(Input::home),
+            KeyCode::End if shift => input.select(Input::end),
             KeyCode::Left if ctrl => input.word_left(),
             KeyCode::Right if ctrl => input.word_right(),
             KeyCode::Left => input.left(),
