@@ -232,6 +232,8 @@ pub struct Engine {
     /// Agent tool calls waiting for results, by id.
     agent_calls: std::collections::HashMap<u64, agent::AgentCall>,
     next_agent_call: u64,
+    /// What the world said lately, for agents' commands.
+    heard: agent::Heard,
     /// How deeply script actions are nested (a script typing input that runs a script...).
     script_depth: u32,
     /// Commands waiting to run (/delay).
@@ -284,6 +286,7 @@ impl Engine {
             agent_tools: Vec::new(),
             agent_calls: Default::default(),
             next_agent_call: 1,
+            heard: Default::default(),
             script_depth: 0,
             delays: Vec::new(),
             next_delay_id: 1,
@@ -681,6 +684,7 @@ struct Delay {
 }
 
 mod agent;
+pub use agent::AgentHeard;
 mod commands;
 mod incoming;
 mod map;

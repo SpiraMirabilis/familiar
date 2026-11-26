@@ -122,6 +122,14 @@ impl familiar_agent::World for AgentWorld<'_> {
     fn last_lines(&self, n: usize) -> Vec<String> {
         self.0.recent.iter().skip(self.0.recent.len().saturating_sub(n)).cloned().collect()
     }
+
+    fn agent_send(&mut self, lines: &[String]) -> Result<u64, String> {
+        self.0.engine.agent_send(lines)
+    }
+
+    fn agent_heard(&self, mark: u64) -> familiar_engine::AgentHeard {
+        self.0.engine.agent_heard(mark)
+    }
 }
 
 fn text<'a>(args: &'a Value, key: &str) -> Result<&'a str, String> {

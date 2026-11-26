@@ -17,7 +17,7 @@ pub mod script;
 pub mod stats;
 pub mod tilemap;
 
-pub use engine::{AGENT_COMMAND, Avatar, COMMANDS, EditRequest, Engine, Output, Status, Target, WebViewCommand, WebViewOpen};
+pub use engine::{AGENT_COMMAND, AgentHeard, Avatar, COMMANDS, EditRequest, Engine, Output, Status, Target, WebViewCommand, WebViewOpen};
 pub use history::History;
 pub use keys::KeyChord;
 pub use keymap::Keymap;

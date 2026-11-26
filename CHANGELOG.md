@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Agents (`/agent`) get `send_command`, which types commands into the world and returns what
+  the world says back, waiting until it goes quiet or says some text. It works on every world,
+  including MUDs and MOOs without the dns-com-familiar-agent package. Long texts can be sent
+  from a file in the agent's folder. Each line of the world's output reaches the agent once,
+  and `world_output` takes `new` to read only what the agent hasn't seen.
+- An agent's folder now has `familiar-moo/`, the MOO side of the agent tools with a guide to
+  installing it, so the agent can install the tools on a MOO itself (as a wizard).
+
 ## 0.6.0 (2026-11-25)
 
 - Every keyboard shortcut can be changed, in every app: Preferences → Keyboard (F1; ⌘⌥/ on a

@@ -84,6 +84,14 @@ impl familiar_agent::World for World<'_> {
     fn last_lines(&self, n: usize) -> Vec<String> {
         self.output.last_lines(n)
     }
+
+    fn agent_send(&mut self, lines: &[String]) -> Result<u64, String> {
+        self.engine.agent_send(lines)
+    }
+
+    fn agent_heard(&self, mark: u64) -> familiar_engine::AgentHeard {
+        self.engine.agent_heard(mark)
+    }
 }
 
 /// A running agent: its terminal, in the side dock.

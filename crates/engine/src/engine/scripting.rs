@@ -44,6 +44,7 @@ impl Engine {
     /// Runs timers that are due. The UI calls this at [`Engine::next_deadline`].
     pub fn tick(&mut self, now: Instant) -> Vec<Output> {
         let mut out = Vec::new();
+        self.agent_shown(&mut out);
         if let Some(script) = self.script.as_mut() {
             script.tick(now);
             self.drain_script(&mut out);

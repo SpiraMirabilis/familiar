@@ -319,7 +319,7 @@ struct WorldEditor: View {
                     Button {
                         draft.world["character"] = .array(characters + [["name": ""]])
                         character = characters.count - 1
-                    } label: { Image(systemName: "plus") }
+                    } label: { ListButtonLabel("plus") }
                         .accessibilityLabel("Add a character")
                     Button {
                         if let i = character, characters.indices.contains(i) {
@@ -328,7 +328,7 @@ struct WorldEditor: View {
                             draft.world["character"] = .array(all)
                             character = all.isEmpty ? nil : min(i, all.count - 1)
                         }
-                    } label: { Image(systemName: "minus") }
+                    } label: { ListButtonLabel("minus") }
                         .disabled(character == nil)
                         .accessibilityLabel("Remove the character")
                     Spacer()

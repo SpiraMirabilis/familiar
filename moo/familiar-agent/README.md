@@ -35,9 +35,12 @@ package's messages on. The feature doesn't need this package.
 3. Try a few tools with `;$agent_tools:call(...)` as above.
 4. Reconnect with Familiar's terminal client, with MCP on for the world (the default), then run
    `/agent`. When you ask the agent to list its MCP tools, it should see the MOO's tools as
-   well as `world_output`.
+   well as the client's `world_output` and `send_command`.
 
-If the agent sees only `world_output`, look at what the client sends: `/mcp debug` in
+The agent can do this installation itself, with `send_command`, as a wizard: Familiar puts a
+copy of this folder and the MCP feature in its folder, under `familiar-moo/`.
+
+If the agent sees only the client's tools, look at what the client sends: `/mcp debug` in
 Familiar shows every MCP line. After `mcp-negotiate-end` the client sends
 `#$#dns-com-familiar-agent-list` only if the server offered the package, which it does once
 `:set_handler` has run and the player has reconnected (`;me:confunc_features()` or the

@@ -1,7 +1,51 @@
 //! Tools a MOO offers an LLM agent (dns-com-familiar-agent): calling them, and their results.
 
+use std::collections::VecDeque;
+
 use super::*;
 use crate::mcp::{AGENT, AgentTool, Show};
+
+/// The most lines kept of what the world said, for agents' commands.
+const HEARD_LINES: usize = 2000;
+
+/// Commands longer than this many lines are shown in the world's window as their first line.
+const SHOWN_LINES: usize = 3;
+
+/// What the world said lately, as plain text, for agents that send it commands.
+#[derive(Debug, Default)]
+pub(super) struct Heard {
+    lines: VecDeque<String>,
+    /// How many lines have been heard in all: a line's number is its place in that count.
+    total: u64,
+    /// A prompt not yet ended by a newline.
+    partial: Option<String>,
+    /// What to show in the world's window about commands agents sent, at the next tick.
+    shown: Vec<Output>,
+    shown_since: Option<Instant>,
+}
+
+/// What the world said since a mark: see [`Engine::agent_heard`]. Lines are numbered from the
+/// first the world said; a mark is the number of the next line to come.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct AgentHeard {
+    /// The lines, oldest first. The last is number `next - 1`.
+    pub lines: Vec<String>,
+    /// A prompt after them that hasn't ended yet.
+    pub partial: Option<String>,
+    /// Lines that came after the mark but are no longer kept.
+    pub dropped: u64,
+    /// The mark for what comes next.
+    pub next: u64,
+}
+
+impl AgentHeard {
+    /// The lines from number `mark` on, and the prompt after them.
+    pub fn since(&self, mark: u64) -> impl Iterator<Item = &String> {
+        let first = self.next - self.lines.len() as u64;
+        let skip = usize::try_from(mark.saturating_sub(first)).unwrap_or(usize::MAX);
+        self.lines.iter().skip(skip).chain(&self.partial)
+    }
+}
 
 /// A call waiting for its result.
 #[derive(Debug)]
@@ -71,6 +115,69 @@ impl Engine {
         Ok(id)
     }
 
+    /// Sends lines to the world for an agent, as they are (no aliases, scripts or client
+    /// commands). Returns a mark for [`Engine::agent_heard`], to read what the world says next.
+    pub fn agent_send(&mut self, lines: &[String]) -> Result<u64, String> {
+        if self.handle.is_none() {
+            return Err("Not connected to the world".into());
+        }
+        // A prompt shown before the command isn't part of its answer.
+        self.heard.partial = None;
+        let mark = self.heard.total;
+        for line in lines {
+            if !self.send_raw(line) {
+                return Err("Couldn't send to the world".into());
+            }
+            self.heard.shown.push(Output::Sent(line.clone()));
+        }
+        let shown = match lines {
+            [] => return Ok(mark),
+            lines if lines.len() <= SHOWN_LINES => lines.iter().map(|l| format!("[agent] → {l}")).collect(),
+            [first, rest @ ..] => vec![format!("[agent] → {first} (and {} more lines)", rest.len())],
+        };
+        self.heard.shown.extend(shown.into_iter().map(Output::Notice));
+        self.heard.shown_since.get_or_insert_with(Instant::now);
+        Ok(mark)
+    }
+
+    /// What the world said in the main window since `mark` (from [`Engine::agent_send`], or
+    /// [`AgentHeard::next`]). `u64::MAX` reads nothing, for the mark.
+    pub fn agent_heard(&self, mark: u64) -> AgentHeard {
+        let next = self.heard.total;
+        let first = next - self.heard.lines.len() as u64;
+        let skip = usize::try_from(mark.saturating_sub(first)).unwrap_or(usize::MAX);
+        let lines = self.heard.lines.iter().skip(skip).cloned().collect();
+        let partial = if mark <= next { self.heard.partial.clone() } else { None };
+        AgentHeard { lines, partial, dropped: first.saturating_sub(mark.min(next)), next }
+    }
+
+    /// Keeps what the world said in the main window, while agents can be run.
+    pub(super) fn hear(&mut self, out: &[Output]) {
+        if !self.agents_supported {
+            return;
+        }
+        for output in out {
+            match output {
+                Output::Line { line, target: Target::Main } | Output::Prompt { line, terminated: true } => {
+                    self.heard.partial = None;
+                    if self.heard.lines.len() == HEARD_LINES {
+                        self.heard.lines.pop_front();
+                    }
+                    self.heard.lines.push_back(line.text.clone());
+                    self.heard.total += 1;
+                }
+                Output::Prompt { line, terminated: false } => self.heard.partial = Some(line.text.clone()),
+                _ => {}
+            }
+        }
+    }
+
+    /// What to show about agents' commands, at the next tick.
+    pub(super) fn agent_shown(&mut self, out: &mut Vec<Output>) {
+        self.heard.shown_since = None;
+        out.append(&mut self.heard.shown);
+    }
+
     /// Reports a call's result, if it's still waiting for one.
     pub(super) fn agent_result(&mut self, id: u64, ok: bool, content: String, out: &mut Vec<Output>) {
         let Some(call) = self.agent_calls.remove(&id) else { return };
@@ -99,7 +206,7 @@ impl Engine {
     }
 
     pub(super) fn agent_deadline(&self) -> Option<Instant> {
-        self.agent_calls.values().map(|c| c.deadline).min()
+        self.agent_calls.values().map(|c| c.deadline).chain(self.heard.shown_since).min()
     }
 
     /// The connection dropped: no results are coming, and the tools may differ next time.

@@ -304,4 +304,12 @@ impl familiar_agent::World for Session {
     fn last_lines(&self, n: usize) -> Vec<String> {
         self.output.last_lines(n).into_iter().map(str::to_string).collect()
     }
+
+    fn agent_send(&mut self, lines: &[String]) -> Result<u64, String> {
+        self.engine.agent_send(lines)
+    }
+
+    fn agent_heard(&self, mark: u64) -> familiar_engine::AgentHeard {
+        self.engine.agent_heard(mark)
+    }
 }

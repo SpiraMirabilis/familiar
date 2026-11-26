@@ -639,20 +639,20 @@ private struct RulesView: View {
             .onDeleteCommand { model.remove() }
             Divider()
             HStack(spacing: 2) {
-                Button { model.add() } label: { Image(systemName: "plus") }
+                Button { model.add() } label: { ListButtonLabel("plus") }
                     .help("Add a \(noun)")
                     .accessibilityLabel("Add a \(noun)")
-                Button { model.remove() } label: { Image(systemName: "minus") }
+                Button { model.remove() } label: { ListButtonLabel("minus") }
                     .disabled(model.selection == nil)
                     .help("Remove the \(noun)")
                     .accessibilityLabel("Remove the \(noun)")
                 Spacer()
                 if kind.isOrdered {
-                    Button { model.move(by: -1) } label: { Image(systemName: "chevron.up") }
+                    Button { model.move(by: -1) } label: { ListButtonLabel("chevron.up") }
                         .disabled(!model.canMove(by: -1))
                         .help("Move the \(noun) up")
                         .accessibilityLabel("Move the \(noun) up")
-                    Button { model.move(by: 1) } label: { Image(systemName: "chevron.down") }
+                    Button { model.move(by: 1) } label: { ListButtonLabel("chevron.down") }
                         .disabled(!model.canMove(by: 1))
                         .help("Move the \(noun) down")
                         .accessibilityLabel("Move the \(noun) down")
@@ -1154,5 +1154,22 @@ private final class KeyRecorderButton: NSButton, KeyRecording {
         }
         capture(event)
         return true
+    }
+}
+
+/// The symbol on a small borderless button under a list (+, −, ↑, ↓), in a frame that takes
+/// clicks all over. A borderless button takes clicks only on its label, and on its own the
+/// "minus" symbol is 4 points tall.
+struct ListButtonLabel: View {
+    let symbol: String
+
+    init(_ symbol: String) {
+        self.symbol = symbol
+    }
+
+    var body: some View {
+        Image(systemName: symbol)
+            .frame(width: 22, height: 20)
+            .contentShape(Rectangle())
     }
 }

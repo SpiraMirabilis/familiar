@@ -74,8 +74,10 @@ Calls may be answered in any order.
 - When the connection drops, the client fails every pending call and forgets the tools.
 - Calls travel on the player's own connection and act as the player. The server must run each
   tool with the player's permissions (`set_task_perms(player)`), never its own.
-- `world_output` is the client's own tool, alongside the server's. It returns the last lines
-  of the world's window. A server tool with that name is hidden.
+- `world_output` and `send_command` are the client's own tools, alongside the server's.
+  `world_output` returns the last lines of the world's window. `send_command` types commands
+  into the world and returns what the world prints back. Server tools with those names are
+  hidden.
 
 ## Example
 

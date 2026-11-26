@@ -891,6 +891,52 @@ fn agent_calls_fail_on_timeout_and_disconnect() {
 }
 
 #[test]
+fn agents_send_commands_and_hear_the_answer() {
+    let (mut e, mut rx) = engine(&config(Rules::default(), Rules::default(), Rules::default()));
+    e.set_agents_supported(true);
+    e.handle_event(SessionEvent::Line("Before".into()));
+    e.handle_event(SessionEvent::PartialLine("> ".into()));
+    let mark = e.agent_send(&["look".into()]).unwrap();
+    assert_eq!(sent(&mut rx), ["look"]);
+    // The prompt from before isn't part of the answer.
+    assert_eq!(e.agent_heard(mark), AgentHeard { next: 1, ..AgentHeard::default() });
+    assert_eq!(e.agent_heard(0).lines, ["Before"]);
+    e.handle_event(SessionEvent::Line("A room".into()));
+    e.handle_event(SessionEvent::Line("#$#mcp version: 2.1 to: 2.1".into()));
+    e.handle_event(SessionEvent::PartialLine("Password: ".into()));
+    let heard = e.agent_heard(mark);
+    assert_eq!((heard.lines, heard.partial), (vec!["A room".to_string()], Some("Password: ".to_string())));
+    e.handle_event(SessionEvent::Line("Password: ok".into()));
+    let heard = e.agent_heard(mark);
+    assert_eq!((heard.lines.as_slice(), heard.partial.as_deref(), heard.next), (&["A room".to_string(), "Password: ok".to_string()][..], None, 3));
+    assert_eq!(heard.since(2).collect::<Vec<_>>(), ["Password: ok"]);
+    assert_eq!(e.agent_heard(u64::MAX), AgentHeard { next: 3, ..AgentHeard::default() });
+
+    // What was sent shows at the next tick, which is due now.
+    let due = e.next_deadline().unwrap();
+    assert!(due <= Instant::now());
+    let out = e.tick(Instant::now());
+    assert_eq!(notices(&out), ["[agent] → look"]);
+    assert!(out.contains(&Output::Sent("look".into())));
+    assert!(e.next_deadline().is_none());
+    let lines: Vec<String> = (1..=5).map(|i| format!("line {i}")).collect();
+    e.agent_send(&lines).unwrap();
+    assert_eq!(notices(&e.tick(Instant::now())), ["[agent] → line 1 (and 4 more lines)"]);
+
+    // Old lines are dropped, and counted.
+    let mark = e.agent_send(&[]).unwrap();
+    for i in 0..2100 {
+        e.handle_event(SessionEvent::Line(format!("spam {i}")));
+    }
+    let heard = e.agent_heard(mark);
+    assert_eq!((heard.lines.len(), heard.dropped, heard.next), (2000, 100, 2103));
+    assert_eq!(heard.lines[0], "spam 100");
+
+    e.handle_event(SessionEvent::Disconnected { error: None });
+    assert!(e.agent_send(&["look".into()]).is_err());
+}
+
+#[test]
 fn agents_only_where_the_frontend_runs_them() {
     let (mut e, mut rx) = engine(&config(Rules::default(), Rules::default(), Rules::default()));
     e.handle_event(SessionEvent::Line("#$#mcp version: 2.1 to: 2.1".into()));

@@ -2,8 +2,9 @@
 //! for every Familiar frontend.
 //!
 //! - [`AgentServer`] serves the world's tools to agents over the Model Context Protocol.
-//! - [`choose`] picks the agent `/agent` means, and [`Agents::launch`] prepares its folder and
-//!   says how to run it. Running it, in a terminal, is the frontend's job.
+//! - [`choose`] picks the agent `/agent` means, and [`Agents::launch`] prepares its folder (with
+//!   notes about the world, and the MOO code that serves agents' tools) and says how to run
+//!   it. Running it, in a terminal, is the frontend's job.
 //! - [`Agents`] answers the agents' requests from the worlds, which the frontend owns: it
 //!   implements [`World`] for its sessions and passes each [`AgentRequest`] to
 //!   [`Agents::answer`], and each `Output::AgentResult` and `Output::AgentTools` to
@@ -15,11 +16,11 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use familiar_config::{Agent, Settings};
-use familiar_engine::AgentTool;
+use familiar_engine::{AgentHeard, AgentTool};
 use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
 
-pub use server::{AgentRequest, AgentServer, Ask, WORLD_OUTPUT};
+pub use server::{AgentRequest, AgentServer, Ask, SEND_COMMAND, WORLD_OUTPUT};
 
 /// The most lines `world_output` returns.
 pub const MAX_OUTPUT_LINES: usize = 1000;
@@ -32,6 +33,8 @@ They act as the character logged in there, with that character's permissions, on
 
 - Read before you write: look at a verb's code, and at what it inherits, before changing it.
 - `world_output` shows what the player sees in the world's window.
+- `send_command` types commands into the world and returns what it says back. Prefer the world's own tools when it offers them.
+- If a MOO offers no tools of its own, it doesn't have the package that serves them yet. `familiar-moo/README.md` says how to install it.
 
 Keep notes about this world below: its objects, its conventions, and what you learn about it.
 ";
@@ -44,7 +47,24 @@ pub trait World {
     fn agent_call(&mut self, tool: &str, args: &Value) -> Result<u64, String>;
     /// The last `n` lines of the world's window, as plain text, oldest first.
     fn last_lines(&self, n: usize) -> Vec<String>;
+    /// Sends lines to the world as they are: a mark for [`World::agent_heard`]
+    /// ([`familiar_engine::Engine::agent_send`]).
+    fn agent_send(&mut self, lines: &[String]) -> Result<u64, String>;
+    /// What the world said since `mark` ([`familiar_engine::Engine::agent_heard`]).
+    fn agent_heard(&self, mark: u64) -> AgentHeard;
 }
+
+/// The MOO code that gives agents tools, copied into each agent's folder (as `familiar-moo/`)
+/// so that an agent can install it on a MOO that hasn't got it.
+const MOO_FILES: &[(&str, &str)] = &[
+    ("README.md", include_str!("moo-readme.md")),
+    ("agent-protocol.md", include_str!("../../../docs/agent-protocol.md")),
+    ("mcp-feature/README.md", include_str!("../../../moo/mcp-feature/README.md")),
+    ("mcp-feature/mcp-feature.moo", include_str!("../../../moo/mcp-feature/mcp-feature.moo")),
+    ("mcp-feature/mcp-feature-forwarder.moo", include_str!("../../../moo/mcp-feature/mcp-feature-forwarder.moo")),
+    ("familiar-agent/README.md", include_str!("../../../moo/familiar-agent/README.md")),
+    ("familiar-agent/agent_tools.moo", include_str!("../../../moo/familiar-agent/agent_tools.moo")),
+];
 
 /// The agent `/agent <wanted>` means: the one with that name, or for no name, the first
 /// installed one in the order the settings give.
@@ -152,7 +172,7 @@ impl Agents {
         let dir = familiar_config::agent_dir(world);
         prepare_folder(&dir, world).map_err(|e| format!("Couldn't make the agent's folder {}: {e}", dir.display()))?;
         let Some(server) = &self.server else { unreachable!("started above") };
-        let (token, url) = server.open(session);
+        let (token, url) = server.open(session, &dir);
         if let Err(e) = write_files(&dir, &agent.files_for(&url, world)) {
             server.close(&token);
             return Err(format!("Couldn't write {}'s files in {}: {e}", agent.name, dir.display()));
@@ -179,6 +199,12 @@ impl Agents {
             Ask::Tools(reply) => {
                 let tools = world.and_then(|w| w.agent_tools().map(<[_]>::to_vec)).unwrap_or_default();
                 let _ = reply.send(tools);
+            }
+            Ask::Send { lines, reply } => {
+                let _ = reply.send(world.map_or_else(|| Err("The world's tab was closed".into()), |w| w.agent_send(&lines)));
+            }
+            Ask::Heard { mark, reply } => {
+                let _ = reply.send(world.map(|w| w.agent_heard(mark)));
             }
             Ask::Call { tool, args, reply } => {
                 let Some(world) = world else {
@@ -233,6 +259,15 @@ fn prepare_folder(dir: &Path, world: &str) -> std::io::Result<()> {
     let claude = dir.join("CLAUDE.md");
     if !claude.exists() {
         std::fs::write(&claude, "@AGENTS.md\n")?;
+    }
+    // Replaced each time, so it's the code this version of the client speaks to.
+    let moo = dir.join("familiar-moo");
+    for (path, text) in MOO_FILES {
+        let file = moo.join(path);
+        if let Some(parent) = file.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(file, text)?;
     }
     Ok(())
 }
@@ -373,6 +408,21 @@ mod tests {
     }
 
     #[test]
+    fn the_folder_has_notes_and_the_moo_code() {
+        let dir = std::env::temp_dir().join(format!("familiar-agent-folder-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("familiar-moo")).unwrap();
+        std::fs::write(dir.join("AGENTS.md"), "my notes").unwrap();
+        std::fs::write(dir.join("familiar-moo/README.md"), "stale").unwrap();
+        prepare_folder(&dir, "Cyber").unwrap();
+        // The agent's notes are kept; the MOO code is this version's.
+        assert_eq!(std::fs::read_to_string(dir.join("AGENTS.md")).unwrap(), "my notes");
+        assert!(std::fs::read_to_string(dir.join("familiar-moo/README.md")).unwrap().contains("send_command"));
+        assert!(std::fs::read_to_string(dir.join("familiar-moo/familiar-agent/agent_tools.moo")).unwrap().starts_with("@create"));
+        assert!(dir.join("familiar-moo/mcp-feature/mcp-feature-forwarder.moo").is_file());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn agent_files_stay_in_the_folder() {
         let dir = std::env::temp_dir().join(format!("familiar-agent-files-{}", std::process::id()));
         write_files(&dir, &[(".agents/mcp_config.json".into(), "{}".into())]).unwrap();
@@ -403,6 +453,13 @@ mod tests {
             let lines: Vec<String> = (1..=3).map(|i| format!("line {i}")).collect();
             lines[lines.len().saturating_sub(n)..].to_vec()
         }
+        fn agent_send(&mut self, lines: &[String]) -> Result<u64, String> {
+            self.sent.extend(lines.iter().map(|l| ("send".to_string(), Value::String(l.clone()))));
+            Ok(41)
+        }
+        fn agent_heard(&self, mark: u64) -> AgentHeard {
+            AgentHeard { lines: vec![format!("since {mark}")], next: 42, ..AgentHeard::default() }
+        }
     }
 
     fn call(tool: &str, args: Value) -> (AgentRequest, oneshot::Receiver<(bool, String)>) {
@@ -431,6 +488,18 @@ mod tests {
         agents.result(4, 99, true, "not this one".into());
         agents.result(4, 1, true, "You see yourself".into());
         assert_eq!(answer.try_recv().unwrap(), (true, "You see yourself".into()));
+
+        // Commands go to the world, and what it said comes back.
+        let (reply, mut answer) = oneshot::channel();
+        agents.answer(AgentRequest { session: 4, ask: Ask::Send { lines: vec!["look".into()], reply } }, Some(&mut world));
+        assert_eq!(answer.try_recv().unwrap(), Ok(41));
+        assert_eq!(world.sent.last().unwrap(), &("send".to_string(), Value::String("look".into())));
+        let (reply, mut answer) = oneshot::channel();
+        agents.answer(AgentRequest { session: 4, ask: Ask::Heard { mark: 41, reply } }, Some(&mut world));
+        assert_eq!(answer.try_recv().unwrap().unwrap().lines, ["since 41"]);
+        let (reply, mut answer) = oneshot::channel();
+        agents.answer::<FakeWorld>(AgentRequest { session: 4, ask: Ask::Heard { mark: 41, reply } }, None);
+        assert_eq!(answer.try_recv().unwrap(), None);
 
         let (request, mut answer) = call("nope", Value::Null);
         agents.answer(request, Some(&mut world));

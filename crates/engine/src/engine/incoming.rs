@@ -69,6 +69,7 @@ impl Engine {
                 self.script_event("disconnect", &mut out);
             }
         }
+        self.hear(&out);
         out
     }
 
