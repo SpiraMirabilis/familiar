@@ -55,15 +55,17 @@ pub trait World {
 }
 
 /// The MOO code that gives agents tools, copied into each agent's folder (as `familiar-moo/`)
-/// so that an agent can install it on a MOO that hasn't got it.
+/// so that an agent can install it on a MOO that hasn't got it. The files in `moo/` are copies
+/// of the repository's `moo/` and `docs/agent-protocol.md`, since a published crate only has
+/// its own folder; a test checks that they're the same.
 const MOO_FILES: &[(&str, &str)] = &[
     ("README.md", include_str!("moo-readme.md")),
-    ("agent-protocol.md", include_str!("../../../docs/agent-protocol.md")),
-    ("mcp-feature/README.md", include_str!("../../../moo/mcp-feature/README.md")),
-    ("mcp-feature/mcp-feature.moo", include_str!("../../../moo/mcp-feature/mcp-feature.moo")),
-    ("mcp-feature/mcp-feature-forwarder.moo", include_str!("../../../moo/mcp-feature/mcp-feature-forwarder.moo")),
-    ("familiar-agent/README.md", include_str!("../../../moo/familiar-agent/README.md")),
-    ("familiar-agent/agent_tools.moo", include_str!("../../../moo/familiar-agent/agent_tools.moo")),
+    ("agent-protocol.md", include_str!("../moo/agent-protocol.md")),
+    ("mcp-feature/README.md", include_str!("../moo/mcp-feature/README.md")),
+    ("mcp-feature/mcp-feature.moo", include_str!("../moo/mcp-feature/mcp-feature.moo")),
+    ("mcp-feature/mcp-feature-forwarder.moo", include_str!("../moo/mcp-feature/mcp-feature-forwarder.moo")),
+    ("familiar-agent/README.md", include_str!("../moo/familiar-agent/README.md")),
+    ("familiar-agent/agent_tools.moo", include_str!("../moo/familiar-agent/agent_tools.moo")),
 ];
 
 /// The agent `/agent <wanted>` means: the one with that name, or for no name, the first
@@ -420,6 +422,20 @@ mod tests {
         assert!(std::fs::read_to_string(dir.join("familiar-moo/familiar-agent/agent_tools.moo")).unwrap().starts_with("@create"));
         assert!(dir.join("familiar-moo/mcp-feature/mcp-feature-forwarder.moo").is_file());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_moo_files_match_the_repository() {
+        // In the repository, not in a published crate, where there's no `moo/` above it.
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        if !root.join("moo").is_dir() {
+            return;
+        }
+        for (name, text) in MOO_FILES.iter().filter(|(name, _)| *name != "README.md") {
+            let original = if *name == "agent-protocol.md" { root.join("docs").join(name) } else { root.join("moo").join(name) };
+            let original = std::fs::read_to_string(&original).unwrap();
+            assert!(original == *text, "crates/agent/moo/{name} differs from the repository's copy: copy it over again");
+        }
     }
 
     #[test]
