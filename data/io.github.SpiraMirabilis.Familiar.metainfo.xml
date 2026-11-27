@@ -54,6 +54,16 @@
     <content_attribute id="social-info">mild</content_attribute>
   </content_rating>
   <releases>
+    <release version="0.7.1" date="2026-11-27">
+      <description>
+        <p>Security hardening, crash and deadlock fixes, and protocol correctness improvements across every client.</p>
+        <ul>
+          <li>Stricter validation for server-supplied URLs, links, web view bridges, local agent endpoints and QuickJS scripts</li>
+          <li>Decompression, buffer, parser and image-cache caps across telnet, ANSI, tilemaps, MCP and importers</li>
+          <li>Crash, deadlock and lifecycle fixes across Linux, macOS, Windows and the terminal client</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.7.0" date="2026-11-26">
       <description>
         <p>Agents that can work on any world.</p>

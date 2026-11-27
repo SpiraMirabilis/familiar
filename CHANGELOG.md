@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.7.1 (2026-11-27)
+
+- Security and protocol hardening across the engine, network layer, scripting sandbox, agent
+  server, importers and every frontend:
+  - Server-supplied GMCP URLs (`Client.Media`, tilemaps, avatars, web views) now require
+    `http://` or `https://`; external links only open `http://`, `https://` or `mailto:`;
+    control characters and newlines are stripped from `send:` links, OSC 8 URIs and web view
+    headers.
+  - Bounded decompression, buffer and cache limits for MCCP2, telnet subnegotiations, long
+    lines, CSI/OSC escape sequences, tilemaps, `.atlas` imports, BeipMU config nesting, MCP
+    queues, downloaded media and inline image caches; eliminated quadratic SGR, URL linkifier
+    and bouncer deframer paths.
+  - Config files and agent MCP configs are written with `0600` permissions on Unix; delayed
+    login commands stay secret (hidden from `/delay list`, sent raw without echo); the local
+    agent MCP HTTP server rejects foreign `Host` and `Origin` headers and enforces call
+    timeouts; GTK and Windows web view bridges authenticate messages with a per-pane token;
+    QuickJS enforces stack, per-turn action and promise microtask limits.
+  - Removed the unimplemented `MSLP` bit from default MTTS capabilities and added `UTF8` to
+    default CHARSET offers.
+- Fixed crashes, deadlocks and correctness bugs:
+  - Fixed invalid/infinite duration panics in `/delay`, script timers and agent tool timeouts;
+    fixed UTF-8 slicing panics and small-terminal underflows in the terminal client; fixed
+    Windows restore-log trimming while open, SAPI COM cleanup, macOS `say` mutex deadlock,
+    agent `login_shell_path` pipe deadlock, CLI stdin EOF busy-spin and cross-restart PTY races.
+  - Fixed cancellable connects, bouncer backlog replay without spurious telnet replies, live
+    map tracking on ANSI-colored lines, trigger unsuspension on reconnect, BeipMU log path
+    normalization, GTK session teardown on close, macOS puppet window retain cycles and Windows
+    WebView2/agent lifecycle issues.
+
 ## 0.7.0 (2026-11-26)
 
 - Agents (`/agent`) get `send_command`, which types commands into the world and returns what
