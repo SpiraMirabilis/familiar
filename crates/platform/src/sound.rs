@@ -36,23 +36,24 @@ impl SoundPlayer {
         if !path.is_file() {
             return Err(format!("Sound file not found: {}", path.display()));
         }
-        self.backend.lock().unwrap().play(name, path, volume.clamp(0.0, 1.0), loops)
+        let volume = if volume.is_finite() { volume.clamp(0.0, 1.0) } else { 1.0 };
+        self.backend.lock().unwrap_or_else(|e| e.into_inner()).play(name, path, volume, loops)
     }
 
     /// Whether a sound with this name is still playing.
     pub fn is_playing(&self, name: &str) -> bool {
-        self.backend.lock().unwrap().is_playing(name)
+        self.backend.lock().unwrap_or_else(|e| e.into_inner()).is_playing(name)
     }
 
     /// Stops the sounds with this name, or every sound.
     pub fn stop(&self, name: Option<&str>) {
         self.stops.fetch_add(1, Ordering::Relaxed);
-        self.backend.lock().unwrap().stop(name);
+        self.backend.lock().unwrap_or_else(|e| e.into_inner()).stop(name);
     }
 
     /// Forgets sounds that have finished. Worth calling now and then; playing does it too.
     pub fn tidy(&self) {
-        self.backend.lock().unwrap().tidy();
+        self.backend.lock().unwrap_or_else(|e| e.into_inner()).tidy();
     }
 
     /// Changes whenever something is stopped. A sound that had to be downloaded first compares
@@ -74,9 +75,14 @@ mod imp {
         sounds: Vec<(String, Child)>,
     }
 
+    const MAX_CONCURRENT_SOUNDS: usize = 16;
+
     impl Backend {
         pub fn play(&mut self, name: &str, path: &Path, volume: f64, _loops: i32) -> Result<(), String> {
             self.tidy();
+            if self.sounds.len() >= MAX_CONCURRENT_SOUNDS {
+                return Ok(());
+            }
             let players: &[&'static str] = if cfg!(target_os = "macos") { &["afplay"] } else { &["pw-play", "paplay", "aplay"] };
             let player = *self.player.get_or_insert_with(|| players.iter().copied().find(|p| crate::which(p).is_some()));
             let Some(player) = player else {
@@ -99,7 +105,13 @@ mod imp {
                 }
                 _ => {}
             }
-            cmd.arg(path).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+            // Prefix `-`-leading relative paths with `./` so players don't parse them as flags.
+            let safe_path = if path.is_relative() && path.to_string_lossy().starts_with('-') {
+                Path::new(".").join(path)
+            } else {
+                path.to_path_buf()
+            };
+            cmd.arg(&safe_path).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
             let child = cmd.spawn().map_err(|e| format!("Couldn't play {}: {e}", path.display()))?;
             self.sounds.push((name.to_string(), child));
             Ok(())
@@ -170,17 +182,13 @@ mod imp {
                         if loops < 0 {
                             player.append(rodio::Decoder::new_looped(open()?).map_err(bad)?);
                         } else {
-                            for _ in 0..loops.max(1) {
+                            for _ in 0..loops.clamp(1, 100) {
                                 player.append(rodio::Decoder::new(open()?).map_err(bad)?);
                             }
                         }
                         sounds.push((name, player));
                         Ok(())
                     })();
-                    if result.is_err() {
-                        // The device may have gone away (headphones unplugged); reopen next time.
-                        device = None;
-                    }
                     let _ = reply.send(result);
                 }
                 Command::IsPlaying { name, reply } => {

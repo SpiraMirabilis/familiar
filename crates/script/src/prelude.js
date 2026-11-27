@@ -3,7 +3,9 @@
 // Native functions: __mu_post(kind, argsJson) queues an action, __mu_now() is milliseconds since
 // the runtime started.
 (() => {
-  const post = (kind, ...args) => __mu_post(kind, JSON.stringify(args));
+  const nativePost = __mu_post;
+  const nativeNow = __mu_now;
+  const post = (kind, ...args) => nativePost(kind, JSON.stringify(args));
   const show = (value) => {
     if (typeof value === 'string') return value;
     if (value === undefined) return 'undefined';
@@ -31,7 +33,7 @@
   };
 
   let context = {};
-  let vars = {};
+  let vars = Object.create(null);
 
   const mu = {
     /** Sends text to the server as is. */
@@ -87,10 +89,11 @@
       return fn;
     },
     off(event, fn) {
-      const list = listFor(event);
+      const key = String(event).toLowerCase();
+      const list = listFor(key);
       const i = list.indexOf(fn);
       if (i < 0) return false;
-      list.splice(i, 1);
+      handlers.set(key, list.filter((_, idx) => idx !== i));
       return true;
     },
     get world() {
@@ -110,35 +113,42 @@
     },
     /** Variables (the same ones as %name% and /set). Assigning saves them. */
     vars: new Proxy(
-      {},
+      Object.create(null),
       {
-        get: (_, key) => vars[key],
+        get: (_, key) => (typeof key === 'string' && Object.hasOwn(vars, key) ? vars[key] : undefined),
         set: (_, key, value) => {
-          vars[key] = String(value);
-          post('setvar', String(key), String(value));
+          if (typeof key !== 'string') return false;
+          const str = String(value);
+          vars[key] = str;
+          post('setvar', key, str);
           return true;
         },
         deleteProperty: (_, key) => {
+          if (typeof key !== 'string') return false;
           delete vars[key];
-          post('setvar', String(key), null);
+          post('setvar', key, null);
           return true;
         },
-        has: (_, key) => key in vars,
+        has: (_, key) => typeof key === 'string' && Object.hasOwn(vars, key),
         ownKeys: () => Reflect.ownKeys(vars),
         getOwnPropertyDescriptor: (_, key) =>
-          key in vars ? { value: vars[key], enumerable: true, configurable: true, writable: true } : undefined,
+          typeof key === 'string' && Object.hasOwn(vars, key)
+            ? { value: vars[key], enumerable: true, configurable: true, writable: true }
+            : undefined,
       },
     ),
   };
 
+  const MAX_TIMER_MS = 2_147_483_647;
   const timers = new Map();
   let nextTimer = 1;
   const addTimer = (fn, ms, repeat, args) => {
     if (typeof fn !== 'function') throw new TypeError('timers need a function');
-    const delay = Math.max(0, Number(ms) || 0);
+    const raw = Number(ms);
+    const delay = Number.isFinite(raw) ? Math.min(Math.max(0, raw), MAX_TIMER_MS) : 0;
     const id = nextTimer++;
     // Intervals of at least 10 ms, so a 0 ms interval can't spin.
-    timers.set(id, { fn, args, due: __mu_now() + delay, interval: repeat ? Math.max(10, delay) : null });
+    timers.set(id, { fn, args, due: nativeNow() + delay, interval: repeat ? Math.max(10, delay) : null });
     return id;
   };
   globalThis.setTimeout = (fn, ms, ...args) => addTimer(fn, ms, false, args);
@@ -151,14 +161,14 @@
   globalThis.console = { log, info: log, debug: log, warn: log, error: (...parts) => post('error', parts.map(show).join(' ')) };
   globalThis.mu = mu;
 
-  globalThis.__mu = {
+  const hooks = {
     show,
     describe,
     setContext(json) {
       context = JSON.parse(json);
     },
     setVars(json) {
-      vars = JSON.parse(json);
+      vars = Object.assign(Object.create(null), JSON.parse(json));
     },
     receive(text) {
       emit('receive', text);
@@ -225,7 +235,10 @@
       for (const [id, timer] of due) {
         if (!timers.has(id)) continue; // Cleared by an earlier timer.
         if (timer.interval === null) timers.delete(id);
-        else timer.due = Math.max(now, timer.due + timer.interval);
+        else {
+          const next = timer.due + timer.interval;
+          timer.due = next <= now ? now + timer.interval : next;
+        }
         try {
           timer.fn(...timer.args);
         } catch (e) {
@@ -239,4 +252,5 @@
       return min;
     },
   };
+  Object.defineProperty(globalThis, '__mu', { value: hooks, writable: false, configurable: false, enumerable: false });
 })();

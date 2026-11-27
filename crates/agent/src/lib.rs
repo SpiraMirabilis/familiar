@@ -214,10 +214,15 @@ impl Agents {
                     return;
                 };
                 if tool == WORLD_OUTPUT {
-                    let n = args.get("lines").and_then(Value::as_u64).map_or(50, |n| n as usize).clamp(1, MAX_OUTPUT_LINES);
+                    let n = args
+                        .get("lines")
+                        .and_then(Value::as_u64)
+                        .map_or(50, |n| usize::try_from(n).unwrap_or(MAX_OUTPUT_LINES))
+                        .clamp(1, MAX_OUTPUT_LINES);
                     let _ = reply.send((true, world.last_lines(n).join("\n")));
                     return;
                 }
+                self.calls.retain(|_, tx| !tx.is_closed());
                 match world.agent_call(&tool, &args) {
                     Ok(call) => {
                         self.calls.insert((request.session, call), reply);
@@ -287,12 +292,28 @@ pub fn installed(program: &str) -> bool {
     find_program(program, None).is_some()
 }
 
+fn is_executable_file(path: &Path) -> bool {
+    let Ok(meta) = std::fs::metadata(path) else { return false };
+    if !meta.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        meta.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
 /// Where `program` is: itself if it's a path to a file, or the first file of that name in
 /// `path` (as in PATH; this process's PATH if `None`).
 fn find_program(program: &str, path: Option<&str>) -> Option<PathBuf> {
     let program = Path::new(program);
     if program.components().count() > 1 {
-        return program.is_file().then(|| program.to_path_buf());
+        return is_executable_file(program).then(|| program.to_path_buf());
     }
     let path = match path {
         Some(path) => path.into(),
@@ -300,11 +321,19 @@ fn find_program(program: &str, path: Option<&str>) -> Option<PathBuf> {
     };
     std::env::split_paths(&path).find_map(|dir| {
         let file = dir.join(program);
-        if file.is_file() {
+        if is_executable_file(&file) {
             return Some(file);
         }
         if cfg!(windows) {
-            return ["exe", "cmd", "bat"].iter().map(|ext| file.with_extension(ext)).find(|f| f.is_file());
+            return ["exe", "cmd", "bat"]
+                .iter()
+                .map(|ext| {
+                    let mut name = file.as_os_str().to_os_string();
+                    name.push(".");
+                    name.push(ext);
+                    PathBuf::from(name)
+                })
+                .find(|f| is_executable_file(f));
         }
         None
     })
@@ -320,26 +349,48 @@ pub fn login_shell_path() -> Option<String> {
         use std::io::Read;
         use std::process::{Command, Stdio};
         const MARK: &str = "__FAMILIAR_PATH__";
+        const MAX_OUT: u64 = 256 * 1024;
         let shell = std::env::var("SHELL").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "/bin/sh".into());
+        let is_fish = Path::new(&shell).file_name().and_then(|n| n.to_str()) == Some("fish");
+        let cmd_str = if is_fish {
+            format!("printf '{MARK}%s{MARK}' (string join : $PATH)")
+        } else {
+            format!("printf '{MARK}%s{MARK}' \"$PATH\"")
+        };
         let mut child = Command::new(shell)
-            .args(["-i", "-l", "-c", &format!("printf '{MARK}%s{MARK}' \"$PATH\"")])
+            .args(["-i", "-l", "-c", &cmd_str])
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
             .ok()?;
+        // Drain stdout on a helper thread so verbose shell rc files can't deadlock on the pipe buffer.
+        let stdout = child.stdout.take()?;
+        let reader = std::thread::spawn(move || {
+            let mut out = String::new();
+            let _ = stdout.take(MAX_OUT).read_to_string(&mut out);
+            out
+        });
         // Interactive shells can be slow to start (plugins, prompts).
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        while child.try_wait().ok()?.is_none() {
-            if std::time::Instant::now() > deadline {
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
+        let exited = loop {
+            match child.try_wait() {
+                Ok(Some(_)) => break true,
+                Ok(None) => {
+                    if std::time::Instant::now() > deadline {
+                        break false;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                Err(_) => break false,
             }
-            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
+        if !exited {
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
         }
-        let mut out = String::new();
-        child.stdout.take()?.read_to_string(&mut out).ok()?;
+        let out = reader.join().ok()?;
         let path = out.split(MARK).nth(1)?;
         (!path.is_empty()).then(|| path.to_string())
     }
@@ -348,19 +399,41 @@ pub fn login_shell_path() -> Option<String> {
 }
 
 /// Writes an agent's files (its MCP configuration, say) into its folder. Paths must stay
-/// inside the folder.
+/// inside the folder and cannot traverse symlinks.
 fn write_files(dir: &Path, files: &[(String, String)]) -> std::io::Result<()> {
+    use std::io::Write;
     use std::path::Component;
     for (path, text) in files {
         let relative = Path::new(path);
-        if !relative.components().all(|c| matches!(c, Component::Normal(_))) {
+        let components: Vec<Component<'_>> = relative.components().collect();
+        if components.is_empty() || !components.iter().all(|c| matches!(c, Component::Normal(_))) {
             return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("{path} isn't a path inside the folder")));
         }
-        let file = dir.join(relative);
-        if let Some(parent) = file.parent() {
-            std::fs::create_dir_all(parent)?;
+        let mut cur = dir.to_path_buf();
+        for comp in &components[..components.len() - 1] {
+            cur.push(comp);
+            if let Ok(meta) = std::fs::symlink_metadata(&cur)
+                && meta.file_type().is_symlink()
+            {
+                return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("{path} traverses a symlink")));
+            }
+            std::fs::create_dir_all(&cur)?;
         }
-        std::fs::write(file, text)?;
+        cur.push(components.last().unwrap());
+        if let Ok(meta) = std::fs::symlink_metadata(&cur)
+            && meta.file_type().is_symlink()
+        {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("{path} is a symlink")));
+        }
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        let mut file = opts.open(&cur)?;
+        file.write_all(text.as_bytes())?;
     }
     Ok(())
 }
@@ -379,6 +452,15 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let there = dir.join("there");
         std::fs::write(&there, "").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&there, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let non_exec = dir.join("not-exec");
+            std::fs::write(&non_exec, "").unwrap();
+            std::fs::set_permissions(&non_exec, std::fs::Permissions::from_mode(0o644)).unwrap();
+            assert_eq!(find_program("not-exec", Some(&dir.to_string_lossy())), None);
+        }
         let there = there.to_string_lossy().to_string();
         let missing = dir.join("missing").to_string_lossy().to_string();
         let agents = [agent("a", &missing), agent("b", &there), agent("c", &there)];
@@ -445,6 +527,16 @@ mod tests {
         assert_eq!(std::fs::read_to_string(dir.join(".agents/mcp_config.json")).unwrap(), "{}");
         assert!(write_files(&dir, &[("../escape".into(), "".into())]).is_err());
         assert!(write_files(&dir, &[("/etc/escape".into(), "".into())]).is_err());
+        assert!(write_files(&dir, &[("".into(), "".into())]).is_err());
+        assert!(write_files(&dir, &[(".".into(), "".into())]).is_err());
+        #[cfg(unix)]
+        {
+            let outside = std::env::temp_dir().join(format!("familiar-agent-outside-{}", std::process::id()));
+            std::fs::create_dir_all(&outside).unwrap();
+            std::os::unix::fs::symlink(&outside, dir.join("linkdir")).unwrap();
+            assert!(write_files(&dir, &[("linkdir/pwned".into(), "x".into())]).is_err());
+            std::fs::remove_dir_all(&outside).unwrap();
+        }
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

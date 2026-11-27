@@ -2,7 +2,8 @@
 //! on macOS. Speech runs on a background thread, so a slow or missing speech service never blocks the UI. Shared
 //! by the GTK and terminal clients.
 
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, mpsc};
 use std::thread;
 
 #[cfg(all(unix, not(target_os = "macos")))]
@@ -21,20 +22,26 @@ mod backend;
 use backend::Backend;
 
 enum Command {
-    Say(String),
+    Say(u64, String),
     Stop,
 }
 
 pub struct Speaker {
     commands: mpsc::Sender<Command>,
     errors: mpsc::Receiver<String>,
+    stops: Arc<AtomicU64>,
 }
 
-fn run(app: String, commands: mpsc::Receiver<Command>, errors: mpsc::Sender<String>) {
+fn run(app: String, commands: mpsc::Receiver<Command>, errors: mpsc::Sender<String>, stops: Arc<AtomicU64>) {
     let mut backend: Option<Backend> = None;
     // Report a failure once, not for every line.
     let mut reported = false;
     for command in commands {
+        match &command {
+            Command::Say(seq, _) if *seq != stops.load(Ordering::SeqCst) => continue,
+            Command::Stop if backend.is_none() => continue,
+            _ => {}
+        }
         if backend.is_none() {
             match Backend::connect(&app) {
                 Ok(b) => {
@@ -52,7 +59,7 @@ fn run(app: String, commands: mpsc::Receiver<Command>, errors: mpsc::Sender<Stri
         }
         let b = backend.as_mut().unwrap();
         let result = match command {
-            Command::Say(text) => b.say(&text),
+            Command::Say(_, text) => b.say(&text),
             Command::Stop => b.stop(),
         };
         if let Err(e) = result {
@@ -71,23 +78,27 @@ impl Speaker {
     pub fn new(app: &str) -> Self {
         let (commands, commands_rx) = mpsc::channel();
         let (errors_tx, errors) = mpsc::channel();
+        let stops = Arc::new(AtomicU64::new(0));
+        let thread_stops = stops.clone();
         let app = app.to_string();
         thread::Builder::new()
             .name("mu-speech".into())
-            .spawn(move || run(app, commands_rx, errors_tx))
+            .spawn(move || run(app, commands_rx, errors_tx, thread_stops))
             .expect("failed to start the speech thread");
-        Self { commands, errors }
+        Self { commands, errors, stops }
     }
 
     pub fn say(&self, text: &str) {
         let text = text.trim();
         if !text.is_empty() {
-            let _ = self.commands.send(Command::Say(text.to_string()));
+            let seq = self.stops.load(Ordering::SeqCst);
+            let _ = self.commands.send(Command::Say(seq, text.to_string()));
         }
     }
 
     /// Stops speaking and drops anything queued.
     pub fn stop(&self) {
+        self.stops.fetch_add(1, Ordering::SeqCst);
         let _ = self.commands.send(Command::Stop);
     }
 

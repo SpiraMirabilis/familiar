@@ -86,10 +86,16 @@ fn describe(ctx: &Ctx, error: rquickjs::Error) -> String {
         .unwrap_or_else(|| format!("{value:?}"))
 }
 
+const MAX_STACK_SIZE: usize = 256 * 1024;
+const MAX_ACTIONS_PER_TURN: usize = 512;
+const MAX_ACTION_BYTES_PER_TURN: usize = 4 * 1024 * 1024;
+const MAX_JOBS_PER_TURN: usize = 1024;
+
 impl JsHost {
     pub fn new() -> Result<Self, String> {
         let runtime = Runtime::new().map_err(|e| e.to_string())?;
         runtime.set_memory_limit(MEMORY_LIMIT);
+        runtime.set_max_stack_size(MAX_STACK_SIZE);
         let deadline: Rc<Cell<Option<Instant>>> = Rc::default();
         {
             let deadline = deadline.clone();
@@ -102,30 +108,63 @@ impl JsHost {
         host.run(|ctx| {
             let globals = ctx.globals();
             let actions = host.actions.clone();
+            let action_bytes = Rc::new(Cell::new(0usize));
+            let overflowed = Rc::new(Cell::new(false));
+            let bytes_clone = action_bytes.clone();
+            let overflow_clone = overflowed.clone();
             globals.set(
                 "__mu_post",
                 Function::new(ctx.clone(), move |kind: String, args: String| {
-                    actions.borrow_mut().push(parse_action(&kind, &args));
+                    let mut list = actions.borrow_mut();
+                    if list.is_empty() {
+                        bytes_clone.set(0);
+                        overflow_clone.set(false);
+                    }
+                    let new_bytes = bytes_clone.get().saturating_add(args.len());
+                    if list.len() >= MAX_ACTIONS_PER_TURN || new_bytes > MAX_ACTION_BYTES_PER_TURN {
+                        if !overflow_clone.replace(true) {
+                            list.push(ScriptAction::Error("script queued too many actions in one turn; extra actions were dropped".into()));
+                        }
+                        return;
+                    }
+                    bytes_clone.set(new_bytes);
+                    list.push(parse_action(&kind, &args));
                 })?,
             )?;
             globals.set("__mu_now", Function::new(ctx.clone(), move || start.elapsed().as_secs_f64() * 1000.0)?)?;
             ctx.eval_with_options::<(), _>(PRELUDE, options("prelude.js"))?;
-            ctx.eval_with_options::<(), _>(BEIPMU, options("beipmu.js"))
+            ctx.eval_with_options::<(), _>(BEIPMU, options("beipmu.js"))?;
+            // Remove raw host bridge functions now that prelude.js captured them in closures.
+            let _ = globals.remove("__mu_post");
+            let _ = globals.remove("__mu_now");
+            Ok(())
         })?;
         Ok(host)
     }
 
     /// Runs `f` under the time limit, then any promise jobs it queued.
     fn run<T>(&self, f: impl FnOnce(&Ctx) -> rquickjs::Result<T>) -> Result<T, String> {
+        struct ClearDeadline<'a>(&'a Cell<Option<Instant>>);
+        impl Drop for ClearDeadline<'_> {
+            fn drop(&mut self) {
+                self.0.set(None);
+            }
+        }
         self.deadline.set(Some(Instant::now() + TIME_LIMIT));
+        let _clear = ClearDeadline(&self.deadline);
         let result = self.context.with(|ctx| f(&ctx).map_err(|e| describe(&ctx, e)));
+        let mut jobs = 0usize;
         while self.runtime.is_job_pending() {
+            if self.deadline.get().is_some_and(|d| Instant::now() > d) || jobs >= MAX_JOBS_PER_TURN {
+                self.actions.borrow_mut().push(ScriptAction::Error("promise jobs exceeded the per-turn limit".into()));
+                break;
+            }
+            jobs += 1;
             if let Err(e) = self.runtime.execute_pending_job() {
                 let message = e.0.with(|ctx| describe(&ctx, rquickjs::Error::Exception));
                 self.actions.borrow_mut().push(ScriptAction::Error(format!("in a promise: {message}")));
             }
         }
-        self.deadline.set(None);
         result
     }
 
@@ -149,8 +188,13 @@ impl JsHost {
         }
     }
 
-    fn ms_to_instant(&self, ms: f64) -> Instant {
-        self.start + Duration::from_secs_f64(ms.max(0.0) / 1000.0)
+    fn ms_to_instant(&self, ms: f64) -> Option<Instant> {
+        if !ms.is_finite() || ms < 0.0 {
+            return None;
+        }
+        let secs = ms / 1000.0;
+        let dur = Duration::try_from_secs_f64(secs).ok()?;
+        self.start.checked_add(dur)
     }
 }
 
@@ -225,7 +269,7 @@ impl ScriptHost for JsHost {
 
     fn next_deadline(&mut self) -> Option<Instant> {
         let ms = self.call_hook::<_, f64>("nextDue", ())?;
-        (ms >= 0.0).then(|| self.ms_to_instant(ms))
+        self.ms_to_instant(ms)
     }
 
     fn take_actions(&mut self) -> Vec<ScriptAction> {

@@ -1,14 +1,10 @@
 //! speech-dispatcher (SSIP) backend, for Linux and other Unix systems.
 
-use std::collections::VecDeque;
+use std::process::Stdio;
 use std::thread;
 use std::time::Duration;
 
-use ssip_client::{ClientName, MessageId, MessageScope, Priority, fifo};
-
-/// Messages we've spoken recently, so "stop" can cancel just ours (cancelling everything would
-/// also silence a screen reader).
-const REMEMBERED: usize = 64;
+use ssip_client::{ClientName, MessageScope, Priority, fifo};
 
 pub const HINT: &str = " Is speech-dispatcher installed?";
 
@@ -16,7 +12,6 @@ type Client = ssip_client::Client<fifo::UnixStream>;
 
 pub struct Backend {
     client: Client,
-    spoken: VecDeque<MessageId>,
 }
 
 pub(crate) fn connect_client(app: &str) -> Result<Client, String> {
@@ -26,7 +21,12 @@ pub(crate) fn connect_client(app: &str) -> Result<Client, String> {
         Err(_) => {
             // Nothing listening: start the daemon, as libspeechd does (systems with the
             // systemd socket unit never get here).
-            let _ = std::process::Command::new("speech-dispatcher").arg("--spawn").status();
+            let _ = std::process::Command::new("speech-dispatcher")
+                .arg("--spawn")
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
             thread::sleep(Duration::from_millis(500));
             open().map_err(|e| e.to_string())?
         }
@@ -47,31 +47,37 @@ pub(crate) fn ssip_token(text: &str) -> String {
     if token.is_empty() { "mu".into() } else { token }
 }
 
+/// Escapes SSIP data lines: flattens newlines and dot-stuffs a leading `.` so untrusted text
+/// cannot end `SPEAK` data mode or inject SSIP commands.
+pub(crate) fn sanitize_ssip_line(text: &str) -> String {
+    let single = text.replace(['\r', '\n'], " ");
+    let trimmed = single.trim();
+    if trimmed.starts_with('.') { format!(".{trimmed}") } else { trimmed.to_string() }
+}
+
 impl Backend {
     pub fn connect(app: &str) -> Result<Self, String> {
-        Ok(Self { client: connect_client(app)?, spoken: VecDeque::new() })
+        Ok(Self { client: connect_client(app)? })
     }
 
     pub fn say(&mut self, text: &str) -> Result<(), String> {
-        let id = self
-            .client
+        let safe = sanitize_ssip_line(text);
+        if safe.is_empty() {
+            return Ok(());
+        }
+        self.client
             .speak()
             .and_then(|c| c.check_receiving_data())
-            .and_then(|c| c.send_line(text))
+            .and_then(|c| c.send_line(&safe))
             .and_then(|c| c.receive_message_id())
             .map_err(|e| e.to_string())?;
-        self.spoken.push_back(id);
-        if self.spoken.len() > REMEMBERED {
-            self.spoken.pop_front();
-        }
         Ok(())
     }
 
     pub fn stop(&mut self) -> Result<(), String> {
-        for id in self.spoken.drain(..) {
-            // Already-finished messages just fail to cancel; that's fine.
-            self.client.cancel(MessageScope::Message(id)).and_then(|c| c.receive()).map_err(|e| e.to_string())?;
-        }
+        // MessageScope::Last formats as `CANCEL self`, cancelling only this connection's
+        // active and queued messages without affecting screen readers.
+        self.client.cancel(MessageScope::Last).and_then(|c| c.receive()).map_err(|e| e.to_string())?;
         Ok(())
     }
 }
@@ -83,6 +89,14 @@ mod tests {
         assert_eq!(super::ssip_token("Familiar Client"), "Familiar-Client");
         assert_eq!(super::ssip_token("a:b"), "a-b");
         assert_eq!(super::ssip_token(""), "mu");
+    }
+
+    #[test]
+    fn ssip_lines_are_sanitized() {
+        assert_eq!(super::sanitize_ssip_line("hello\r\n.\r\nQUIT"), "hello  .  QUIT");
+        assert_eq!(super::sanitize_ssip_line("."), "..");
+        assert_eq!(super::sanitize_ssip_line("  .leading"), "..leading");
+        assert_eq!(super::sanitize_ssip_line(" \r\n "), "");
     }
 
     /// Needs a speech-dispatcher; run with `cargo test -p familiar-speech -- --ignored`. It

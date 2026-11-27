@@ -99,6 +99,19 @@ impl Shared {
 pub struct AgentServer {
     port: u16,
     shared: Arc<Shared>,
+    shutdown: Option<oneshot::Sender<()>>,
+}
+
+impl Drop for AgentServer {
+    fn drop(&mut self) {
+        let tokens: Vec<String> = self.shared.tokens.lock().map(|mut t| t.drain().map(|(k, _)| k).collect()).unwrap_or_default();
+        for token in tokens {
+            let _ = self.shared.notes.send(Note::Closed(token));
+        }
+        if let Some(tx) = self.shutdown.take() {
+            let _ = tx.send(());
+        }
+    }
 }
 
 impl AgentServer {
@@ -111,13 +124,18 @@ impl AgentServer {
             let _runtime = runtime.enter();
             tokio::net::TcpListener::from_std(listener)?
         };
-        let (notes, _) = broadcast::channel(16);
+        let (notes, _) = broadcast::channel(64);
         let shared = Arc::new(Shared { tokens: Mutex::new(HashMap::new()), requests, notes });
         let app = router(shared.clone());
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
         runtime.spawn(async move {
-            let _ = axum::serve(listener, app).await;
+            let _ = axum::serve(listener, app)
+                .with_graceful_shutdown(async move {
+                    let _ = shutdown_rx.await;
+                })
+                .await;
         });
-        Ok(Self { port, shared })
+        Ok(Self { port, shared, shutdown: Some(shutdown_tx) })
     }
 
     /// A new endpoint for an agent working on `session` in the folder `dir`: its token and URL.
@@ -164,16 +182,71 @@ fn router(shared: Arc<Shared>) -> Router {
         .with_state(shared)
 }
 
+const MAX_BATCH: usize = 32;
+const CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
+fn is_local_authority(authority: &str) -> bool {
+    if authority.is_empty() || authority.contains(['/', '@', '?', '#']) || authority.chars().any(char::is_whitespace) {
+        return false;
+    }
+    let (host, port) = if let Some(rest) = authority.strip_prefix('[') {
+        let Some((h, after)) = rest.split_once(']') else { return false };
+        let port = match after {
+            "" => None,
+            s => match s.strip_prefix(':') {
+                Some(p) => Some(p),
+                None => return false,
+            },
+        };
+        (format!("[{h}]"), port)
+    } else if let Some((h, p)) = authority.split_once(':') {
+        (h.to_string(), Some(p))
+    } else {
+        (authority.to_string(), None)
+    };
+    if let Some(p) = port
+        && (p.is_empty() || !p.bytes().all(|b| b.is_ascii_digit()))
+    {
+        return false;
+    }
+    matches!(host.to_ascii_lowercase().as_str(), "127.0.0.1" | "localhost" | "[::1]")
+}
+
 /// Turns away pages in a browser (DNS rebinding): only local origins, or none, may call.
 fn foreign_origin(headers: &HeaderMap) -> bool {
-    let Some(origin) = headers.get(header::ORIGIN).and_then(|o| o.to_str().ok()) else { return false };
-    let host = origin.split("://").nth(1).unwrap_or(origin);
-    let host = host.rsplit_once(':').map_or(host, |(h, _)| h);
-    !matches!(host, "127.0.0.1" | "localhost" | "[::1]")
+    for raw in headers.get_all(header::ORIGIN) {
+        let Ok(origin) = raw.to_str() else { return true };
+        let rest = if let Some(r) = origin.get(..7).filter(|s| s.eq_ignore_ascii_case("http://")).map(|_| &origin[7..]) {
+            r
+        } else if let Some(r) = origin.get(..8).filter(|s| s.eq_ignore_ascii_case("https://")).map(|_| &origin[8..]) {
+            r
+        } else {
+            return true;
+        };
+        if !is_local_authority(rest) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Rejects non-local `Host` headers (DNS rebinding protection for same-origin requests without `Origin`).
+fn foreign_host(headers: &HeaderMap) -> bool {
+    for raw in headers.get_all(header::HOST) {
+        let Ok(host) = raw.to_str() else { return true };
+        if !is_local_authority(host) {
+            return true;
+        }
+    }
+    false
+}
+
+fn invalid_request(id: Value, message: &str) -> Value {
+    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32600, "message": message } })
 }
 
 async fn on_post(State(shared): State<Arc<Shared>>, Path(token): Path<String>, headers: HeaderMap, body: Bytes) -> Response {
-    if foreign_origin(&headers) {
+    if foreign_origin(&headers) || foreign_host(&headers) {
         return StatusCode::FORBIDDEN.into_response();
     }
     let Some(endpoint) = shared.endpoint(&token) else { return StatusCode::NOT_FOUND.into_response() };
@@ -185,14 +258,18 @@ async fn on_post(State(shared): State<Arc<Shared>>, Path(token): Path<String>, h
         }
     };
     let reply = match message {
+        Value::Array(batch) if batch.is_empty() => Some(invalid_request(Value::Null, "Invalid Request: empty batch")),
+        Value::Array(batch) if batch.len() > MAX_BATCH => {
+            Some(invalid_request(Value::Null, "Invalid Request: batch too large"))
+        }
         Value::Array(batch) => {
             let mut replies = Vec::new();
             for m in batch {
-                replies.extend(handle(&shared, &endpoint, m).await);
+                replies.extend(handle(&shared, &endpoint, &token, m).await);
             }
             (!replies.is_empty()).then(|| Value::Array(replies))
         }
-        m => handle(&shared, &endpoint, m).await,
+        m => handle(&shared, &endpoint, &token, m).await,
     };
     match reply {
         Some(reply) => axum::Json(reply).into_response(),
@@ -203,21 +280,27 @@ async fn on_post(State(shared): State<Arc<Shared>>, Path(token): Path<String>, h
 
 /// A stream for notifications from the server: that the tools changed.
 async fn on_get(State(shared): State<Arc<Shared>>, Path(token): Path<String>, headers: HeaderMap) -> Response {
-    if foreign_origin(&headers) {
+    if foreign_origin(&headers) || foreign_host(&headers) {
         return StatusCode::FORBIDDEN.into_response();
     }
-    let Some(Endpoint { session, .. }) = shared.endpoint(&token) else { return StatusCode::NOT_FOUND.into_response() };
+    // Subscribe BEFORE checking endpoint so a concurrent close() cannot be missed.
     let notes = shared.notes.subscribe();
+    let Some(Endpoint { session, .. }) = shared.endpoint(&token) else { return StatusCode::NOT_FOUND.into_response() };
+    let shared_for_stream = shared.clone();
     let stream = futures_util::stream::unfold(notes, move |mut notes| {
         let token = token.clone();
+        let shared = shared_for_stream.clone();
         async move {
             loop {
                 match notes.recv().await {
                     Ok(Note::ToolsChanged(s)) if s == session => break,
                     Ok(Note::Closed(t)) if t == token => return None,
                     Ok(_) => continue,
-                    // Missed some: say the tools changed, in case that was one of them.
-                    Err(broadcast::error::RecvError::Lagged(_)) => break,
+                    // Missed some: stop if the token was closed, otherwise notify tools changed.
+                    Err(broadcast::error::RecvError::Lagged(_)) => {
+                        shared.endpoint(&token)?;
+                        break;
+                    }
                     Err(broadcast::error::RecvError::Closed) => return None,
                 }
             }
@@ -229,16 +312,35 @@ async fn on_get(State(shared): State<Arc<Shared>>, Path(token): Path<String>, he
 }
 
 /// Answers one JSON-RPC message. Notifications and responses get no answer.
-async fn handle(shared: &Shared, endpoint: &Endpoint, message: Value) -> Option<Value> {
+async fn handle(shared: &Shared, endpoint: &Endpoint, token: &str, message: Value) -> Option<Value> {
     let session = endpoint.session;
-    let id = message.get("id").cloned()?;
-    let method = message.get("method").and_then(Value::as_str)?;
-    let params = message.get("params").cloned().unwrap_or(Value::Null);
+    let Some(obj) = message.as_object() else {
+        return Some(invalid_request(Value::Null, "Invalid Request"));
+    };
+    // Responses from the client carry result/error without a method.
+    if !obj.contains_key("method") && (obj.contains_key("result") || obj.contains_key("error")) {
+        return None;
+    }
+    let id = match obj.get("id") {
+        Some(id) => id.clone(),
+        None => {
+            // Valid notification has a string method; malformed object without method/id is Invalid Request.
+            return if obj.get("method").and_then(Value::as_str).is_some() {
+                None
+            } else {
+                Some(invalid_request(Value::Null, "Invalid Request"))
+            };
+        }
+    };
+    let Some(method) = obj.get("method").and_then(Value::as_str) else {
+        return Some(invalid_request(id, "Invalid Request: missing method"));
+    };
+    let params = obj.get("params").cloned().unwrap_or(Value::Null);
     let result = match method {
         "initialize" => Ok(initialize(&params)),
         "ping" => Ok(json!({})),
         "tools/list" => Ok(json!({ "tools": tools(shared, session).await })),
-        "tools/call" => call(shared, endpoint, &params).await,
+        "tools/call" => call(shared, endpoint, token, &params).await,
         _ => Err((-32601, format!("Method not found: {method}"))),
     };
     Some(match result {
@@ -249,7 +351,7 @@ async fn handle(shared: &Shared, endpoint: &Endpoint, message: Value) -> Option<
 
 fn initialize(params: &Value) -> Value {
     let asked = params.get("protocolVersion").and_then(Value::as_str).unwrap_or("");
-    let version = VERSIONS.iter().find(|v| **v == asked).unwrap_or(&VERSIONS[1]);
+    let version = VERSIONS.iter().find(|v| **v == asked).unwrap_or(&VERSIONS[0]);
     json!({
         "protocolVersion": version,
         "capabilities": { "tools": { "listChanged": true } },
@@ -317,7 +419,7 @@ async fn tools(shared: &Shared, session: u64) -> Vec<Value> {
     tools
 }
 
-async fn call(shared: &Shared, endpoint: &Endpoint, params: &Value) -> Result<Value, (i64, String)> {
+async fn call(shared: &Shared, endpoint: &Endpoint, token: &str, params: &Value) -> Result<Value, (i64, String)> {
     let session = endpoint.session;
     let Some(tool) = params.get("name").and_then(Value::as_str) else { return Err((-32602, "No tool name".into())) };
     let args = match params.get("arguments") {
@@ -341,9 +443,26 @@ async fn call(shared: &Shared, endpoint: &Endpoint, params: &Value) -> Result<Va
                 endpoint.seen.store(heard.next, Ordering::Relaxed);
             }
         }
+        let mut notes = shared.notes.subscribe();
         let (reply, answer) = oneshot::channel();
-        let _ = shared.requests.send(AgentRequest { session, ask: Ask::Call { tool: tool.to_string(), args, reply } });
-        answer.await.unwrap_or_else(|_| (false, "The world's tab was closed".into()))
+        if shared.requests.send(AgentRequest { session, ask: Ask::Call { tool: tool.to_string(), args, reply } }).is_err() {
+            return Ok(json!({ "content": [{ "type": "text", "text": CLOSED }], "isError": true }));
+        }
+        let closed = async {
+            loop {
+                match notes.recv().await {
+                    Ok(Note::Closed(t)) if t == token => break,
+                    Err(broadcast::error::RecvError::Closed) => break,
+                    Err(broadcast::error::RecvError::Lagged(_)) if shared.endpoint(token).is_none() => break,
+                    _ => {}
+                }
+            }
+        };
+        tokio::select! {
+            res = answer => res.unwrap_or_else(|_| (false, CLOSED.into())),
+            _ = closed => (false, "The agent session was stopped".into()),
+            _ = tokio::time::sleep(CALL_TIMEOUT) => (false, "Tool call timed out".into()),
+        }
     };
     Ok(json!({ "content": [{ "type": "text", "text": text }], "isError": !ok }))
 }
@@ -629,6 +748,36 @@ mod tests {
         let mut local = HeaderMap::new();
         local.insert(header::ORIGIN, "http://localhost:3000".parse().unwrap());
         assert!(!foreign_origin(&local));
+
+        // Spoofed origins and IPv6 loopback.
+        let mut spoofed = HeaderMap::new();
+        spoofed.insert(header::ORIGIN, "http://localhost@evil.example".parse().unwrap());
+        assert!(foreign_origin(&spoofed));
+        let mut v6 = HeaderMap::new();
+        v6.insert(header::ORIGIN, "http://[::1]:8080".parse().unwrap());
+        assert!(!foreign_origin(&v6));
+
+        // DNS rebinding Host header checks.
+        let rebind = Request::post("/secret/mcp")
+            .header(header::HOST, "evil.example:8080")
+            .body(Body::from(json!({"jsonrpc":"2.0","id":1,"method":"ping"}).to_string()))
+            .unwrap();
+        assert_eq!(router(shared.clone()).oneshot(rebind).await.unwrap().status(), StatusCode::FORBIDDEN);
+
+        let v6_host = Request::post("/secret/mcp")
+            .header(header::HOST, "[::1]:8080")
+            .body(Body::from(json!({"jsonrpc":"2.0","id":1,"method":"ping"}).to_string()))
+            .unwrap();
+        assert_eq!(router(shared.clone()).oneshot(v6_host).await.unwrap().status(), StatusCode::OK);
+
+        // Invalid JSON-RPC request shape returns -32600; oversized batch rejected.
+        let (status, reply) = post_json(&shared, "/secret/mcp", json!({"jsonrpc":"2.0","id":9})).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(reply.unwrap()["error"]["code"], -32600);
+        let big_batch = Value::Array(vec![json!({"jsonrpc":"2.0","id":1,"method":"ping"}); 33]);
+        let (status, reply) = post_json(&shared, "/secret/mcp", big_batch).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(reply.unwrap()["error"]["code"], -32600);
     }
 
     #[tokio::test]

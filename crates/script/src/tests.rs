@@ -255,3 +255,42 @@ fn beipmu_text_windows_timers_and_trigger_scripts() {
     assert_eq!(js.eval("fired + ' ' + t.Active").unwrap().as_deref(), Some("2 false"), "returning true stops the timer");
     assert!(errors(&js.take_actions()).is_empty());
 }
+
+#[test]
+fn hardening_timers_vars_listeners_and_beipmu() {
+    let mut js = host();
+    // Infinite / NaN delays don't panic.
+    js.eval("setTimeout(() => mu.notice('inf'), Infinity); setTimeout(() => mu.notice('nan'), NaN);").unwrap();
+    js.tick(Instant::now() + Duration::from_secs(10));
+
+    // mu.off() during dispatch doesn't skip the next listener.
+    js.eval(
+        r#"
+        let seen = [];
+        function first() { seen.push(1); mu.off("line", first); }
+        function second() { seen.push(2); }
+        mu.on("line", first);
+        mu.on("line", second);
+        "#,
+    )
+    .unwrap();
+    js.on_line("test");
+    assert_eq!(js.eval("seen.join(',')").unwrap().as_deref(), Some("1,2"));
+
+    // mu.vars has a null prototype so Object.prototype keys aren't reported as variables.
+    assert_eq!(js.eval("('toString' in mu.vars) + ' ' + (mu.vars.toString === undefined)").unwrap().as_deref(), Some("false true"));
+
+    // RunFile rejects newline injection.
+    assert!(js.eval(r#"window.RunFile("ok.txt\n/eval 1")"#).is_err());
+
+    // timer.Active = false stops the timer.
+    js.eval("var n = 0; var t = app.CreateInterval(10, () => { n++; }); t.Active = false;").unwrap();
+    js.tick(Instant::now() + Duration::from_secs(1));
+    assert_eq!(js.eval("n").unwrap().as_deref(), Some("0"));
+
+    // Infinite promise chain is capped instead of hanging.
+    let _ = js.take_actions();
+    js.eval("function spin() { Promise.resolve().then(spin); } spin();").unwrap();
+    let actions = js.take_actions();
+    assert!(errors(&actions).iter().any(|e| e.contains("promise jobs exceeded")), "{actions:?}");
+}

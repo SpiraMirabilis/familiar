@@ -69,6 +69,9 @@
       toString() {
         return text;
       },
+      tostring() {
+        return text;
+      },
       insert: styling,
       delete: styling,
       color: styling,
@@ -93,12 +96,8 @@
     return hook ? hook.fn(...args, hook.userdata) : undefined;
   };
 
-  mu.on('line', (text) => {
-    // OnReceive and OnDisplay return true when they've dealt with the line, which hides it.
-    if (runHook('receive', text) === true) return false;
-    if (runHook('display', textLine(text)) === true) return false;
-    return true;
-  });
+  mu.on('line', (text) => (runHook('receive', text) === true ? false : true));
+  mu.on('line', (text) => (runHook('display', textLine(text)) === true ? false : true));
   mu.on('send', (text) => (runHook('send', text) === true ? false : undefined));
   mu.on('gmcp', (pkg, data) => {
     const json = data === null || data === undefined ? '' : typeof data === 'string' ? data : JSON.stringify(data);
@@ -109,7 +108,7 @@
 
   const makeTextWindow = (initialTitle) => {
     let title = initialTitle;
-    const write = (text) => (title ? mu.spawn(title, String(text)) : mu.echo(String(text)));
+    const write = (text) => (title !== undefined ? mu.spawn(title, String(text)) : mu.echo(String(text)));
     return loose({
       get properties() {
         return loose({
@@ -166,7 +165,8 @@
     transmit: (text) => mu.send(String(text)),
     receive: (text) => mu.receive(String(text)),
     display: (text) => mu.echo(String(text)),
-    sendgmcp: (pkg, json) => mu.gmcp(String(pkg), json === undefined ? undefined : String(json)),
+    sendgmcp: (pkg, json) =>
+      mu.gmcp(String(pkg), json === undefined || json === null ? undefined : typeof json === 'string' ? json : JSON.stringify(json)),
     setonsend: setHook('send'),
     setonreceive: setHook('receive'),
     setondisplay: setHook('display'),
@@ -207,7 +207,11 @@
     setonactivate: () => {},
     setonclose: () => {},
     run: (command) => mu.input(String(command)),
-    runfile: (path) => mu.input(`/script load ${path}`),
+    runfile: (path) => {
+      const clean = String(path);
+      if (/[\r\n]/.test(clean)) throw new Error('window.RunFile path cannot contain newlines');
+      mu.input(`/script load ${clean}`);
+    },
     createdialogconnect: () => {},
     titleprefix: '',
     get title() {
@@ -232,6 +236,9 @@
       userdata,
       get active() {
         return active;
+      },
+      set active(v) {
+        if (!v) t.kill();
       },
       kill() {
         active = false;
@@ -283,13 +290,18 @@
 
   // Trigger "beipmu:Name" script actions: BeipMU called Name(ranges, line, window), where
   // ranges holds the start and end of the match and of each group.
-  globalThis.__beipmu = {
-    callTrigger(name, args) {
-      const fn = globalThis[name];
-      if (typeof fn !== 'function') throw new Error(`trigger script "${name}" isn't a function`);
-      const [text, ...offsets] = args;
-      const ranges = offsets.map(Number);
-      fn(collection(ranges), textLine(text), win);
+  Object.defineProperty(globalThis, '__beipmu', {
+    value: {
+      callTrigger(name, args) {
+        const fn = globalThis[name];
+        if (typeof fn !== 'function') throw new Error(`trigger script "${name}" isn't a function`);
+        const [text, ...offsets] = args;
+        const ranges = offsets.map(Number);
+        fn(collection(ranges), textLine(text), win);
+      },
     },
-  };
+    writable: false,
+    configurable: false,
+    enumerable: false,
+  });
 })();

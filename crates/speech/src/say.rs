@@ -18,33 +18,38 @@ pub struct Backend {
     speaking: Arc<Mutex<Option<Child>>>,
 }
 
-fn speak(text: &str) -> std::io::Result<Child> {
+fn spawn_say() -> std::io::Result<(Child, Option<std::process::ChildStdin>)> {
     // The text goes in on stdin: as an argument, a line starting with `-` would be an option.
     let mut child = Command::new("say").stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null()).spawn()?;
-    if let Some(mut stdin) = child.stdin.take() {
-        let _ = stdin.write_all(text.as_bytes());
-    }
-    Ok(child)
+    let stdin = child.stdin.take();
+    Ok((child, stdin))
 }
 
 fn run(queue: mpsc::Receiver<(u64, String)>, stops: Arc<AtomicU64>, speaking: Arc<Mutex<Option<Child>>>) {
     for (queued_at, text) in queue {
-        {
+        let stdin = {
             // Checked with the lock held, so a stop either sees this message's process or
             // prevents it from starting.
-            let mut slot = speaking.lock().unwrap();
+            let mut slot = speaking.lock().unwrap_or_else(|e| e.into_inner());
             if stops.load(Ordering::SeqCst) != queued_at {
                 continue;
             }
-            match speak(&text) {
-                Ok(child) => *slot = Some(child),
+            match spawn_say() {
+                Ok((child, stdin)) => {
+                    *slot = Some(child);
+                    stdin
+                }
                 Err(_) => continue,
             }
+        };
+        // Write stdin outside the lock so `stop()` can kill `say` even if text exceeds the pipe buffer.
+        if let Some(mut stdin) = stdin {
+            let _ = stdin.write_all(text.as_bytes());
         }
         // Polling rather than wait(): the lock has to be free for stop() to kill the process.
         loop {
             thread::sleep(Duration::from_millis(30));
-            let mut slot = speaking.lock().unwrap();
+            let mut slot = speaking.lock().unwrap_or_else(|e| e.into_inner());
             match slot.as_mut().map(Child::try_wait) {
                 Some(Ok(None)) => {}
                 _ => {
@@ -74,7 +79,7 @@ impl Backend {
     }
 
     pub fn stop(&mut self) -> Result<(), String> {
-        let mut slot = self.speaking.lock().unwrap();
+        let mut slot = self.speaking.lock().unwrap_or_else(|e| e.into_inner());
         self.stops.fetch_add(1, Ordering::SeqCst);
         if let Some(child) = slot.as_mut() {
             let _ = child.kill();
