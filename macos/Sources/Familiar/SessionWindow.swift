@@ -283,13 +283,16 @@ final class PuppetWindowController: NSWindowController, NSWindowDelegate {
         let input = self.input
         input.onSubmit = { [weak session] text, _ in session?.puppetSubmit(name, text) }
         input.onKey = { [weak session] event in session?.runMacro(event) ?? false }
-        var scroller: OutputScrollView?
+        weak var scroller: OutputScrollView?
         input.onPage = { up in scroller?.scrollPage(up: up) }
         let view = VStack(spacing: 0) {
             OutputArea(
                 buffer: buffer,
                 onLink: { [weak session] in session?.followLink($0) },
-                onType: { [weak session] in typed(input, $0) { session?.runMacro($0) ?? false } },
+                onType: { [weak session, weak input] in
+                    guard let input else { return false }
+                    return typed(input, $0) { session?.runMacro($0) ?? false }
+                },
                 onCreate: { scroller = $0 }
             )
             Divider()

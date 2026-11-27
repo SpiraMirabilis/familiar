@@ -549,17 +549,32 @@ impl App {
     /// `/connect WORLD [CHARACTER]` (world names may have spaces) or `/connect host:port`.
     pub fn connect_command(&mut self, args: &str) {
         let args = args.trim();
-        let lower = args.to_lowercase();
+        let match_world_prefix = |world: &str| -> Option<&str> {
+            let target = world.to_lowercase();
+            // Walk char boundaries of `args` so case-folding length changes (e.g. İ -> i̇) never panic.
+            let mut acc = String::new();
+            for (idx, c) in args.char_indices() {
+                acc.extend(c.to_lowercase());
+                let after = idx + c.len_utf8();
+                if acc == target {
+                    let rest = &args[after..];
+                    if rest.is_empty() || rest.starts_with(' ') {
+                        return Some(rest.trim());
+                    }
+                } else if acc.len() >= target.len() {
+                    break;
+                }
+            }
+            None
+        };
         let found = self
             .config
             .worlds
             .iter()
-            .map(|w| w.name.clone())
-            .filter(|n| lower == n.to_lowercase() || lower.starts_with(&format!("{} ", n.to_lowercase())))
-            .max_by_key(String::len);
+            .filter_map(|w| match_world_prefix(&w.name).map(|rest| (w.name.clone(), rest)))
+            .max_by_key(|(name, _)| name.len());
         match found {
-            Some(world) => {
-                let character = args[world.len()..].trim();
+            Some((world, character)) => {
                 self.open_saved(&world, (!character.is_empty()).then_some(character));
             }
             None => match parse_address(args) {

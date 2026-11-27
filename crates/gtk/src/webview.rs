@@ -50,6 +50,21 @@ pub struct WebPane {
 impl WebPane {
     pub fn new(open: &WebViewOpen, on_message: impl Fn(BridgeMessage) + 'static) -> Self {
         let content = webkit6::UserContentManager::new();
+        // Inject a per-pane secret token in the top frame BEFORE BRIDGE_JS so untrusted
+        // cross-origin iframes cannot forge `window.webkit.messageHandlers.mu` calls.
+        let token = format!(
+            "{:016x}",
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos() as u64
+                ^ (std::ptr::addr_of!(content) as u64)
+        );
+        let token_script = format!("window.__familiar_bridge_token = {token:?};");
+        content.add_script(&webkit6::UserScript::new(
+            &token_script,
+            webkit6::UserContentInjectedFrames::TopFrame,
+            webkit6::UserScriptInjectionTime::Start,
+            &[],
+            &[],
+        ));
         content.add_script(&webkit6::UserScript::new(
             BRIDGE_JS,
             webkit6::UserContentInjectedFrames::TopFrame,
@@ -59,7 +74,11 @@ impl WebPane {
         ));
         content.register_script_message_handler("mu", None);
         content.connect_script_message_received(Some("mu"), move |_, value| {
-            if let Some(message) = value.to_json(0).and_then(|json| BridgeMessage::parse(&json)) {
+            if let Some(json) = value.to_json(0)
+                && let Ok(v) = serde_json::from_str::<serde_json::Value>(&json)
+                && v.get("_token").and_then(|t| t.as_str()) == Some(token.as_str())
+                && let Some(message) = BridgeMessage::parse(&json)
+            {
                 on_message(message);
             }
         });
@@ -72,6 +91,9 @@ impl WebPane {
     /// Loads the URL (with any extra HTTP headers) or HTML source.
     pub fn load(&self, open: &WebViewOpen) {
         if let Some(url) = &open.url {
+            if !familiar_engine::media::is_http_url(url) {
+                return;
+            }
             if open.headers.is_empty() {
                 self.view.load_uri(url);
             } else {

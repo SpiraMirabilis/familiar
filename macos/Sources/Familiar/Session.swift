@@ -201,6 +201,8 @@ final class Session: ObservableObject {
     /// Closes the connection and everything that belongs to it.
     func close() {
         guard !closed else { return }
+        mapSaver?.invalidate()
+        mapSaver = nil
         sounds.stop(nil)
         puppets.values.forEach { $0.close() }
         puppets = [:]
@@ -358,9 +360,11 @@ final class Session: ObservableObject {
     }
 
     private func open(uri: String) {
-        if let url = URL(string: uri) {
-            NSWorkspace.shared.open(url)
-        }
+        guard let url = URL(string: uri),
+              let scheme = url.scheme?.lowercased(),
+              ["http", "https", "mailto"].contains(scheme)
+        else { return }
+        NSWorkspace.shared.open(url)
     }
 
     private func playSound(_ path: String) {
@@ -503,10 +507,14 @@ final class Session: ObservableObject {
             default: self.output.notice("Blocked a web view from the server.")
             }
         }
-        if let window {
-            alert.beginSheetModal(for: window, completionHandler: answer)
-        } else {
-            answer(alert.runModal())
+        // Defer presentation so alert.runModal() never runs inside output.storage.beginEditing().
+        DispatchQueue.main.async { [weak self] in
+            guard let self, !self.closed else { return }
+            if let window = self.window {
+                alert.beginSheetModal(for: window, completionHandler: answer)
+            } else {
+                answer(alert.runModal())
+            }
         }
     }
 

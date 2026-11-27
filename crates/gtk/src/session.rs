@@ -424,17 +424,25 @@ impl SessionView {
                 let out = this.engine.borrow_mut().handle_event(event);
                 this.apply(out);
                 // Handle whatever else has already arrived before letting GTK redraw.
-                for _ in 0..BATCH_LIMIT {
-                    if done {
+                let mut hit_limit = false;
+                for n in 0..BATCH_LIMIT {
+                    if done || this.generation.get() != generation {
                         break;
                     }
                     let Ok(event) = events.try_recv() else { break };
                     done = matches!(event, familiar_net::SessionEvent::Disconnected { .. });
                     let out = this.engine.borrow_mut().handle_event(event);
                     this.apply(out);
+                    if n + 1 == BATCH_LIMIT {
+                        hit_limit = true;
+                    }
                 }
-                if done {
+                if done || this.generation.get() != generation {
                     return;
+                }
+                if hit_limit {
+                    // Yield back to the GLib main loop so a network flood can't freeze painting/input.
+                    glib::timeout_future(std::time::Duration::ZERO).await;
                 }
             }
         });
@@ -442,6 +450,30 @@ impl SessionView {
 
     pub fn disconnect(&self) {
         self.engine.borrow_mut().disconnect();
+    }
+
+    /// Cleans up everything owned by this session tab (called on tab close and window close).
+    pub fn close(self: &Rc<Self>) {
+        self.save_map();
+        #[cfg(feature = "agents")]
+        self.close_agent();
+        if let Some((id, _)) = self.timer.borrow_mut().take() {
+            id.remove();
+        }
+        self.media.run(familiar_engine::media::MediaCommand::Stop { name: None }, Rc::new(|_| {}));
+        for clip in self.sounds.borrow_mut().drain(..) {
+            clip.stop();
+        }
+        #[cfg(feature = "webview")]
+        for pane in self.webviews.borrow_mut().drain(..) {
+            if let Some(win) = pane.window {
+                win.close();
+            }
+        }
+        self.disconnect();
+        if self.is_logging() {
+            self.toggle_log();
+        }
     }
 
     pub fn toggle_log(self: &Rc<Self>) {
@@ -455,9 +487,7 @@ impl SessionView {
 
     fn apply(self: &Rc<Self>, outputs: Vec<Output>) {
         self.apply_outputs(outputs);
-        if self.engine.borrow().has_scripting() {
-            self.schedule_timer();
-        }
+        self.schedule_timer();
     }
 
     fn apply_outputs(self: &Rc<Self>, outputs: Vec<Output>) {

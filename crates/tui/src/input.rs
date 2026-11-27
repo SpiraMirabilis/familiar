@@ -260,7 +260,11 @@ impl Input {
 
     /// The word before the cursor and where it starts, for completion.
     pub fn current_word(&self) -> (usize, &str) {
-        let start = self.text[..self.cursor].rfind(|c: char| c.is_whitespace()).map_or(0, |i| i + 1);
+        let start = self.text[..self.cursor]
+            .char_indices()
+            .rev()
+            .find(|&(_, c)| c.is_whitespace())
+            .map_or(0, |(i, c)| i + c.len_utf8());
         (start, &self.text[start..self.cursor])
     }
 
@@ -398,6 +402,11 @@ mod tests {
         assert_eq!(i.text, "kill Gandalf");
         assert!(i.complete(|_| unreachable!()));
         assert_eq!(i.text, "kill Gimli", "repeated Tab cycles");
+
+        // Multi-byte whitespace before the cursor must not slice mid-char.
+        let mut nbsp = typed("say\u{00A0}Gand");
+        assert!(nbsp.complete(names));
+        assert_eq!(nbsp.text, "say\u{00A0}Gandalf");
     }
 
     #[test]

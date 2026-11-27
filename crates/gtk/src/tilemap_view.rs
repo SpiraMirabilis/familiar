@@ -50,7 +50,8 @@ impl TilemapView {
         }
         state.tiles_url = url.clone();
         drop(state);
-        let job = crate::runtime().spawn_blocking(move || familiar_engine::media::fetch(&url));
+        let fetch_url = url.clone();
+        let job = crate::runtime().spawn_blocking(move || familiar_engine::media::fetch(&fetch_url));
         let weak = Rc::downgrade(self);
         glib::spawn_future_local(async move {
             let path = match job.await {
@@ -59,9 +60,15 @@ impl TilemapView {
                 Err(e) => return notice(format!("Couldn't download the tiles: {e}")),
             };
             let Some(this) = weak.upgrade() else { return };
+            if this.state.borrow().tiles_url != url {
+                return;
+            }
             match Pixbuf::from_file(&path) {
                 Ok(pixbuf) => {
                     let mut state = this.state.borrow_mut();
+                    if state.tiles_url != url {
+                        return;
+                    }
                     state.tiles = Some(pixbuf);
                     state.rendered = None;
                 }
@@ -76,11 +83,20 @@ impl TilemapView {
         let map = state.map.as_ref()?;
         let tiles = state.tiles.as_ref()?;
         let (tw, th) = (map.info.tile_width as i32, map.info.tile_height as i32);
+        let (mw, mh) = (map.info.width as i32, map.info.height as i32);
+        if tw <= 0 || th <= 0 || mw <= 0 || mh <= 0 {
+            return None;
+        }
+        let surf_w = mw.checked_mul(tw)?;
+        let surf_h = mh.checked_mul(th)?;
+        if surf_w > 8192 || surf_h > 8192 {
+            return None;
+        }
         let per_row = (tiles.width() / tw).max(1);
-        let surface = gtk::cairo::ImageSurface::create(gtk::cairo::Format::ARgb32, map.info.width as i32 * tw, map.info.height as i32 * th).ok()?;
+        let surface = gtk::cairo::ImageSurface::create(gtk::cairo::Format::ARgb32, surf_w, surf_h).ok()?;
         let cr = gtk::cairo::Context::new(&surface).ok()?;
         for (i, &tile) in map.tiles.iter().enumerate() {
-            let (x, y) = ((i as i32 % map.info.width as i32) * tw, (i as i32 / map.info.width as i32) * th);
+            let (x, y) = ((i as i32 % mw) * tw, (i as i32 / mw) * th);
             let (sx, sy) = ((tile as i32 % per_row) * tw, (tile as i32 / per_row) * th);
             if sy + th > tiles.height() {
                 continue; // The tile image doesn't have this many tiles.
@@ -100,6 +116,9 @@ impl TilemapView {
         }
         let Some(surface) = state.rendered.as_ref() else { return };
         let (sw, sh) = (surface.width() as f64, surface.height() as f64);
+        if sw <= 0.0 || sh <= 0.0 || width <= 0.0 || height <= 0.0 {
+            return;
+        }
         let scale = (width / sw).min(height / sh);
         cr.translate((width - sw * scale) / 2.0, (height - sh * scale) / 2.0);
         cr.scale(scale, scale);

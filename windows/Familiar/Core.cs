@@ -36,7 +36,14 @@ internal static unsafe partial class Core
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
     private static void OnWake(ulong session)
     {
-        queue?.TryEnqueue(() => Wake?.Invoke((long)session));
+        try
+        {
+            queue?.TryEnqueue(() => Wake?.Invoke((long)session));
+        }
+        catch
+        {
+            // Never let a managed exception cross an UnmanagedCallersOnly FFI boundary.
+        }
     }
 
     private static JsonNode? Run(string method, JsonNode? args)
@@ -45,7 +52,17 @@ internal static unsafe partial class Core
         if (raw == 0) throw new CoreException($"{method}: no reply");
         try
         {
-            var reply = JsonNode.Parse(Marshal.PtrToStringUTF8(raw)!)!;
+            var text = Marshal.PtrToStringUTF8(raw);
+            if (string.IsNullOrEmpty(text)) throw new CoreException($"{method}: empty reply");
+            JsonNode reply;
+            try
+            {
+                reply = JsonNode.Parse(text) ?? throw new CoreException($"{method}: null reply");
+            }
+            catch (System.Text.Json.JsonException e)
+            {
+                throw new CoreException($"{method}: malformed reply: {e.Message}");
+            }
             if (reply["error"] is { } error) throw new CoreException(error.GetValue<string>());
             // Detached, so it can be put into another document (the config, say).
             return reply["ok"]?.DeepClone();

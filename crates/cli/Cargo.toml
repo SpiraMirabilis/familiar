@@ -16,6 +16,7 @@ publish = false
 anyhow = "1.0.104"
 clap = { version = "4.6.9", features = ["derive"] }
 familiar-ansi = { version = "0.7.0", path = "../ansi" }
+familiar-config = { version = "0.7.0", path = "../config" }
 familiar-net = { version = "0.7.0", path = "../net" }
 familiar-telnet = { version = "0.7.0", path = "../telnet" }
 terminal_size = "0.4.4"

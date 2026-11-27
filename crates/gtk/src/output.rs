@@ -371,7 +371,8 @@ impl OutputView {
     #[cfg_attr(not(feature = "agents"), allow(dead_code))]
     pub fn last_lines(&self, n: usize) -> Vec<String> {
         // One line more than asked for, in case the text ends with a newline.
-        let first = self.buffer.line_count().saturating_sub(n as i32 + 1).max(0);
+        let want = i32::try_from(n).unwrap_or(i32::MAX).saturating_add(1);
+        let first = self.buffer.line_count().saturating_sub(want).max(0);
         let start = self.buffer.iter_at_line(first).unwrap_or_else(|| self.buffer.start_iter());
         let text = self.buffer.text(&start, &self.buffer.end_iter(), false);
         let lines: Vec<&str> = text.trim_end_matches('\n').lines().collect();

@@ -30,10 +30,16 @@ final class WebPane: NSObject, WKScriptMessageHandler, WKUIDelegate, NSWindowDel
 
     /// Loads the URL (with any extra HTTP headers) or the HTML the server sent.
     func load(_ open: JSON) {
-        if let address = open["url"].optionalString, let url = URL(string: address) {
+        if let address = open["url"].optionalString,
+           let url = URL(string: address),
+           let scheme = url.scheme?.lowercased(),
+           ["http", "https"].contains(scheme)
+        {
             var request = URLRequest(url: url)
             for header in open["headers"].array {
-                request.setValue(header[1].string, forHTTPHeaderField: header[0].string)
+                let name = header[0].string.replacingOccurrences(of: "\r", with: "").replacingOccurrences(of: "\n", with: "")
+                let val = header[1].string.replacingOccurrences(of: "\r", with: "").replacingOccurrences(of: "\n", with: "")
+                if !name.isEmpty { request.setValue(val, forHTTPHeaderField: name) }
             }
             view.load(request)
         } else if let source = open["source"].optionalString {
@@ -56,7 +62,12 @@ final class WebPane: NSObject, WKScriptMessageHandler, WKUIDelegate, NSWindowDel
 
     // Links that ask for a new window open in the browser.
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for action: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
-        if let url = action.request.url { NSWorkspace.shared.open(url) }
+        if let url = action.request.url,
+           let scheme = url.scheme?.lowercased(),
+           ["http", "https", "mailto"].contains(scheme)
+        {
+            NSWorkspace.shared.open(url)
+        }
         return nil
     }
 

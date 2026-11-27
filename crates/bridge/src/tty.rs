@@ -15,16 +15,28 @@ pub struct TtyOutput {
     pub exited: bool,
 }
 
+const MAX_TTY_BYTES: usize = 8 * 1024 * 1024;
+
 pub struct Tty {
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
     killer: Box<dyn ChildKiller + Send + Sync>,
+    output: Arc<Mutex<TtyOutput>>,
+}
+
+struct KillOnError(Option<Box<dyn ChildKiller + Send + Sync>>);
+impl Drop for KillOnError {
+    fn drop(&mut self) {
+        if let Some(mut killer) = self.0.take() {
+            let _ = killer.kill();
+        }
+    }
 }
 
 impl Tty {
-    /// Starts the program. Its output goes to `output`, and `wake` is called whenever there is
-    /// some, or when it exits.
-    pub fn spawn(launch: &Launch, cols: u16, rows: u16, output: Arc<Mutex<TtyOutput>>, wake: impl Fn() + Send + Clone + 'static) -> Result<Self, String> {
+    /// Starts the program. Its output is collected internally (read with [`Self::take_output`]),
+    /// and `wake` is called whenever there is some, or when it exits.
+    pub fn spawn(launch: &Launch, cols: u16, rows: u16, wake: impl Fn() + Send + Clone + 'static) -> Result<Self, String> {
         let pair = native_pty_system().openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 }).map_err(|e| e.to_string())?;
         let mut command = CommandBuilder::new(&launch.program);
         command.args(&launch.args);
@@ -37,10 +49,11 @@ impl Tty {
         let mut child = pair.slave.spawn_command(command).map_err(|e| e.to_string())?;
         // The program has its end; ours closing it lets the reader see the end on Unix.
         drop(pair.slave);
-        let killer = child.clone_killer();
+        let mut guard = KillOnError(Some(child.clone_killer()));
         let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
         let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
 
+        let output = Arc::new(Mutex::new(TtyOutput::default()));
         let (out, woken) = (output.clone(), wake.clone());
         std::thread::Builder::new()
             .name("familiar-agent-out".into())
@@ -51,20 +64,32 @@ impl Tty {
                     if n == 0 {
                         break;
                     }
-                    out.lock().unwrap().bytes.extend_from_slice(&buf[..n]);
+                    {
+                        let mut lock = out.lock().unwrap_or_else(|e| e.into_inner());
+                        let room = MAX_TTY_BYTES.saturating_sub(lock.bytes.len());
+                        if room > 0 {
+                            lock.bytes.extend_from_slice(&buf[..n.min(room)]);
+                        }
+                    }
                     woken();
                 }
             })
             .map_err(|e| e.to_string())?;
+        let wait_out = output.clone();
         std::thread::Builder::new()
             .name("familiar-agent-wait".into())
             .spawn(move || {
                 let _ = child.wait();
-                output.lock().unwrap().exited = true;
+                wait_out.lock().unwrap_or_else(|e| e.into_inner()).exited = true;
                 wake();
             })
             .map_err(|e| e.to_string())?;
-        Ok(Self { master: pair.master, writer, killer })
+        let killer = guard.0.take().unwrap();
+        Ok(Self { master: pair.master, writer, killer, output })
+    }
+
+    pub fn take_output(&self) -> TtyOutput {
+        std::mem::take(&mut *self.output.lock().unwrap_or_else(|e| e.into_inner()))
     }
 
     /// Types into the program.
@@ -128,13 +153,16 @@ mod tests {
             dir: std::env::temp_dir(),
             env: vec![("FAMILIAR_WORLD".into(), "Vale".into())],
         };
-        let output = Arc::new(Mutex::new(TtyOutput::default()));
-        let mut tty = Tty::spawn(&launch, 100, 30, output.clone(), || {}).unwrap();
+        let mut tty = Tty::spawn(&launch, 100, 30, || {}).unwrap();
         tty.write(b"hello\r");
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut text = String::new();
+        let mut exited = false;
         loop {
-            let text = String::from_utf8_lossy(&output.lock().unwrap().bytes).into_owned();
-            if text.contains("30 100") && output.lock().unwrap().exited {
+            let chunk = tty.take_output();
+            text.push_str(&String::from_utf8_lossy(&chunk.bytes));
+            exited |= chunk.exited;
+            if text.contains("30 100") && exited {
                 assert!(text.contains("got hello in Vale"), "{text}");
                 break;
             }

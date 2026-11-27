@@ -10,25 +10,27 @@ pub fn copy(text: &str) {
     let _ = write!(out, "\x1b]52;c;{}\x07", base64(text.as_bytes()));
     let _ = out.flush();
 
-    let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some();
-    let x11 = std::env::var_os("DISPLAY").is_some();
-    let tools: &[(&str, &[&str], bool)] = &[
-        ("pbcopy", &[], cfg!(target_os = "macos")),
-        ("wl-copy", &[], cfg!(unix) && wayland),
-        ("xclip", &["-selection", "clipboard"], cfg!(unix) && x11),
-        ("xsel", &["--clipboard", "--input"], cfg!(unix) && x11),
-    ];
-    for (tool, args, _) in tools.iter().filter(|t| t.2) {
-        let child = Command::new(tool).args(*args).stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
-        if let Ok(mut child) = child {
-            if let Some(mut stdin) = child.stdin.take() {
-                let _ = stdin.write_all(text.as_bytes());
+    let owned = text.to_string();
+    let _ = std::thread::Builder::new().name("familiar-clip".into()).spawn(move || {
+        let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some();
+        let x11 = std::env::var_os("DISPLAY").is_some();
+        let tools: &[(&str, &[&str], bool)] = &[
+            ("pbcopy", &[], cfg!(target_os = "macos")),
+            ("wl-copy", &[], cfg!(unix) && wayland),
+            ("xclip", &["-selection", "clipboard"], cfg!(unix) && x11),
+            ("xsel", &["--clipboard", "--input"], cfg!(unix) && x11),
+        ];
+        for (tool, args, _) in tools.iter().filter(|t| t.2) {
+            let child = Command::new(tool).args(*args).stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
+            if let Ok(mut child) = child {
+                if let Some(mut stdin) = child.stdin.take() {
+                    let _ = stdin.write_all(owned.as_bytes());
+                }
+                let _ = child.wait();
+                return;
             }
-            // Some of these stay around to serve the clipboard; don't wait for them here.
-            std::thread::spawn(move || child.wait());
-            return;
         }
-    }
+    });
 }
 
 /// The clipboard's text, from the desktop's own tool. None where there isn't one, as over ssh:

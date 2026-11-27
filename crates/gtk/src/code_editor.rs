@@ -35,7 +35,7 @@ const LANGUAGES: [(&str, &str); 7] = [
 const INDENT: &str = "  ";
 
 /// Gives a GtkSourceView buffer the light or dark Adwaita scheme, following the app. Holds only
-/// a weak reference, so closed editors aren't kept alive.
+/// a weak reference and disconnects itself once the buffer is gone so handlers never accumulate.
 pub fn follow_dark_mode(buffer: &sourceview5::Buffer) {
     let apply = |style: &adw::StyleManager, buffer: &sourceview5::Buffer| {
         let id = if style.is_dark() { "Adwaita-dark" } else { "Adwaita" };
@@ -46,11 +46,16 @@ pub fn follow_dark_mode(buffer: &sourceview5::Buffer) {
     let style = adw::StyleManager::default();
     apply(&style, buffer);
     let weak = buffer.downgrade();
-    style.connect_dark_notify(move |style| {
+    let handler: Rc<RefCell<Option<glib::SignalHandlerId>>> = Rc::default();
+    let handler_slot = handler.clone();
+    let id = style.connect_dark_notify(move |style| {
         if let Some(buffer) = weak.upgrade() {
             apply(style, &buffer);
+        } else if let Some(id) = handler_slot.borrow_mut().take() {
+            style.disconnect(id);
         }
     });
+    *handler.borrow_mut() = Some(id);
 }
 
 /// Where users can add their own `.lang` files. Searched before ours, so they can override.

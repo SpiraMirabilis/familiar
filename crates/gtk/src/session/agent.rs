@@ -100,6 +100,7 @@ pub struct AgentPane {
     terminal: vte4::Terminal,
     token: String,
     name: String,
+    cancellable: gio::Cancellable,
 }
 
 impl SessionView {
@@ -171,6 +172,7 @@ impl SessionView {
         let env: Vec<&str> = env.iter().map(String::as_str).collect();
         let weak = Rc::downgrade(self);
         let (token, program) = (launch.token.clone(), launch.program.clone());
+        let cancellable = gio::Cancellable::new();
         terminal.spawn_async(
             vte4::PtyFlags::DEFAULT,
             launch.dir.to_str(),
@@ -179,7 +181,7 @@ impl SessionView {
             glib::SpawnFlags::SEARCH_PATH,
             || {},
             -1,
-            None::<&gio::Cancellable>,
+            Some(&cancellable),
             move |result| {
                 if let (Err(e), Some(this)) = (result, weak.upgrade()) {
                     this.output.notice(&format!("Couldn't run {program}: {e}"));
@@ -187,7 +189,7 @@ impl SessionView {
                 }
             },
         );
-        AgentPane { root, terminal, token: launch.token.clone(), name: launch.name.clone() }
+        AgentPane { root, terminal, token: launch.token.clone(), name: launch.name.clone(), cancellable }
     }
 
     /// The agent's program ended, or never started: its tab goes.
@@ -210,6 +212,7 @@ impl SessionView {
     }
 
     fn close_agent_pane(&self, pane: AgentPane) {
+        pane.cancellable.cancel();
         self.state.agents.agents.borrow().close(&pane.token);
         self.remove_side_tab(&pane.root);
         // Taking the terminal away hangs up on the program (VTE sends it SIGHUP).

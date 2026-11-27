@@ -173,11 +173,15 @@ internal sealed class TilemapView : UserControl
 /// <summary>A puppet's tab: the lines that belong to it, and a box that speaks as it.</summary>
 internal sealed class PuppetView : UserControl
 {
+    private readonly Session session;
+    private readonly Action onChanged;
+
     public OutputView Output { get; }
     public InputBox Input { get; }
 
     public PuppetView(Session session, string name, OutputBuffer buffer)
     {
+        this.session = session;
         var settings = AppState.Settings;
         Output = new OutputView(buffer, session.Font);
         Input = new InputBox(session.Font, settings.Int("input_history_size"), settings.Bool("spellcheck")) { Margin = new Thickness(0, 8, 0, 0) };
@@ -200,12 +204,15 @@ internal sealed class PuppetView : UserControl
             Output.ScrollToEnd();
             session.PuppetSubmit(name, text);
         };
-        session.Changed += () =>
+        onChanged = () =>
         {
             Output.Font = session.Font;
             Input.Font = session.Font;
         };
+        session.Changed += onChanged;
     }
+
+    public void Detach() => session.Changed -= onChanged;
 }
 
 /// <summary>A web page the server or a script opened (GMCP webview.open), in the side dock or
@@ -234,9 +241,13 @@ internal sealed class WebPane : UserControl
     {
         await view.EnsureCoreWebView2Async();
         var core = view.CoreWebView2;
+        // A per-pane secret injected only into the top frame prevents untrusted cross-origin
+        // iframes from spoofing `window.chrome.webview.postMessage(...)` commands.
+        var bridgeToken = Guid.NewGuid().ToString("N");
         // The bridge script was written for WebKit's message handlers; this gives it one that
         // posts through WebView2, and makes the BeipMU-style host object it sets up stick.
         var script = "if (window.top === window) {\n"
+            + $"window.__familiar_bridge_token = \"{bridgeToken}\";\n"
             + "const post = window.chrome.webview.postMessage.bind(window.chrome.webview);\n"
             + "window.webkit = { messageHandlers: { mu: { postMessage: post } } };\n"
             + AppState.Start.Str("webview_bridge_js")
@@ -244,7 +255,10 @@ internal sealed class WebPane : UserControl
         await core.AddScriptToExecuteOnDocumentCreatedAsync(script);
         core.WebMessageReceived += (_, e) =>
         {
-            if (JsonNode.Parse(e.WebMessageAsJson) is { } message) onMessage(message);
+            if (JsonNode.Parse(e.WebMessageAsJson) is { } message && message.OptStr("_token") == bridgeToken)
+            {
+                onMessage(message);
+            }
         };
         // Links that ask for a new window open in the browser.
         core.NewWindowRequested += (_, e) =>
@@ -260,9 +274,17 @@ internal sealed class WebPane : UserControl
         {
             await ready;
             var core = view.CoreWebView2;
-            if (open.OptStr("url") is { } url)
+            if (open.OptStr("url") is { } url
+                && Uri.TryCreate(url, UriKind.Absolute, out var parsed)
+                && parsed.Scheme is "http" or "https")
             {
-                var headers = string.Join("\r\n", open.Arr("headers").Select(h => $"{h?[0]}: {h?[1]}"));
+                static string CleanHeader(string s) => s.Replace("\r", "").Replace("\n", "");
+                var headers = string.Join(
+                    "\r\n",
+                    open.Arr("headers")
+                        .Select(h => (k: CleanHeader(h?[0]?.ToString() ?? ""), v: CleanHeader(h?[1]?.ToString() ?? "")))
+                        .Where(h => !string.IsNullOrEmpty(h.k))
+                        .Select(h => $"{h.k}: {h.v}"));
                 core.NavigateWithWebResourceRequest(core.Environment.CreateWebResourceRequest(url, "GET", null, headers));
             }
             else if (open.OptStr("source") is { } source)

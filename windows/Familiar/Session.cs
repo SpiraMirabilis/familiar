@@ -328,13 +328,10 @@ internal sealed partial class Session
     {
         try
         {
-            if (Uri.TryCreate(uri, UriKind.Absolute, out var parsed) && !parsed.IsFile)
+            if (Uri.TryCreate(uri, UriKind.Absolute, out var parsed)
+                && parsed.Scheme is "http" or "https" or "mailto")
             {
                 await Windows.System.Launcher.LaunchUriAsync(parsed);
-            }
-            else
-            {
-                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(uri) { UseShellExecute = true });
             }
         }
         catch (Exception e)

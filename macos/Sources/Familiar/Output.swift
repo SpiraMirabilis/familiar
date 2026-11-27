@@ -106,6 +106,7 @@ final class OutputBuffer {
     private func clearPartial() {
         if prompt == .partial, promptStart <= storage.length {
             storage.deleteCharacters(in: NSRange(location: promptStart, length: storage.length - promptStart))
+            lines = max(0, lines - 1)
         }
         prompt = .none
     }
@@ -174,14 +175,16 @@ final class OutputBuffer {
         guard lines > maxLines + 200 else { return }
         let text = storage.string as NSString
         var drop = lines - maxLines
+        var dropped = 0
         var end = 0
         while drop > 0, end < text.length {
             end = NSMaxRange(text.lineRange(for: NSRange(location: end, length: 0)))
             drop -= 1
+            dropped += 1
         }
         storage.deleteCharacters(in: NSRange(location: 0, length: end))
         promptStart = max(0, promptStart - end)
-        lines = maxLines
+        lines = max(0, lines - dropped)
     }
 
     // MARK: Pictures
@@ -266,7 +269,10 @@ final class OutputBuffer {
 /// Downloads and remembers pictures (avatars, inline images, map tiles).
 final class Images {
     static let shared = Images()
+    private static let maxCached = 256
+    private static let maxBytes = 20 * 1024 * 1024
     private var cache: [String: NSImage] = [:]
+    private var order: [String] = []
     private var waiting: [String: [(NSImage?) -> Void]] = [:]
 
     /// Calls `done` on the main thread once the picture is here, or `failed` if it can't be had.
@@ -279,18 +285,35 @@ final class Images {
             waiting[url]?.append(finish)
             return
         }
-        guard let address = URL(string: url), ["http", "https", "file"].contains(address.scheme?.lowercased() ?? "") else {
+        guard let address = URL(string: url), ["http", "https"].contains(address.scheme?.lowercased() ?? "") else {
             failed?()
             return
         }
         waiting[url] = [finish]
         var request = URLRequest(url: address, timeoutInterval: 30)
         request.setValue("Familiar (MU* client; +https://github.com/SpiraMirabilis/familiar)", forHTTPHeaderField: "User-Agent")
-        URLSession.shared.dataTask(with: request) { data, _, _ in
-            let image = data.flatMap(NSImage.init(data:))
+        URLSession.shared.dataTask(with: request) { data, response, _ in
+            let expected = response?.expectedContentLength ?? -1
+            let capped: Data? = if expected > Int64(Self.maxBytes) {
+                nil
+            } else if let data, data.count <= Self.maxBytes {
+                data
+            } else {
+                nil
+            }
+            let image = capped.flatMap(NSImage.init(data:))
             DispatchQueue.main.async {
                 let callbacks = self.waiting.removeValue(forKey: url) ?? []
-                if let image { self.cache[url] = image }
+                if let image {
+                    if self.cache[url] == nil {
+                        self.order.append(url)
+                        while self.cache.count >= Self.maxCached, !self.order.isEmpty {
+                            let oldest = self.order.removeFirst()
+                            self.cache.removeValue(forKey: oldest)
+                        }
+                    }
+                    self.cache[url] = image
+                }
                 callbacks.forEach { $0(image) }
             }
         }.resume()

@@ -85,12 +85,12 @@ impl MainWindow {
         this.show_keys();
         let weak = Rc::downgrade(&this);
         this.state.connect_keys_changed(move || weak.upgrade().inspect(|this| this.show_keys()).is_some());
-        // Closing the window quits, so save every session's map first.
+        // Closing the window quits, so save maps and clean up sessions first.
         let weak = Rc::downgrade(&this);
         this.window.connect_close_request(move |_| {
             if let Some(this) = weak.upgrade() {
                 for (_, session) in this.sessions.borrow().iter() {
-                    session.save_map();
+                    session.close();
                 }
             }
             glib::Propagation::Proceed
@@ -122,13 +122,7 @@ impl MainWindow {
                 };
                 match removed {
                     Some(session) => {
-                        session.save_map();
-                        #[cfg(feature = "agents")]
-                        session.close_agent();
-                        session.disconnect();
-                        if session.is_logging() {
-                            session.toggle_log();
-                        }
+                        session.close();
                         // A character's puppets close with it.
                         for puppet in session.puppet_pages() {
                             view.close_page(&puppet);
@@ -188,7 +182,9 @@ impl MainWindow {
 
         let window = self.window.clone();
         session.connect_open_uri(move |uri| {
-            gtk::UriLauncher::new(uri).launch(Some(&window), None::<&gio::Cancellable>, |_| {});
+            if familiar_engine::media::is_safe_open_uri(uri) {
+                gtk::UriLauncher::new(uri).launch(Some(&window), None::<&gio::Cancellable>, |_| {});
+            }
         });
         let tabs = self.tab_view.clone();
         session.connect_open_tab(move |widget, title| {

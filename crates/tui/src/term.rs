@@ -98,9 +98,21 @@ impl Term {
         }
         let mut child = pair.slave.spawn_command(builder).map_err(|e| e.to_string())?;
         drop(pair.slave);
-        let killer = child.clone_killer();
-        let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
-        let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
+        let mut killer = child.clone_killer();
+        let mut reader = match pair.master.try_clone_reader() {
+            Ok(r) => r,
+            Err(e) => {
+                let _ = killer.kill();
+                return Err(e.to_string());
+            }
+        };
+        let writer = match pair.master.take_writer() {
+            Ok(w) => w,
+            Err(e) => {
+                let _ = killer.kill();
+                return Err(e.to_string());
+            }
+        };
 
         let output = tx.clone();
         std::thread::spawn(move || {
@@ -158,7 +170,9 @@ impl Term {
     pub fn paste(&mut self, text: &str) {
         let text = text.replace("\r\n", "\r").replace('\n', "\r");
         if self.screen().bracketed_paste() {
-            self.send(format!("\x1b[200~{text}\x1b[201~").as_bytes());
+            // Strip bracketed-paste delimiters so pasted text cannot break out of paste mode.
+            let safe = text.replace("\x1b[200~", "").replace("\x1b[201~", "");
+            self.send(format!("\x1b[200~{safe}\x1b[201~").as_bytes());
         } else {
             self.send(text.as_bytes());
         }

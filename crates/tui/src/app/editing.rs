@@ -27,12 +27,13 @@ impl App {
     /// The file to edit for `job`, a title for it, and the line to open it at.
     pub fn document(&mut self, job: &External) -> Result<(Document, String, Option<u32>), String> {
         match job {
-            External::Edit { request, line, .. } => {
+            External::Edit { session, request, line } => {
                 let extension = match request.language.as_deref() {
                     Some(lang) if !lang.is_empty() => lang,
                     _ => "txt",
                 };
-                Ok((Document::temporary(&request.name, extension, &request.content)?, request.name.clone(), *line))
+                let name = format!("s{session}-{}", request.name);
+                Ok((Document::temporary(&name, extension, &request.content)?, request.name.clone(), *line))
             }
             External::EditInput { session, puppet } => {
                 let text = self.input_of(*session, puppet.as_deref()).map(|i| i.text.clone()).ok_or("that tab has closed")?;
@@ -145,10 +146,22 @@ impl App {
         }
     }
 
+    fn same_edit(a: &External, b: &External) -> bool {
+        match (a, b) {
+            (External::Edit { session: s1, request: r1, .. }, External::Edit { session: s2, request: r2, .. }) => {
+                s1 == s2 && r1.reference == r2.reference && r1.name == r2.name
+            }
+            (External::EditInput { session: s1, puppet: p1 }, External::EditInput { session: s2, puppet: p2 }) => {
+                s1 == s2 && p1 == p2
+            }
+            (External::EditConfig, External::EditConfig) => true,
+            _ => false,
+        }
+    }
+
     fn open_editor_tab(&mut self, job: &External) -> Result<(), String> {
-        let (document, title, line) = self.document(job)?;
-        // Already being edited: go there instead of opening the same file twice.
-        if let Some(open) = self.editors.iter_mut().find(|e| e.document.as_ref().is_some_and(|d| d.path == document.path)) {
+        // Already being edited: switch to it BEFORE touching disk so unsaved edits aren't clobbered.
+        if let Some(open) = self.editors.iter_mut().find(|e| Self::same_edit(&e.job, job)) {
             open.focused = true;
             let tab = if open.docked.is_some() { self.owner_tab(job) } else { self.tabs.iter().position(|t| *t == Tab::Editor(open.id)) };
             if let Some(pos) = tab {
@@ -156,6 +169,7 @@ impl App {
             }
             return Ok(());
         }
+        let (document, title, line) = self.document(job)?;
         let (command, name) = crate::editor::command(&document.path, line);
         let dock = self.config.settings.editor_in_sidebar;
         match self.open_pane(job, &command, title, Some(document), None, dock) {

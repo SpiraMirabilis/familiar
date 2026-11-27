@@ -245,8 +245,19 @@ impl MapView {
         }
         let _ = cr.stroke();
 
-        let font = self.area.pango_context().font_description().unwrap_or_default();
+        let mut desc = self.area.pango_context().font_description().unwrap_or_default();
+        desc.set_size(9 * pango::SCALE);
+        let layout = pangocairo::functions::create_layout(cr);
+        layout.set_font_description(Some(&desc));
+        layout.set_ellipsize(pango::EllipsizeMode::End);
+        layout.set_wrap(pango::WrapMode::WordChar);
+        layout.set_alignment(pango::Alignment::Center);
+        let view_right = ox + width / z.max(0.01);
+        let view_bottom = oy + height / z.max(0.01);
         for room in &rooms {
+            if room.x + room.w < ox || room.x > view_right || room.y + room.h < oy || room.y > view_bottom {
+                continue;
+            }
             let is_current = Some(room.id) == current;
             let is_selected = Some(room.id) == self.selected.get();
             let fill = room.color.as_deref().and_then(rgb).unwrap_or(room_fill);
@@ -266,16 +277,9 @@ impl MapView {
             }
             let _ = cr.stroke();
 
-            let layout = pangocairo::functions::create_layout(cr);
-            let mut desc = font.clone();
-            desc.set_size(9 * pango::SCALE);
-            layout.set_font_description(Some(&desc));
             layout.set_text(&room.name);
             layout.set_width(((room.w - 8.0) * pango::SCALE as f64) as i32);
             layout.set_height(((room.h - 4.0) * pango::SCALE as f64) as i32);
-            layout.set_ellipsize(pango::EllipsizeMode::End);
-            layout.set_wrap(pango::WrapMode::WordChar);
-            layout.set_alignment(pango::Alignment::Center);
             let (_, lh) = layout.pixel_size();
             if is_current {
                 cr.set_source_rgb(1.0, 1.0, 1.0);

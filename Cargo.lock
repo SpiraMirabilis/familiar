@@ -861,6 +861,7 @@ dependencies = [
  "anyhow",
  "clap",
  "familiar-ansi",
+ "familiar-config",
  "familiar-net",
  "familiar-telnet",
  "terminal_size",

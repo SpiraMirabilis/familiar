@@ -3,7 +3,14 @@
 // BeipMU. Method names are case-insensitive, as they were in BeipMU.
 (() => {
   if (window.mu) return;
-  const post = (message) => window.webkit.messageHandlers.mu.postMessage(message);
+  const token = window.__familiar_bridge_token;
+  try {
+    delete window.__familiar_bridge_token;
+  } catch {}
+  const post = (message) => {
+    const payload = token !== undefined ? { ...message, _token: token } : message;
+    window.webkit.messageHandlers.mu.postMessage(payload);
+  };
   const listeners = { send: null, receive: null, gmcp: [], display: new Map() };
 
   const methods = {
@@ -74,6 +81,7 @@
           break;
         case 'display':
           for (const [id, l] of listeners.display) {
+            l.regex.lastIndex = 0;
             const match = l.regex.exec(event.text);
             // BeipMU passed a TextWindowLine; pages use its `string` and `length`.
             if (match) l.callback(id, { string: event.text, length: event.text.length }, match);

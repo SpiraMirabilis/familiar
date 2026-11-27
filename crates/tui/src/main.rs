@@ -57,6 +57,14 @@ impl InputThread {
         let idle = Arc::new(AtomicBool::new(false));
         let (p, i) = (paused.clone(), idle.clone());
         std::thread::spawn(move || {
+            // Ensure pause() can never deadlock if this thread exits early on an I/O error.
+            struct MarkIdle(Arc<AtomicBool>);
+            impl Drop for MarkIdle {
+                fn drop(&mut self) {
+                    self.0.store(true, Ordering::SeqCst);
+                }
+            }
+            let _mark_idle = MarkIdle(i.clone());
             loop {
                 if p.load(Ordering::SeqCst) {
                     i.store(true, Ordering::SeqCst);
@@ -102,25 +110,38 @@ impl InputThread {
     }
 }
 
+/// Set once in `enter()` before `InputThread` begins reading stdin, so `leave()` never probes
+/// stdin (which would race with `InputThread` or deadlock inside the panic hook).
+static KEYBOARD_ENHANCED: AtomicBool = AtomicBool::new(false);
+
 fn enter(stdout: &mut Stdout) -> std::io::Result<()> {
     terminal::enable_raw_mode()?;
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture, EnableFocusChange)?;
     // Older Windows consoles can't do this one; pastes are recognised another way there.
     let _ = execute!(stdout, EnableBracketedPaste);
     // Lets terminals that support it report Shift+Enter and keypad keys distinctly.
-    if terminal::supports_keyboard_enhancement().unwrap_or(false) {
+    let enhanced = terminal::supports_keyboard_enhancement().unwrap_or(false);
+    KEYBOARD_ENHANCED.store(enhanced, Ordering::SeqCst);
+    if enhanced {
         queue!(stdout, PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES))?;
     }
     stdout.flush()
 }
 
 fn leave(stdout: &mut Stdout) {
-    if terminal::supports_keyboard_enhancement().unwrap_or(false) {
+    if KEYBOARD_ENHANCED.swap(false, Ordering::SeqCst) {
         let _ = queue!(stdout, PopKeyboardEnhancementFlags);
     }
     let _ = execute!(stdout, DisableBracketedPaste);
     let _ = execute!(stdout, DisableFocusChange, DisableMouseCapture, LeaveAlternateScreen);
     let _ = terminal::disable_raw_mode();
+}
+
+struct TerminalGuard;
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        leave(&mut std::io::stdout());
+    }
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -134,10 +155,9 @@ async fn main() -> std::io::Result<()> {
     }));
 
     enter(&mut std::io::stdout())?;
+    let _guard = TerminalGuard;
     let mut terminal = Terminal::new(CrosstermBackend::new(std::io::stdout()))?;
-    let result = run(&mut terminal, args).await;
-    leave(&mut std::io::stdout());
-    result
+    run(&mut terminal, args).await
 }
 
 async fn run(terminal: &mut Term, args: Args) -> std::io::Result<()> {
@@ -182,8 +202,11 @@ async fn run(terminal: &mut Term, args: Args) -> std::io::Result<()> {
             }
             Some(ev) = pty_rx.recv() => {
                 app.on_pty(ev);
-                while let Ok(ev) = pty_rx.try_recv() {
-                    app.on_pty(ev);
+                for _ in 0..128 {
+                    match pty_rx.try_recv() {
+                        Ok(ev) => app.on_pty(ev),
+                        Err(_) => break,
+                    }
                 }
             }
             Some(request) = agent_rx.recv() => app.on_agent(request),

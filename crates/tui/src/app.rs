@@ -554,6 +554,9 @@ impl App {
     }
 
     pub fn shutdown(&mut self) {
+        for editor in self.editors.drain(..) {
+            let _ = editor.discard();
+        }
         for s in &mut self.sessions {
             let _ = s.engine.save_map();
             s.engine.disconnect();

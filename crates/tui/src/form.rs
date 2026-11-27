@@ -120,8 +120,19 @@ impl WorldForm {
     pub fn save(&mut self, config: &mut Config) -> Result<(World, Option<String>), String> {
         let mut host = self.value(HOST);
         let mut port_text = self.value(PORT);
-        // "host:port" in the host field fills in the port.
-        if let Some((h, p)) = host.rsplit_once(':')
+        // "host:port" or "[ipv6]:port" in the host field fills in the port.
+        if let Some(rest) = host.strip_prefix('[') {
+            if let Some((h, after)) = rest.split_once(']') {
+                if let Some(p) = after.strip_prefix(':')
+                    && p.parse::<u16>().is_ok()
+                    && port_text.is_empty()
+                {
+                    port_text = p.to_string();
+                }
+                host = h.to_string();
+            }
+        } else if host.matches(':').count() == 1
+            && let Some((h, p)) = host.split_once(':')
             && p.parse::<u16>().is_ok()
         {
             if port_text.is_empty() {

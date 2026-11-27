@@ -54,8 +54,8 @@ async fn main() -> Result<()> {
     opts.encoding = encoding;
     opts.telnet.client_name = "familiar-cli".into();
     if let Some(bnc) = &args.bnc {
-        let (host, port) = bnc.rsplit_once(':').map_or((bnc.as_str(), Ok(7777)), |(h, p)| (h, p.parse()));
-        let mut connect = ConnectOptions::new(host, port?);
+        let parsed = familiar_config::Address::parse(bnc).ok_or_else(|| anyhow::anyhow!("bad bouncer address {bnc}"))?;
+        let mut connect = ConnectOptions::new(&parsed.host, parsed.port.unwrap_or(7777));
         connect.tls = !args.bnc_plaintext;
         let (login, _) = familiar_net::login_script(&args.bnc_login.join("\n"), |_| None);
         opts.bouncer = Some(BouncerOptions {
@@ -73,6 +73,7 @@ async fn main() -> Result<()> {
     }
 
     let mut stdin = BufReader::new(tokio::io::stdin()).lines();
+    let mut stdin_open = true;
     let mut ansi = AnsiParser::new();
     let mut out = Output::default();
 
@@ -110,7 +111,7 @@ async fn main() -> Result<()> {
                     }
                 }
             }
-            line = stdin.next_line() => match line? {
+            line = stdin.next_line(), if stdin_open => match line? {
                 Some(line) if line == "/quit" => { session.disconnect(); }
                 Some(line) if line.starts_with("/bnc") => {
                     let request = match line.split_whitespace().nth(1) {
@@ -124,7 +125,10 @@ async fn main() -> Result<()> {
                     out.input_sent();
                     session.send_line(line);
                 }
-                None => { session.disconnect(); }
+                None => {
+                    stdin_open = false;
+                    session.disconnect();
+                }
             },
         }
     }
@@ -175,7 +179,8 @@ impl Output {
     fn notice(&mut self, text: &str) {
         let mut stdout = std::io::stdout().lock();
         self.prepare(&mut stdout);
-        let _ = writeln!(stdout, "\x1b[2;3m% {text}\x1b[0m");
+        let safe: String = text.chars().filter(|c| !c.is_control() || *c == '\t').collect();
+        let _ = writeln!(stdout, "\x1b[2;3m% {safe}\x1b[0m");
     }
 
     /// The user pressed Enter, so the terminal cursor is on a fresh line.
@@ -190,7 +195,8 @@ fn render(line: &StyledLine) -> String {
     let mut s = String::with_capacity(line.text.len() + 16);
     for span in &line.spans {
         let style = &span.style;
-        if let Some(link) = &style.link {
+        let safe_link = style.link.as_deref().filter(|l| !l.chars().any(char::is_control));
+        if let Some(link) = safe_link {
             s.push_str(&format!("\x1b]8;;{link}\x1b\\"));
         }
         let codes = sgr(style);
@@ -199,7 +205,7 @@ fn render(line: &StyledLine) -> String {
         if !codes.is_empty() {
             s.push_str("\x1b[0m");
         }
-        if style.link.is_some() {
+        if safe_link.is_some() {
             s.push_str("\x1b]8;;\x1b\\");
         }
     }

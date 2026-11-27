@@ -19,11 +19,13 @@ internal sealed class AgentPane : UserControl
     private bool focusWanted;
 
     public string AgentName { get; }
+    public string Token { get; }
 
-    public AgentPane(Session session, string name)
+    public AgentPane(Session session, string name, string token)
     {
         this.session = session;
         AgentName = name;
+        Token = token;
         Content = view;
         Prepare();
     }

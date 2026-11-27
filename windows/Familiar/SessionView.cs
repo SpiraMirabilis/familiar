@@ -283,7 +283,7 @@ internal sealed class SessionView : UserControl
             case "agent_start":
                 agent?.Shut();
                 RemovePanel("agent");
-                var started = new AgentPane(Session, o.Str("name"));
+                var started = new AgentPane(Session, o.Str("name"), o.Str("token"));
                 agent = started;
                 ShowPanel("agent", $"✦ {started.AgentName}", "\uE756", () => started, select: true, closable: true);
                 started.FocusTerminal();
@@ -297,9 +297,13 @@ internal sealed class SessionView : UserControl
                 }
                 break;
             case "agent_stop":
-                RemovePanel("agent");
-                agent?.Shut();
-                agent = null;
+                var stopToken = o.OptStr("token");
+                if (agent is not null && (stopToken is null || agent.Token == stopToken))
+                {
+                    RemovePanel("agent");
+                    agent.Shut();
+                    agent = null;
+                }
                 break;
             case "display": ToPages(Json.Args(("type", "display"), ("text", o.Get("text")))); break;
             case "gmcp": ToPages(Json.Args(("type", "gmcp"), ("package", o.Get("package")), ("data", o.Get("data")))); break;
@@ -318,6 +322,7 @@ internal sealed class SessionView : UserControl
         foreach (var (name, puppet) in puppets.ToList())
         {
             if (!ReferenceEquals(puppet, view)) continue;
+            puppet.Detach();
             puppets.Remove(name);
             Session.PuppetClosed(name);
         }
@@ -390,24 +395,51 @@ internal sealed class SessionView : UserControl
         else Session.Output.Notice("Blocked a web view from the server (web views are off for this world).");
     }
 
+    private readonly Queue<(JsonNode command, bool canRemember)> webViewPrompts = [];
+    private bool askingWebView;
+
     private async void AskWebView(JsonNode command, bool canRemember)
     {
-        var target = command.OptStr("url") ?? "a page it sent";
-        var text = new TextBlock { Text = $"{Session.Title} wants to open {target} inside Familiar. Pages it opens can send commands and read the output, like a script.", TextWrapping = TextWrapping.Wrap };
-        var dialog = Form.Dialog(XamlRoot, "Open a Web View?", text, "Allow Once", "Block");
-        if (canRemember) dialog.SecondaryButtonText = "Always Allow";
-        var answer = await Form.Show(dialog);
-        if (Session.IsClosed) return;
-        if (answer == ContentDialogResult.Secondary)
+        webViewPrompts.Enqueue((command, canRemember));
+        if (askingWebView) return;
+        askingWebView = true;
+        try
         {
-            var name = Session.WorldName;
-            AppState.Update(config =>
+            while (webViewPrompts.Count > 0)
             {
-                if (config.Arr("world").FirstOrDefault(w => w.Str("name") == name) is JsonObject saved) saved["allow_webviews"] = true;
-            });
+                var (next, remember) = webViewPrompts.Dequeue();
+                if (Session.IsClosed || XamlRoot is null) return;
+                var target = next.OptStr("url") ?? "a page it sent";
+                var text = new TextBlock { Text = $"{Session.Title} wants to open {target} inside Familiar. Pages it opens can send commands and read the output, like a script.", TextWrapping = TextWrapping.Wrap };
+                var dialog = Form.Dialog(XamlRoot, "Open a Web View?", text, "Allow Once", "Block");
+                if (remember) dialog.SecondaryButtonText = "Always Allow";
+                ContentDialogResult answer;
+                try
+                {
+                    answer = await Form.Show(dialog);
+                }
+                catch (Exception e)
+                {
+                    System.Diagnostics.Debug.WriteLine($"Familiar: web view prompt failed: {e.Message}");
+                    continue;
+                }
+                if (Session.IsClosed) return;
+                if (answer == ContentDialogResult.Secondary)
+                {
+                    var name = Session.WorldName;
+                    AppState.Update(config =>
+                    {
+                        if (config.Arr("world").FirstOrDefault(w => w.Str("name") == name) is JsonObject saved) saved["allow_webviews"] = true;
+                    });
+                }
+                if (answer is ContentDialogResult.Primary or ContentDialogResult.Secondary) OpenWebView(next);
+                else Session.Output.Notice("Blocked a web view from the server.");
+            }
         }
-        if (answer is ContentDialogResult.Primary or ContentDialogResult.Secondary) OpenWebView(command);
-        else Session.Output.Notice("Blocked a web view from the server.");
+        finally
+        {
+            askingWebView = false;
+        }
     }
 
     private void OpenWebView(JsonNode command)

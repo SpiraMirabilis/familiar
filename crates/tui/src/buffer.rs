@@ -331,8 +331,14 @@ impl Buffer {
             self.unseen += 1;
         }
         self.entries.push_back(entry);
+        let mut evicted_rows = 0usize;
         while self.entries.len() > self.max {
-            self.entries.pop_front();
+            if let Some(old) = self.entries.pop_front() {
+                evicted_rows += old.row_count(self.width);
+            }
+        }
+        if evicted_rows > 0 && self.scroll > 0 {
+            self.scroll = self.scroll.saturating_sub(evicted_rows);
         }
     }
 
@@ -410,8 +416,10 @@ impl Buffer {
     /// The rows to draw for a pane of this size: (entry, row within it), top to bottom.
     pub fn visible(&mut self, width: u16, height: u16, scroll: usize) -> Vec<(&Entry, usize)> {
         self.width = width;
-        let want = scroll + height as usize;
-        let mut rows: Vec<(&Entry, usize)> = Vec::with_capacity(want);
+        let max_scroll = self.total_rows(width).saturating_sub(height as usize);
+        let scroll = scroll.min(max_scroll);
+        let want = scroll.saturating_add(height as usize);
+        let mut rows: Vec<(&Entry, usize)> = Vec::with_capacity(want.min(self.entries.len().saturating_mul(4).max(height as usize)));
         'outer: for entry in self.entries.iter().rev() {
             let n = entry.row_count(width);
             for r in (0..n).rev() {
@@ -570,5 +578,21 @@ mod tests {
         b.push(StyledLine::plain("Gimli waves."), Kind::Server);
         assert_eq!(b.words_starting("g", 50), ["Gimli", "Gandalf", "Galadriel"]);
         assert_eq!(b.words_starting("gal", 50), ["Galadriel"]);
+    }
+
+    #[test]
+    fn scroll_stays_bounded_when_evicting() {
+        let mut b = Buffer::new(100);
+        for i in 0..100 {
+            b.push(StyledLine::plain(format!("line {i}")), Kind::Server);
+        }
+        b.scroll_by(50, 80, 10);
+        assert_eq!(b.scroll, 50);
+        for i in 100..250 {
+            b.push(StyledLine::plain(format!("line {i}")), Kind::Server);
+        }
+        assert!(b.scroll <= b.total_rows(80));
+        let shown = b.visible(80, 10, b.scroll);
+        assert_eq!(shown.len(), 10);
     }
 }

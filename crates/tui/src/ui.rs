@@ -353,10 +353,10 @@ fn draw_output(f: &mut Frame, app: &mut App, area: Rect) {
     } else {
         app.hits.scrolling = Some((buffer.id, area));
         draw_buffer(f, buffer, area, scroll, false, Marks { selection: selection.as_ref(), find }, &mut app.hits);
-        if scroll > 0 {
+        if scroll > 0 && area.height > 0 {
             let pill = format!(" ↓ {} new · Esc ", buffer.unseen);
             let w = pill.width() as u16;
-            let r = Rect { x: area.x + area.width.saturating_sub(w + 1), y: area.y + area.height - 1, width: w.min(area.width), height: 1 };
+            let r = Rect { x: area.x + area.width.saturating_sub(w + 1), y: area.y + area.height.saturating_sub(1), width: w.min(area.width), height: 1 };
             f.render_widget(Clear, r);
             f.render_widget(Paragraph::new(Span::styled(pill, Style::new().fg(Color::Black).bg(ACCENT_2))), r);
         }
@@ -534,15 +534,21 @@ fn draw_map(f: &mut Frame, s: &Session, area: Rect, hits: &mut Hits) {
 }
 
 fn truncate(text: &str, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
     if text.width() <= width {
         return text.to_string();
     }
     let mut out = String::new();
+    let mut used = 0;
     for c in text.chars() {
-        if out.width() + 2 > width {
+        let cw = unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
+        if used + cw + 1 > width {
             break;
         }
         out.push(c);
+        used += cw;
     }
     out.push('…');
     out
@@ -633,7 +639,9 @@ fn draw_input(f: &mut Frame, app: &mut App, area: Rect) {
         })
         .collect();
     f.render_widget(Paragraph::new(lines), text_area);
-    f.set_cursor_position((text_area.x + cx, text_area.y + cy - first as u16));
+    if text_area.height > 0 && text_area.width > 0 {
+        f.set_cursor_position((text_area.x + cx.min(text_area.width.saturating_sub(1)), text_area.y + cy.saturating_sub(first as u16)));
+    }
 }
 
 /// Shows `selected` (a byte range in the line's text) in reverse video.
@@ -803,7 +811,10 @@ fn draw_picker(f: &mut Frame, p: &Picker, area: Rect, closable: bool, hits: &mut
     };
     let q = if p.query.is_empty() { Span::styled(placeholder, theme::faint().add_modifier(Modifier::ITALIC)) } else { Span::raw(p.query.text.clone()) };
     f.render_widget(Paragraph::new(Line::from(vec![Span::styled("⌕ ", theme::accent()), q])), query);
-    f.set_cursor_position((query.x + 2 + p.query.text[..p.query.cursor].width() as u16, query.y));
+    if query.width > 2 && query.height > 0 {
+        let col = (p.query.text[..p.query.cursor].width() as u16).min(query.width.saturating_sub(3));
+        f.set_cursor_position((query.x + 2 + col, query.y));
+    }
 
     // Rows, with a header whenever the group changes (when not filtering).
     let grouped = p.query.text.trim().is_empty() && p.kind != PickerKind::History;
@@ -886,8 +897,10 @@ fn draw_world_form(f: &mut Frame, form: &WorldForm, area: Rect) {
         }
         y += 2;
     }
-    if let Some(error) = &form.error {
-        let r = Rect { x: inner.x, y: inner.y + inner.height - 1, width: inner.width, height: 1 };
+    if let Some(error) = &form.error
+        && inner.height > 0
+    {
+        let r = Rect { x: inner.x, y: inner.y + inner.height.saturating_sub(1), width: inner.width, height: 1 };
         f.render_widget(Paragraph::new(Span::styled(format!("✗ {error}"), Style::new().fg(BAD))), r);
     }
 }
@@ -1047,8 +1060,8 @@ fn draw_rule_form(f: &mut Frame, form: &mut RuleForm, scope: &str, area: Rect) {
     }
     let more = lines.len() > first + height;
     f.render_widget(Paragraph::new(lines.into_iter().skip(first).take(height).collect::<Vec<_>>()), body);
-    if more {
-        f.render_widget(Paragraph::new(Line::styled("▼ more", theme::faint()).right_aligned()), Rect { y: body.y + body.height - 1, height: 1, ..body });
+    if more && body.height > 0 {
+        f.render_widget(Paragraph::new(Line::styled("▼ more", theme::faint()).right_aligned()), Rect { y: body.y + body.height.saturating_sub(1), height: 1, ..body });
     }
 
     if let Some(text) = form.test_result() {

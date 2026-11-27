@@ -56,8 +56,6 @@ struct Inbox {
     woken: AtomicBool,
     /// LLM agents' requests of this world, answered at the next poll.
     agent: Mutex<VecDeque<AgentRequest>>,
-    /// What the agent we run in a terminal has printed (apps that asked for "pty").
-    tty: Arc<Mutex<tty::TtyOutput>>,
 }
 
 impl Inbox {
@@ -415,10 +413,9 @@ impl State {
                     Err(e) => return notice(e),
                 };
                 if session.run_agents {
-                    *session.inbox.tty.lock().unwrap() = tty::TtyOutput::default();
                     let inbox = session.inbox.clone();
                     // The app resizes it to fit as soon as it's on screen.
-                    match tty::Tty::spawn(&launch, 80, 24, session.inbox.tty.clone(), move || inbox.wake(id)) {
+                    match tty::Tty::spawn(&launch, 80, 24, move || inbox.wake(id)) {
                         Ok(tty) => session.tty = Some(tty),
                         Err(e) => {
                             self.agents.close(&launch.token);
@@ -460,29 +457,31 @@ impl State {
         session.inbox.woken.store(false, Ordering::SeqCst);
         let mut out = std::mem::take(&mut session.pending);
         let events: Vec<SessionEvent> = {
-            let mut queue = session.inbox.events.lock().unwrap();
+            let mut queue = session.inbox.events.lock().unwrap_or_else(|e| e.into_inner());
             let n = queue.len().min(BATCH_LIMIT);
             queue.drain(..n).filter(|(generation, _)| *generation == session.generation).map(|(_, event)| event).collect()
         };
         for event in events {
             out.extend(session.engine.handle_event(event));
         }
-        let requests: Vec<AgentRequest> = session.inbox.agent.lock().unwrap().drain(..).collect();
+        let requests: Vec<AgentRequest> = session.inbox.agent.lock().unwrap_or_else(|e| e.into_inner()).drain(..).collect();
         for request in requests {
             agents.answer(request, Some(&mut AgentWorld(session)));
         }
         // What the agent we run printed, and whether it has stopped.
         let mut shown = Vec::new();
-        let printed = std::mem::take(&mut *session.inbox.tty.lock().unwrap());
-        if !printed.bytes.is_empty() && session.tty.is_some() {
-            shown.push(json!({ "t": "agent_output", "data": tty::base64(&printed.bytes) }));
-        }
-        if printed.exited && session.tty.take().is_some()
-            && let Some((name, token)) = session.agent.take()
-        {
-            agents.close(&token);
-            shown.push(json!({ "t": "agent_stop", "token": token }));
-            out.push(Output::Notice(format!("{name} stopped")));
+        if let Some(printed) = session.tty.as_ref().map(tty::Tty::take_output) {
+            if !printed.bytes.is_empty() {
+                shown.push(json!({ "t": "agent_output", "data": tty::base64(&printed.bytes) }));
+            }
+            if printed.exited
+                && session.tty.take().is_some()
+                && let Some((name, token)) = session.agent.take()
+            {
+                agents.close(&token);
+                shown.push(json!({ "t": "agent_stop", "token": token }));
+                out.push(Output::Notice(format!("{name} stopped")));
+            }
         }
         let now = Instant::now();
         if session.engine.next_deadline().is_some_and(|due| due <= now) {
@@ -490,7 +489,7 @@ impl State {
             session.timer = None;
             out.extend(session.engine.tick(now));
         }
-        let more = !session.inbox.events.lock().unwrap().is_empty();
+        let more = !session.inbox.events.lock().unwrap_or_else(|e| e.into_inner()).is_empty();
         shown.extend(self.finish(id, out));
         Ok(json!({ "outputs": shown, "more": more }))
     }
@@ -507,8 +506,8 @@ impl State {
         // "pty" also asks us to run them, in a pseudo-terminal, and pass on what they print.
         let run_agents = args.get("agents").and_then(Value::as_str) == Some("pty");
         engine.set_agents_supported(flag(args, "agents") || run_agents);
-        let inbox = Arc::new(Inbox { events: Mutex::default(), woken: AtomicBool::new(false), agent: Mutex::default(), tty: Arc::default() });
-        self.inboxes.lock().unwrap().insert(id, inbox.clone());
+        let inbox = Arc::new(Inbox { events: Mutex::default(), woken: AtomicBool::new(false), agent: Mutex::default() });
+        self.inboxes.lock().unwrap_or_else(|e| e.into_inner()).insert(id, inbox.clone());
         let session = Session { engine, generation: 0, inbox, pending: Vec::new(), timer: None, agent: None, run_agents, tty: None, recent: VecDeque::new() };
         self.sessions.insert(id, session);
         out.extend(self.start_scripting(id));
@@ -717,7 +716,9 @@ impl State {
             }
             "session.resize" => {
                 let (_, session) = self.session(args)?;
-                session.engine.set_window_size(number(args, "cols")? as u16, number(args, "rows")? as u16);
+                let cols = number(args, "cols")?.clamp(1.0, u16::MAX as f64) as u16;
+                let rows = number(args, "rows")?.clamp(1.0, u16::MAX as f64) as u16;
+                session.engine.set_window_size(cols, rows);
                 Ok(Value::Null)
             }
             "session.gmcp" => {
@@ -943,8 +944,10 @@ pub fn call(method: &str, args: &Value) -> Reply {
 /// # Safety
 /// Call once, before anything else, on the thread that will make the other calls.
 #[unsafe(no_mangle)]
-pub extern "C" fn familiar_init(wake: WakeFn) {
-    let _ = WAKE.set(wake);
+pub extern "C" fn familiar_init(wake: Option<WakeFn>) {
+    if let Some(wake) = wake {
+        let _ = WAKE.set(wake);
+    }
     let _ = MAIN_THREAD.set(std::thread::current().id());
 }
 
@@ -954,6 +957,9 @@ pub extern "C" fn familiar_init(wake: WakeFn) {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn familiar_call(method: *const c_char, args_json: *const c_char) -> *mut c_char {
     let reply = std::panic::catch_unwind(|| {
+        if method.is_null() {
+            return json!({ "error": "null method" });
+        }
         let method = unsafe { CStr::from_ptr(method) }.to_string_lossy();
         let args = if args_json.is_null() {
             Value::Null
@@ -1073,5 +1079,15 @@ mod tests {
         let ended = call("agent.ended", &json!({ "id": id, "token": "old" })).unwrap();
         assert_eq!(ended["outputs"], json!([]));
         call("session.close", &json!({ "id": id })).unwrap();
+    }
+
+    #[test]
+    fn ffi_handles_null_method() {
+        let ptr = unsafe { familiar_call(std::ptr::null(), std::ptr::null()) };
+        assert!(!ptr.is_null());
+        let text = unsafe { CStr::from_ptr(ptr) }.to_string_lossy().into_owned();
+        unsafe { familiar_free(ptr) };
+        let v: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(v["error"], "null method");
     }
 }
