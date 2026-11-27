@@ -17,7 +17,14 @@ impl Engine {
                     // Client commands work in logins (e.g. /delay 2s connect bob pw); "//"
                     // sends a line that starts with "/".
                     match line.strip_prefix('/') {
-                        Some(rest) if !rest.starts_with('/') => self.client_command(rest, &mut out),
+                        Some(rest) if !rest.starts_with('/') => {
+                            let (cmd_name, cmd_args) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+                            if cmd_name.eq_ignore_ascii_case("delay") {
+                                self.delay_command_inner(cmd_args.trim(), true, &mut out);
+                            } else {
+                                self.client_command(rest, &mut out);
+                            }
+                        }
                         _ => {
                             self.send_raw(line.strip_prefix('/').unwrap_or(line));
                         }
@@ -62,6 +69,7 @@ impl Engine {
                     out.push(Output::PasswordMode(false));
                 }
                 self.handle = None;
+                self.reset_connection_state();
                 self.agent_disconnected(&mut out);
                 if let Err(e) = self.save_map() {
                     out.push(Output::Notice(format!("Couldn't save the map: {e}")));
@@ -89,13 +97,13 @@ impl Engine {
                 Err(e) => out.push(Output::Notice(e)),
             },
             "beip.line.image-url" => {
-                let url: Option<String> = serde_json::from_str(&data).ok();
+                let url: Option<String> = serde_json::from_str::<String>(&data).ok().filter(|u| crate::media::is_http_url(u));
                 self.next_avatar = url.map(|url| Avatar { url: Some(url), ..Avatar::default() });
             }
             "beip.line.id" => {
                 if let Ok(id) = serde_json::from_str::<String>(&data) {
                     let known = self.avatars.get(&id).cloned();
-                    if known.is_none() && self.avatars_requested.insert(id.clone()) {
+                    if known.is_none() && self.avatars_requested.len() < 2048 && self.avatars_requested.insert(id.clone()) {
                         let request = serde_json::to_string(&id).unwrap_or_default();
                         if let Some(handle) = &self.handle {
                             handle.send_gmcp("beip.id.request", Some(request));
@@ -107,16 +115,19 @@ impl Engine {
             "beip.ids" => {
                 if let Ok(serde_json::Value::Object(ids)) = serde_json::from_str::<serde_json::Value>(&data) {
                     for (id, fields) in ids {
+                        if !self.avatars.contains_key(&id) && self.avatars.len() >= 2048 {
+                            continue;
+                        }
                         let avatar = self.avatars.entry(id.clone()).or_insert_with(|| Avatar { id: Some(id.clone()), ..Avatar::default() });
                         let s = |k: &str| fields.get(k).and_then(|v| v.as_str()).map(str::to_string);
-                        // Only the fields sent change.
-                        if let Some(url) = s("url") {
+                        // Only the fields sent change; URLs must be http:// or https://.
+                        if let Some(url) = s("url").filter(|u| crate::media::is_http_url(u)) {
                             avatar.url = Some(url);
                         }
                         if let Some(text) = s("hover-text") {
                             avatar.hover = Some(text);
                         }
-                        if let Some(url) = s("click-url") {
+                        if let Some(url) = s("click-url").filter(|u| crate::media::is_safe_open_uri(u)) {
                             avatar.click_url = Some(url);
                         }
                         out.push(Output::AvatarUpdated(avatar.clone()));
@@ -204,7 +215,9 @@ impl Engine {
             .or_else(|| text.trim_start().strip_prefix("Error in line "));
         let Some(rest) = rest else { return };
         let Some((number, message)) = rest.split_once(':') else { return };
-        if let Ok(line) = number.trim().parse::<u32>() {
+        if let Ok(line) = number.trim().parse::<u32>()
+            && line > 0
+        {
             out.push(Output::CompileError { reference: reference.clone(), line, message: message.trim().to_string() });
         }
     }
@@ -267,14 +280,6 @@ impl Engine {
         };
         out.push(Output::Received(text.to_string()));
         self.check_compile_error(text, out);
-        if self.map_tracking && !self.room_info_seen
-            && let Some(current) = self.current_room
-            && let Some(next) = self.map.track(current, text, self.last_move.as_deref())
-        {
-            self.current_room = Some(next);
-            self.last_move = None;
-            out.push(Output::MapChanged);
-        }
         if let Some(script) = self.script.as_mut() {
             script.on_receive(text);
             self.drain_script(out);
@@ -282,6 +287,14 @@ impl Engine {
         let mut line = self.ansi.parse_line(text);
         line.linkify();
         let mut plain = line.text.clone();
+        if self.map_tracking && !self.room_info_seen
+            && let Some(current) = self.current_room
+            && let Some(next) = self.map.track(current, &plain, self.last_move.as_deref())
+        {
+            self.current_room = Some(next);
+            self.last_move = None;
+            out.push(Output::MapChanged);
+        }
 
         // A puppet's line goes to its tab (and its own rules, not the main window's triggers).
         if prompt.is_none()
@@ -290,6 +303,7 @@ impl Engine {
             let puppet = self.puppets[i].0.clone();
             let open = self.open_puppets.contains(&puppet.name);
             if open || puppet.auto_open {
+                self.next_avatar.take();
                 if !open {
                     self.open_puppet(&puppet.name, false, out);
                 }
@@ -315,20 +329,23 @@ impl Engine {
             if t.suspended {
                 continue;
             }
-            let Ok(Some(caps)) = t.regex.captures(plain.as_str()) else { continue };
+            let matches: Vec<_> = t.regex.captures_iter(plain.as_str()).flatten().collect();
+            let Some(caps) = matches.first() else { continue };
             let trigger = &t.trigger;
             if let Some(h) = &trigger.highlight {
                 if h.whole_line {
                     line.restyle(0, plain.len(), |s| apply_highlight(s, h));
                 } else if h.groups && t.regex.captures_len() > 1 {
-                    for c in t.regex.captures_iter(plain.as_str()).flatten() {
+                    for c in &matches {
                         for m in (1..c.len()).filter_map(|g| c.get(g)) {
                             line.restyle(m.start(), m.end(), |s| apply_highlight(s, h));
                         }
                     }
                 } else {
-                    for m in t.regex.find_iter(plain.as_str()).flatten() {
-                        line.restyle(m.start(), m.end(), |s| apply_highlight(s, h));
+                    for c in &matches {
+                        if let Some(m) = c.get(0) {
+                            line.restyle(m.start(), m.end(), |s| apply_highlight(s, h));
+                        }
                     }
                 }
             }
@@ -346,7 +363,7 @@ impl Engine {
             }
             let stop = trigger.stop;
             if !trigger.speak.is_empty() {
-                let caps = Captures::from_regex(&t.regex, &caps);
+                let caps = Captures::from_regex(&t.regex, caps);
                 speech.push(expand(&trigger.speak, &caps, |name| self.variable(name)));
             }
             if !trigger.script.is_empty() {
@@ -367,18 +384,16 @@ impl Engine {
             }
             let mut edits: Vec<(usize, usize, String)> = Vec::new();
             if let Some(replacement) = &trigger.replace {
-                edits = t
-                    .regex
-                    .captures_iter(plain.as_str())
-                    .flatten()
+                edits = matches
+                    .iter()
                     .filter_map(|c| {
                         let m = c.get(0).filter(|m| m.start() < m.end())?;
-                        Some((m.start(), m.end(), expand(replacement, &Captures::from_regex(&t.regex, &c), |name| self.variable(name))))
+                        Some((m.start(), m.end(), expand(replacement, &Captures::from_regex(&t.regex, c), |name| self.variable(name))))
                     })
                     .collect();
             }
             if !trigger.send.is_empty() {
-                let caps = Captures::from_regex(&t.regex, &caps);
+                let caps = Captures::from_regex(&t.regex, caps);
                 let template = trigger.send.clone();
                 if self.note_trigger_send(i, out) {
                     let text = expand(&template, &caps, |name| self.variable(name));
@@ -439,10 +454,11 @@ impl Engine {
         out.push(Output::Activity { important });
         self.drain_script(out);
         for command in sends {
-            self.send_raw(&command);
-            out.push(Output::Sent(command.clone()));
-            if self.settings.local_echo {
-                out.push(Output::Echo(command));
+            if self.send_raw(&command) {
+                out.push(Output::Sent(command.clone()));
+                if self.settings.local_echo {
+                    out.push(Output::Echo(command));
+                }
             }
         }
     }
@@ -465,6 +481,11 @@ pub(super) fn parse_webview_open(json: &str) -> Result<WebViewOpen, String> {
     let s = |k: &str| v.get(k).and_then(|x| x.as_str()).map(str::to_string);
     let n = |k: &str| v.get(k).and_then(|x| x.as_i64()).map(|x| x.clamp(50, 10_000) as i32);
     let url = s("url");
+    if let Some(ref u) = url
+        && !crate::media::is_http_url(u)
+    {
+        return Err("webview.open: url must be http:// or https://".into());
+    }
     let source = s("source");
     if url.is_none() && source.is_none() {
         return Err("webview.open: needs a url or source".into());
@@ -472,7 +493,16 @@ pub(super) fn parse_webview_open(json: &str) -> Result<WebViewOpen, String> {
     let headers = v
         .get("http-request-headers")
         .and_then(|h| h.as_object())
-        .map(|h| h.iter().map(|(k, v)| (k.clone(), v.as_str().map_or_else(|| v.to_string(), str::to_string))).collect())
+        .map(|h| {
+            h.iter()
+                .map(|(k, v)| {
+                    let clean = |s: &str| s.replace(['\r', '\n'], "");
+                    let val = v.as_str().map_or_else(|| v.to_string(), str::to_string);
+                    (clean(k), clean(&val))
+                })
+                .filter(|(k, _)| !k.is_empty())
+                .collect()
+        })
         .unwrap_or_default();
     Ok(WebViewOpen {
         id: s("id").or_else(|| url.clone()).unwrap_or_else(|| "Web View".into()),
@@ -488,7 +518,7 @@ pub(super) fn parse_webview_open(json: &str) -> Result<WebViewOpen, String> {
 
 pub(super) fn parse_hex(color: &str) -> Option<Color> {
     let hex = color.strip_prefix('#')?;
-    if hex.len() != 6 {
+    if hex.len() != 6 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
         return None;
     }
     let v = u32::from_str_radix(hex, 16).ok()?;

@@ -68,15 +68,36 @@ pub fn decode(encoding: &str, data: &str) -> Result<Vec<u8>, String> {
         "base64_8" => base64(data),
         "zbase64_8" => {
             let compressed = base64(data)?;
-            let mut out = Vec::new();
-            // The docs say zlib, but BeipMU's examples are raw deflate; accept both.
-            let result = if compressed.first() == Some(&0x78) {
-                flate2::read::ZlibDecoder::new(compressed.as_slice()).read_to_end(&mut out)
-            } else {
-                flate2::read::DeflateDecoder::new(compressed.as_slice()).read_to_end(&mut out)
+            let max_bytes = (MAX_SIZE * MAX_SIZE) as usize;
+            enum InflateErr {
+                TooLarge,
+                Io(std::io::Error),
+            }
+            let read_capped = |mut reader: Box<dyn Read>| -> Result<Vec<u8>, InflateErr> {
+                let mut out = Vec::new();
+                reader.by_ref().take((max_bytes as u64) + 1).read_to_end(&mut out).map_err(InflateErr::Io)?;
+                if out.len() > max_bytes {
+                    return Err(InflateErr::TooLarge);
+                }
+                Ok(out)
             };
-            result.map_err(|e| format!("couldn't decompress: {e}"))?;
-            Ok(out)
+            // RFC 1950 zlib header check; BeipMU examples also use raw deflate, so fall back cleanly.
+            let looks_zlib = compressed.len() >= 2
+                && (compressed[0] & 0x0f) == 8
+                && ((compressed[0] as u16) * 256 + compressed[1] as u16).is_multiple_of(31);
+            let out = if looks_zlib {
+                match read_capped(Box::new(flate2::read::ZlibDecoder::new(compressed.as_slice()))) {
+                    Ok(v) => Ok(v),
+                    Err(InflateErr::TooLarge) => Err(InflateErr::TooLarge),
+                    Err(InflateErr::Io(_)) => read_capped(Box::new(flate2::read::DeflateDecoder::new(compressed.as_slice()))),
+                }
+            } else {
+                read_capped(Box::new(flate2::read::DeflateDecoder::new(compressed.as_slice())))
+            };
+            out.map_err(|e| match e {
+                InflateErr::TooLarge => "tilemap data exceeds size limit".to_string(),
+                InflateErr::Io(e) => format!("couldn't decompress: {e}"),
+            })
         }
         other => Err(format!("unknown encoding {other}")),
     }
@@ -93,11 +114,18 @@ impl Tilemaps {
         let root = root.as_object().ok_or("beip.tilemap.info: expected an object")?;
         let mut changed = Vec::new();
         for (name, v) in root {
+            if !self.maps.contains_key(name) && self.maps.len() >= 64 {
+                return Err("beip.tilemap.info: too many tilemaps".into());
+            }
             let fail = |e: String| format!("beip.tilemap.info \"{name}\": {e}");
             let (tile_width, tile_height) = size(v, "tile-size").map_err(fail)?;
             let (width, height) = size(v, "map-size").map_err(fail)?;
+            let tile_url = v.get("tile-url").and_then(Value::as_str).ok_or_else(|| fail("missing tile-url".into()))?;
+            if !crate::media::is_http_url(tile_url) {
+                return Err(fail("tile-url must be an http:// or https:// URL".into()));
+            }
             let info = TileInfo {
-                tile_url: v.get("tile-url").and_then(Value::as_str).ok_or_else(|| fail("missing tile-url".into()))?.to_string(),
+                tile_url: tile_url.to_string(),
                 tile_width,
                 tile_height,
                 width,
@@ -174,12 +202,26 @@ mod tests {
 
         let mut maps = Tilemaps::default();
         assert!(maps.data(r#"{"Nope":"0"}"#).unwrap_err().contains("info first"));
-        assert!(maps.info(r#"{"Big":{"tile-url":"u","tile-size":"16,16","map-size":"999,2"}}"#).is_err());
-        maps.info(r#"{"M":{"tile-url":"u","tile-size":"8,8","map-size":"2,2","encoding":"hex_4"}}"#).unwrap();
+        assert!(maps.info(r#"{"Big":{"tile-url":"https://x/u.png","tile-size":"16,16","map-size":"999,2"}}"#).is_err());
+        assert!(maps.info(r#"{"BadUrl":{"tile-url":"file:///etc/passwd","tile-size":"8,8","map-size":"2,2"}}"#).is_err());
+        assert!(maps.info(r#"{"RelUrl":{"tile-url":"u","tile-size":"8,8","map-size":"2,2"}}"#).is_err());
+        maps.info(r#"{"M":{"tile-url":"https://x/u.png","tile-size":"8,8","map-size":"2,2","encoding":"hex_4"}}"#).unwrap();
         assert!(maps.data(r#"{"M":"012"}"#).unwrap_err().contains("3 tiles"));
         // A size change resets the tiles.
         maps.data(r#"{"M":"1111"}"#).unwrap();
-        maps.info(r#"{"M":{"tile-url":"u","tile-size":"8,8","map-size":"3,1","encoding":"hex_4"}}"#).unwrap();
+        maps.info(r#"{"M":{"tile-url":"https://x/u.png","tile-size":"8,8","map-size":"3,1","encoding":"hex_4"}}"#).unwrap();
         assert_eq!(maps.get("M").unwrap().tiles, vec![0, 0, 0]);
+    }
+
+    #[test]
+    fn zbase64_rejects_decompression_bombs() {
+        use flate2::Compression;
+        use flate2::write::ZlibEncoder;
+        use std::io::Write;
+        let mut enc = ZlibEncoder::new(Vec::new(), Compression::best());
+        enc.write_all(&vec![0u8; (MAX_SIZE * MAX_SIZE) as usize + 1024]).unwrap();
+        let compressed = enc.finish().unwrap();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(compressed);
+        assert!(decode("zbase64_8", &b64).unwrap_err().contains("exceeds size limit"));
     }
 }

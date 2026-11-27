@@ -102,13 +102,16 @@ impl Engine {
                 return Err("Couldn't send to the world".into());
             }
         }
+        let deadline = Instant::now()
+            .checked_add(Duration::from_secs(timeout))
+            .unwrap_or_else(|| Instant::now() + Duration::from_secs(3600));
         self.agent_calls.insert(
             id,
             AgentCall {
                 tool: tool.to_string(),
                 summary: summarize(args),
                 show,
-                deadline: Instant::now() + Duration::from_secs(timeout),
+                deadline,
                 timeout,
             },
         );

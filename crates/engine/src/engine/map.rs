@@ -33,6 +33,10 @@ impl Engine {
     /// Sends the commands to walk to `room` by the shortest known path.
     pub fn map_walk_to(&mut self, room: RoomId) -> Vec<Output> {
         let mut out = Vec::new();
+        if !self.is_connected() {
+            out.push(Output::Notice(format!("Not connected. {}", self.reconnect_hint())));
+            return out;
+        }
         let Some(from) = self.current_room else {
             out.push(Output::Notice("Set your current room first: right-click it on the map, or use /map here name".into()));
             return out;
@@ -108,7 +112,7 @@ impl Engine {
         let (sub, rest) = args.split_once(char::is_whitespace).unwrap_or((args, ""));
         let rest = rest.trim();
         let find = |map: &Atlas, name: &str| map.search(name).first().copied();
-        match sub {
+        match sub.to_ascii_lowercase().as_str() {
             "" | "show" => out.push(Output::ShowMap),
             "go" | "walk" if !rest.is_empty() => match find(&self.map, rest) {
                 Some(room) => out.extend(self.map_walk_to(room)),
@@ -139,7 +143,15 @@ impl Engine {
                 None => out.push(Output::Notice("There's no current room to delete".into())),
             },
             "track" => {
-                self.map_tracking = rest != "off";
+                match rest.to_ascii_lowercase().as_str() {
+                    "" => {}
+                    "on" => self.map_tracking = true,
+                    "off" => self.map_tracking = false,
+                    _ => {
+                        out.push(Output::Notice("Usage: /map track [on|off]".into()));
+                        return;
+                    }
+                }
                 out.push(Output::Notice(format!("Tracking by room name is {}", if self.map_tracking { "on" } else { "off" })));
             }
             "clear" if rest == "yes" => {

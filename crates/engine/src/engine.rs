@@ -307,6 +307,9 @@ impl Engine {
     pub fn reload(&mut self, config: &Config) -> Vec<Output> {
         self.settings = config.settings.clone();
         self.bouncer = config.bouncer.clone();
+        if let Some(world) = config.world(&self.world.name) {
+            self.world = world.clone();
+        }
         // Pick up edits to the character (its puppets, login) from the config.
         if let Some(name) = self.character.as_ref().map(|c| c.name.clone())
             && let Some(saved) = config.world(&self.world.name).and_then(|w| w.characters.iter().find(|c| c.name == name))
@@ -393,7 +396,24 @@ impl Engine {
     /// [`Output::Agent`].
     pub fn set_agents_supported(&mut self, supported: bool) {
         self.agents_supported = supported;
-        self.mcp = Mcp::new(supported);
+        if !self.mcp.is_active() {
+            self.mcp = Mcp::new(supported);
+        }
+    }
+
+    /// Resets per-connection state and unsuspends runaway triggers.
+    pub(super) fn reset_connection_state(&mut self) {
+        self.next_avatar = None;
+        self.avatars.clear();
+        self.avatars_requested.clear();
+        self.last_move = None;
+        self.room_info_seen = false;
+        self.compile_watch = None;
+        self.media = Media::default();
+        for t in &mut self.rules.triggers {
+            t.suspended = false;
+            t.recent_sends.clear();
+        }
     }
 
     /// Which app's shortcuts notices should mention ([`keymap::Platform::Terminal`] for the
@@ -440,6 +460,7 @@ impl Engine {
         if self.webviews_supported {
             opts.telnet.gmcp_supports.push("WebView 1".into());
         }
+        self.reset_connection_state();
         self.mcp = Mcp::new(self.agents_supported);
         self.via_bouncer = self.world.bouncer && !self.bouncer.is_unset();
         if self.via_bouncer {
@@ -681,6 +702,7 @@ struct Delay {
     due: Instant,
     every: Option<std::time::Duration>,
     command: String,
+    secret: bool,
 }
 
 mod agent;

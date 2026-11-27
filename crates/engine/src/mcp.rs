@@ -67,7 +67,12 @@ impl AgentTool {
             description: v.get("description").and_then(|d| d.as_str()).unwrap_or("").to_string(),
             input_schema,
             show,
-            timeout: v.get("timeout").and_then(|t| t.as_u64()).filter(|t| *t > 0).unwrap_or(Self::DEFAULT_TIMEOUT),
+            timeout: v
+                .get("timeout")
+                .and_then(|t| t.as_u64())
+                .filter(|t| *t > 0)
+                .map(|t| t.min(3600))
+                .unwrap_or(Self::DEFAULT_TIMEOUT),
         })
     }
 }
@@ -114,10 +119,15 @@ pub enum Disposition {
     Quoted(String),
 }
 
+const MAX_PENDING_MESSAGES: usize = 64;
+const MAX_PENDING_LINES: usize = 50_000;
+
 #[derive(Debug, Default)]
 pub struct Mcp {
     /// Our authentication key, once the server has started MCP.
     key: Option<String>,
+    /// True once the server has sent at least one authenticated message with our key.
+    confirmed: bool,
     /// Multiline messages waiting for their end, by data tag.
     pending: HashMap<String, Message>,
     /// Packages the server says it supports, with their max version.
@@ -168,7 +178,11 @@ fn parse_keyvals(mut s: &str) -> Option<Vec<(String, String, bool)>> {
         if is_list {
             s = &s[1..];
         }
-        s = s.strip_prefix(": ")?;
+        s = s.strip_prefix(':')?;
+        if !s.starts_with(' ') {
+            return None;
+        }
+        s = s.trim_start_matches(' ');
         if key.is_empty() {
             return None;
         }
@@ -202,6 +216,9 @@ fn quote(value: &str) -> String {
     let mut out = String::with_capacity(value.len() + 2);
     out.push('"');
     for c in value.chars() {
+        if matches!(c, '\r' | '\n') {
+            continue;
+        }
         if c == '"' || c == '\\' {
             out.push('\\');
         }
@@ -218,7 +235,7 @@ impl Mcp {
 
     /// The server has sent something with our key, so it received our answer.
     pub fn server_confirmed(&self) -> bool {
-        !self.server_packages.is_empty()
+        self.confirmed || !self.server_packages.is_empty()
     }
 
     pub fn server_supports(&self, package: &str) -> bool {
@@ -250,6 +267,7 @@ impl Mcp {
             let key = random_key();
             let mut out = vec![format!("#$#mcp authentication-key: {key} version: 2.1 to: 2.1")];
             self.key = Some(key);
+            self.confirmed = false;
             self.pending.clear();
             self.server_packages.clear();
             for (name, min, max) in PACKAGES {
@@ -269,13 +287,16 @@ impl Mcp {
         let mut sends = Vec::new();
         if let Some(rest) = body.strip_prefix("* ") {
             // Multiline continuation: "#$#* <tag> <key>: <value>"
-            if let Some((tag, rest)) = rest.split_once(' ')
+            if let Some((tag, rest)) = rest.split_once(' ') {
+                let rest = rest.trim_start_matches(' ');
                 // An empty value is "key: ", but the space may not survive the trip: take "key:" too.
-                && let Some((key, value)) = rest.split_once(": ").or_else(|| Some((rest.strip_suffix(':')?, "")))
-                && let Some(message) = self.pending.get_mut(tag)
-                && let Some((_, list)) = message.lists.iter_mut().find(|(k, _)| k.eq_ignore_ascii_case(key))
-            {
-                list.push(value.to_string());
+                if let Some((key, value)) = rest.split_once(": ").or_else(|| Some((rest.strip_suffix(':')?, "")))
+                    && let Some(message) = self.pending.get_mut(tag)
+                    && let Some((_, list)) = message.lists.iter_mut().find(|(k, _)| k.eq_ignore_ascii_case(key))
+                    && list.len() < MAX_PENDING_LINES
+                {
+                    list.push(value.to_string());
+                }
             }
         } else if let Some(tag) = body.strip_prefix(": ") {
             // Multiline end: "#$#: <tag>"
@@ -288,6 +309,7 @@ impl Mcp {
                 // Wrong key: someone (maybe another player) is trying to spoof the server.
                 return (Disposition::Hide, Vec::new());
             }
+            self.confirmed = true;
             let Some(kv) = parse_keyvals(rest) else {
                 events.push(McpEvent::Notice(format!("Ignored an MCP message the client couldn't read: {name} {rest}")));
                 return (Disposition::Hide, Vec::new());
@@ -302,7 +324,9 @@ impl Mcp {
             }
             if message.lists.is_empty() {
                 self.dispatch(&message, events, &mut sends);
-            } else if let Some(tag) = message.get("_data-tag").map(str::to_string) {
+            } else if let Some(tag) = message.get("_data-tag").map(str::to_string)
+                && (self.pending.contains_key(&tag) || self.pending.len() < MAX_PENDING_MESSAGES)
+            {
                 self.pending.insert(tag, message);
             }
         }
@@ -379,9 +403,16 @@ impl Mcp {
             while !rest.is_char_boundary(end) {
                 end -= 1;
             }
-            // A piece ending in a space would lose it to a server that trims lines.
-            while end > 1 && rest.as_bytes()[end - 1] == b' ' {
-                end -= 1;
+            // A piece ending in a space would lose it to a server that trims lines; back up to
+            // a non-space if one exists in this chunk.
+            if end < rest.len() && rest.as_bytes()[end - 1] == b' ' {
+                let mut trimmed = end;
+                while trimmed > 0 && rest.as_bytes()[trimmed - 1] == b' ' {
+                    trimmed -= 1;
+                }
+                if trimmed > 0 {
+                    end = trimmed;
+                }
             }
             pieces.push(rest[..end].to_string());
             rest = &rest[end..];
@@ -398,11 +429,17 @@ impl Mcp {
         }
         let mut lines = Vec::new();
         let mut tail = Vec::new();
-        for (k, items) in lists {
-            self.next_tag += 1;
+        if !lists.is_empty() {
+            self.next_tag = self.next_tag.wrapping_add(1);
             let tag = format!("{:x}{}", self.next_tag, &key[..4.min(key.len())]);
-            first.push_str(&format!(" {k}*: \"\" _data-tag: {tag}"));
-            tail.extend(items.iter().map(|item| format!("#$#* {tag} {k}: {item}")));
+            for (k, items) in lists {
+                first.push_str(&format!(" {k}*: \"\""));
+                for item in *items {
+                    let clean = item.replace(['\r', '\n'], "");
+                    tail.push(format!("#$#* {tag} {k}: {clean}"));
+                }
+            }
+            first.push_str(&format!(" _data-tag: {tag}"));
             tail.push(format!("#$#: {tag}"));
         }
         lines.push(first);
@@ -412,7 +449,11 @@ impl Mcp {
 
     /// The lines that send edited text back for a simpleedit `reference`.
     pub fn simpleedit_set(&mut self, reference: &str, kind: &str, content: &str) -> Vec<String> {
-        let lines: Vec<String> = content.lines().map(str::to_string).collect();
+        let lines: Vec<String> = if content.is_empty() {
+            Vec::new()
+        } else {
+            content.replace("\r\n", "\n").replace('\r', "\n").split('\n').map(str::to_string).collect()
+        };
         self.format("dns-org-mud-moo-simpleedit-set", &[("reference", reference), ("type", kind)], &[("content", &lines)])
     }
 }

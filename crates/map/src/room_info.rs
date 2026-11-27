@@ -33,7 +33,7 @@ fn id_string(v: &Value) -> Option<String> {
 }
 
 fn pair(v: &Value) -> Option<(f64, f64)> {
-    let num = |k: &str, alt: &str| v.get(k).or_else(|| v.get(alt)).and_then(Value::as_f64);
+    let num = |k: &str, alt: &str| v.get(k).or_else(|| v.get(alt)).and_then(Value::as_f64).filter(|n| n.is_finite());
     Some((num("x", "w")?, num("y", "h")?))
 }
 
@@ -47,10 +47,12 @@ impl RoomInfo {
         let position = match (obj.get("coords"), obj.get("coord")) {
             // BeipMU: map units already.
             (Some(c @ Value::Object(_)), _) => pair(c),
-            // IRE: "area,x,y,z" in grid cells.
+            // IRE: "area,x,y,z" in grid cells. Area may be non-numeric, so keep field indices intact.
             (Some(Value::String(c)), _) => {
-                let parts: Vec<f64> = c.split(',').filter_map(|p| p.trim().parse().ok()).collect();
-                (parts.len() >= 3).then(|| (parts[1] * GRID_X, parts[2] * GRID_Y))
+                let parts: Vec<&str> = c.split(',').collect();
+                let x = parts.get(1).and_then(|p| p.trim().parse::<f64>().ok()).filter(|n| n.is_finite());
+                let y = parts.get(2).and_then(|p| p.trim().parse::<f64>().ok()).filter(|n| n.is_finite());
+                x.zip(y).map(|(x, y)| (x * GRID_X, y * GRID_Y))
             }
             // Aardwolf: grid cells.
             (_, Some(c)) => pair(c).map(|(x, y)| (x * GRID_X, y * GRID_Y)),

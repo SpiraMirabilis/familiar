@@ -49,22 +49,26 @@ impl Engine {
             script.tick(now);
             self.drain_script(&mut out);
         }
-        let mut due = Vec::new();
+        let mut due: Vec<(String, bool)> = Vec::new();
         self.delays.retain_mut(|d| {
             if d.due > now {
                 return true;
             }
-            due.push(d.command.clone());
+            due.push((d.command.clone(), d.secret));
             match d.every {
                 Some(every) => {
-                    d.due = now + every;
+                    d.due = now.checked_add(every).unwrap_or(now);
                     true
                 }
                 None => false,
             }
         });
-        for command in due {
-            out.extend(self.submit(&command, false));
+        for (command, secret) in due {
+            if secret {
+                self.send_raw(&command);
+            } else {
+                out.extend(self.submit(&command, false));
+            }
         }
         self.agent_timeouts(now, &mut out);
         out
@@ -79,6 +83,10 @@ impl Engine {
     /// `/delay [id NAME] [every] TIME COMMAND`, `/delay list`, `/delay kill NAME`,
     /// `/delay killall`. TIME is like 5s, 1.5m, 2h, 500ms or 1m30s.
     pub(super) fn delay_command(&mut self, args: &str, out: &mut Vec<Output>) {
+        self.delay_command_inner(args, false, out);
+    }
+
+    pub(super) fn delay_command_inner(&mut self, args: &str, secret: bool, out: &mut Vec<Output>) {
         let mut words = args.split_whitespace();
         match words.next().map(str::to_ascii_lowercase).as_deref() {
             None | Some("list") => {
@@ -89,7 +97,8 @@ impl Engine {
                 for d in &self.delays {
                     let left = d.due.saturating_duration_since(now).as_secs_f64();
                     let every = d.every.map(|e| format!(", every {}s", e.as_secs_f64())).unwrap_or_default();
-                    out.push(Output::Notice(format!("[{}] in {left:.1}s{every}: {}", d.id, d.command)));
+                    let shown = if d.secret { "(hidden)" } else { d.command.as_str() };
+                    out.push(Output::Notice(format!("[{}] in {left:.1}s{every}: {shown}", d.id)));
                 }
                 return;
             }
@@ -125,11 +134,14 @@ impl Engine {
             every = true;
             time = word();
         }
-        let command = rest.trim();
         // BeipMU quotes the command: /delay 3s "connect bob pw".
-        let command = command.strip_prefix('"').and_then(|c| c.strip_suffix('"')).unwrap_or(command).replace("\\\"", "\"");
+        let command = unquote_delay(rest.trim());
         let Some(wait) = parse_duration(&time) else {
             out.push(Output::Notice("Usage: /delay [id NAME] [every] TIME COMMAND, with TIME like 5s, 2m or 500ms. Also /delay list, /delay kill NAME, /delay killall".into()));
+            return;
+        };
+        let Some(due) = Instant::now().checked_add(wait) else {
+            out.push(Output::Notice("/delay time is too far in the future".into()));
             return;
         };
         if command.is_empty() {
@@ -143,8 +155,8 @@ impl Engine {
             self.next_delay_id += 1;
             id
         });
-        self.delays.retain(|d| d.id != id);
-        self.delays.push(Delay { id, due: Instant::now() + wait, every, command });
+        self.delays.retain(|d| !d.id.eq_ignore_ascii_case(&id));
+        self.delays.push(Delay { id, due, every, command, secret });
     }
 
     /// Applies what scripts asked for since the last hook.
@@ -195,9 +207,9 @@ impl Engine {
                 ScriptAction::Error(e) => out.push(Output::Notice(format!("Script error: {e}"))),
             }
         }
-        self.script_depth -= 1;
-        // Applying actions can run more hooks, which can queue more actions.
+        // Applying actions can run more hooks, which can queue more actions; recurse while depth is incremented.
         self.drain_script(out);
+        self.script_depth -= 1;
     }
 
     pub(super) fn script_event(&mut self, name: &str, out: &mut Vec<Output>) {
@@ -238,6 +250,30 @@ impl Engine {
     }
 }
 
+fn unquote_delay(command: &str) -> String {
+    if let Some(inner) = command.strip_prefix('"').and_then(|c| c.strip_suffix('"')) {
+        let mut escaped = false;
+        let mut has_inner_quote = false;
+        for c in inner.chars() {
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == '"' {
+                has_inner_quote = true;
+                break;
+            }
+        }
+        if !has_inner_quote {
+            return inner.replace("\\\"", "\"");
+        }
+    }
+    command.to_string()
+}
+
+/// Maximum accepted `/delay` duration (30 days) so `Instant::now() + wait` can't overflow.
+const MAX_DELAY_SECS: f64 = 30.0 * 24.0 * 3600.0;
+
 /// Parses "5", "5s", "1.5m", "2h", "500ms" or "1m30s".
 pub(super) fn parse_duration(text: &str) -> Option<std::time::Duration> {
     let text = text.trim().to_ascii_lowercase();
@@ -245,7 +281,9 @@ pub(super) fn parse_duration(text: &str) -> Option<std::time::Duration> {
         return None;
     }
     if let Ok(seconds) = text.parse::<f64>() {
-        return (seconds >= 0.0).then(|| std::time::Duration::from_secs_f64(seconds));
+        return (seconds.is_finite() && (0.0..=MAX_DELAY_SECS).contains(&seconds))
+            .then(|| std::time::Duration::try_from_secs_f64(seconds).ok())
+            .flatten();
     }
     let mut total = 0.0;
     let mut rest = text.as_str();
@@ -264,5 +302,8 @@ pub(super) fn parse_duration(text: &str) -> Option<std::time::Duration> {
             };
         rest = &rest[unit..];
     }
-    Some(std::time::Duration::from_secs_f64(total))
+    if !total.is_finite() || !(0.0..=MAX_DELAY_SECS).contains(&total) {
+        return None;
+    }
+    std::time::Duration::try_from_secs_f64(total).ok()
 }

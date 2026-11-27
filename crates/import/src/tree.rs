@@ -68,7 +68,7 @@ impl Scope {
     }
 
     fn child(&mut self, name: &str) -> &mut Scope {
-        let existing = if name.is_empty() { None } else { self.scopes.iter().position(|s| s.name == name) };
+        let existing = if name.is_empty() { None } else { self.scopes.iter().position(|s| s.name.eq_ignore_ascii_case(name)) };
         let i = existing.unwrap_or_else(|| {
             self.scopes.push(Scope { name: name.to_string(), ..Scope::default() });
             self.scopes.len() - 1
@@ -82,7 +82,18 @@ pub fn unquote(raw: &str) -> String {
     let raw = raw.trim();
     let Some(body) = raw.strip_prefix('"') else { return raw.to_string() };
     let mut out = String::with_capacity(body.len());
-    let mut chars = body.chars();
+    let mut chars = body.chars().peekable();
+    let read_hex = |chars: &mut std::iter::Peekable<std::str::Chars<'_>>, max: usize| -> Option<char> {
+        let mut hex = String::with_capacity(max);
+        for _ in 0..max {
+            if chars.peek().is_some_and(char::is_ascii_hexdigit) {
+                hex.push(chars.next().unwrap());
+            } else {
+                break;
+            }
+        }
+        (!hex.is_empty()).then(|| u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32)).flatten()
+    };
     while let Some(c) = chars.next() {
         match c {
             '"' => break,
@@ -92,15 +103,13 @@ pub fn unquote(raw: &str) -> String {
                 Some('t') => out.push('\t'),
                 Some('0') => out.push('\0'),
                 Some('x') => {
-                    let hex: String = chars.by_ref().take(2).collect();
-                    if let Some(c) = u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32) {
-                        out.push(c);
+                    if let Some(ch) = read_hex(&mut chars, 2) {
+                        out.push(ch);
                     }
                 }
                 Some('u') => {
-                    let hex: String = chars.by_ref().take(4).collect();
-                    if let Some(c) = u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32) {
-                        out.push(c);
+                    if let Some(ch) = read_hex(&mut chars, 4) {
+                        out.push(ch);
                     }
                 }
                 Some(other) => out.push(other),
@@ -189,6 +198,13 @@ impl Parser<'_> {
 
     /// Parses entries into `scope` until a closing brace (consumed) or the end.
     fn entries(&mut self, scope: &mut Scope, depth: usize) {
+        const MAX_DEPTH: usize = 128;
+        if depth > MAX_DEPTH {
+            self.error("nesting is too deep");
+            // Advance to end to avoid unbounded recursion on malformed input.
+            self.pos = self.text.len();
+            return;
+        }
         loop {
             self.skip_space();
             match self.peek() {
@@ -219,6 +235,12 @@ impl Parser<'_> {
 
     /// `Key=Value`, `A.B.Key=Value`, or `Key { ... }`.
     fn entry(&mut self, scope: &mut Scope, depth: usize) {
+        const MAX_DEPTH: usize = 128;
+        if depth > MAX_DEPTH {
+            self.error("nesting is too deep");
+            self.rest_of_line();
+            return;
+        }
         let Some(key) = self.key() else {
             let junk = self.rest_of_line().trim().to_string();
             self.error(&format!("can't read '{junk}'"));
@@ -228,7 +250,7 @@ impl Parser<'_> {
             self.bump();
             let child = scope.child(&key);
             // A dotted path names one value; it never opens a block.
-            self.entry(child, depth);
+            self.entry(child, depth + 1);
             return;
         }
         self.skip_inline_space();
@@ -302,5 +324,16 @@ mod tests {
         let (root, errors) = parse("A\n{\n  ?? junk\n  B=1\n");
         assert_eq!(root.scope("A").unwrap().int("B"), Some(1));
         assert_eq!(errors.len(), 2, "{errors:?}");
+    }
+
+    #[test]
+    fn caps_deep_nesting() {
+        let deep_braces = format!("{}X=1{}", "{\n".repeat(200), "}\n".repeat(200));
+        let (_, errors) = parse(&deep_braces);
+        assert!(errors.iter().any(|e| e.contains("nesting is too deep")), "{errors:?}");
+
+        let deep_dots = format!("{}Leaf=1\n", "A.".repeat(200));
+        let (_, errors) = parse(&deep_dots);
+        assert!(errors.iter().any(|e| e.contains("nesting is too deep")), "{errors:?}");
     }
 }

@@ -198,19 +198,33 @@ pub fn on_enter(before_cursor: &str, lang: Lang) -> (usize, usize) {
 /// Re-indents every line with `unit` per level. Blank lines become empty. Lines inside block
 /// comments keep their own indentation.
 pub fn reindent(text: &str, lang: Lang, unit: &str) -> String {
-    let levels = indents(text, lang).lines;
+    let mut depth = 0usize;
     let mut carry = Carry::default();
     let mut out = Vec::new();
-    for (line, level) in text.split('\n').zip(levels) {
-        let in_comment = carry != Carry::Code;
-        line_words(line, lang, &mut carry);
+    for raw in text.split('\n') {
+        let (line, cr) = match raw.strip_suffix('\r') {
+            Some(l) => (l, "\r"),
+            None => (raw, ""),
+        };
+        let starts_in_comment = carry != Carry::Code;
+        let words = line_words(line, lang, &mut carry);
+        let first = words.first().map(String::as_str);
+        let dedent = !starts_in_comment && first.is_some_and(|w| lang.closers().contains(&w) || lang.middles().contains(&w));
+        let level = depth.saturating_sub(dedent as usize);
+        for w in &words {
+            if lang.openers().contains(&w.as_str()) {
+                depth += 1;
+            } else if lang.closers().contains(&w.as_str()) {
+                depth = depth.saturating_sub(1);
+            }
+        }
         let body = line.trim_start();
         out.push(if body.is_empty() {
-            String::new()
-        } else if in_comment {
-            line.to_string()
+            cr.to_string()
+        } else if starts_in_comment {
+            format!("{line}{cr}")
         } else {
-            format!("{}{body}", unit.repeat(level))
+            format!("{}{body}{cr}", unit.repeat(level))
         });
     }
     out.join("\n")

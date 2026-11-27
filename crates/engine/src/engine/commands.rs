@@ -127,6 +127,10 @@ impl Engine {
     }
 
     pub(super) fn client_command(&mut self, command: &str, out: &mut Vec<Output>) {
+        if let Some(code) = command.strip_prefix('@') {
+            self.eval_script(code, out);
+            return;
+        }
         let (name, args) = command.split_once(char::is_whitespace).unwrap_or((command, ""));
         let args = args.trim();
         match name.to_lowercase().as_str() {
@@ -141,14 +145,19 @@ impl Engine {
                     out.push(Output::Notice(format!("%{k}% = {v}")));
                 }
             }
-            "set" => {
-                let (var, value) = args.split_once(char::is_whitespace).unwrap_or((args, ""));
-                if !var.chars().all(|c| c.is_alphanumeric() || c == '_') {
-                    out.push(Output::Notice("Variable names can only contain letters, digits and _".into()));
-                    return;
+            "set" => match args.split_once(char::is_whitespace) {
+                Some((var, value)) => {
+                    if !var.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                        out.push(Output::Notice("Variable names can only contain letters, digits and _".into()));
+                        return;
+                    }
+                    self.set_variable(var, Some(value.trim_start()), false, out);
                 }
-                self.set_variable(var, Some(value.trim_start()), false, out);
-            }
+                None => match self.variable(args) {
+                    Some(v) => out.push(Output::Notice(format!("%{args}% = {v}"))),
+                    None => out.push(Output::Notice(format!("%{args}% is not set"))),
+                },
+            },
             "unset" if !args.is_empty() => self.set_variable(args, None, false, out),
             "script" => {
                 let (sub, rest) = args.split_once(char::is_whitespace).unwrap_or((args, ""));
@@ -320,38 +329,21 @@ impl Engine {
     }
 
     /// Handles a clicked link: `send:` sends a command, `prompt:` fills the input, anything
-    /// else is opened by the UI.
+    /// else is opened by the UI (restricted to safe URL schemes).
     pub fn follow_link(&mut self, uri: &str) -> Vec<Output> {
         let mut out = Vec::new();
         if let Some(command) = uri.strip_prefix("send:") {
-            self.send_command(&percent_decode(command), &mut out);
+            let decoded = familiar_config::paths::percent_decode(command).replace(['\r', '\n'], "");
+            self.send_command(&decoded, &mut out);
         } else if let Some(text) = uri.strip_prefix("prompt:") {
-            out.push(Output::SetInput(percent_decode(text)));
-        } else {
+            out.push(Output::SetInput(familiar_config::paths::percent_decode(text)));
+        } else if crate::media::is_safe_open_uri(uri) {
             out.push(Output::OpenUri(uri.to_string()));
+        } else {
+            out.push(Output::Notice(format!("Refused to open unsafe link: {uri}")));
         }
         out
     }
-}
-
-/// Decodes %XX escapes. Invalid escapes are kept as they are.
-pub(super) fn percent_decode(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%'
-            && let Some(hex) = s.get(i + 1..i + 3)
-            && let Ok(b) = u8::from_str_radix(hex, 16)
-        {
-            out.push(b);
-            i += 3;
-            continue;
-        }
-        out.push(bytes[i]);
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// `/agent`, for frontends that can run agents ([`Engine::set_agents_supported`]).

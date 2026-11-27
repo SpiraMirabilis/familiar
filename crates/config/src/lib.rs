@@ -174,7 +174,46 @@ impl Agent {
     }
 
     fn fill(&self, text: &str, url: &str, world: &str) -> String {
-        text.replace("{url}", url).replace("{world}", world)
+        // Single-pass substitution so `{world}` inside `url` isn't re-expanded, and escape
+        // JSON/TOML string characters when the placeholder sits inside double quotes.
+        let mut out = String::with_capacity(text.len());
+        let mut rest = text;
+        let escape_quoted = |s: &str, out: &mut String| {
+            for c in s.chars() {
+                match c {
+                    '\\' => out.push_str("\\\\"),
+                    '"' => out.push_str("\\\""),
+                    '\n' => out.push_str("\\n"),
+                    '\r' => out.push_str("\\r"),
+                    '\t' => out.push_str("\\t"),
+                    c => out.push(c),
+                }
+            }
+        };
+        while !rest.is_empty() {
+            let next_url = rest.find("{url}");
+            let next_world = rest.find("{world}");
+            let (pos, token, val) = match (next_url, next_world) {
+                (Some(u), Some(w)) if u <= w => (u, "{url}", url),
+                (Some(_), Some(w)) => (w, "{world}", world),
+                (Some(u), None) => (u, "{url}", url),
+                (None, Some(w)) => (w, "{world}", world),
+                (None, None) => {
+                    out.push_str(rest);
+                    break;
+                }
+            };
+            out.push_str(&rest[..pos]);
+            let after = &rest[pos + token.len()..];
+            let quoted = out.ends_with('"') && after.starts_with('"');
+            if quoted {
+                escape_quoted(val, &mut out);
+            } else {
+                out.push_str(val);
+            }
+            rest = after;
+        }
+        out
     }
 
     /// The command with `{url}` and `{world}` filled in.
@@ -475,11 +514,12 @@ impl Config {
     }
 
     /// Saves by writing a temporary file and renaming it over the old one, so a crash can't leave
-    /// a half-written config.
+    /// a half-written config. Uses owner-only permissions on Unix because config.toml may hold
+    /// bouncer passwords and character logins.
     pub fn save(&self, path: &Path) -> Result<(), Error> {
         let text = toml::to_string_pretty(self)?;
         let io_err = |source| Error::Io { path: path.into(), source };
-        paths::write_atomic(path, text.as_bytes()).map_err(io_err)
+        paths::write_atomic_private(path, text.as_bytes()).map_err(io_err)
     }
 }
 

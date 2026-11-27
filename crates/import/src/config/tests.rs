@@ -185,9 +185,8 @@ Connections
     let bob = &w.characters[0];
     assert_eq!((bob.name.as_str(), bob.login.as_str()), ("Bob", "connect Bob %PASSWORD%"), "no password: left as it is");
     assert_eq!(bob.rules.variables.get("target").map(String::as_str), Some("orc"));
-    let log = if cfg!(windows) { r"d:\logfiles\StH.log" } else { "StH.log" };
-    assert_eq!((bob.log_file.as_str(), bob.log_date, bob.restore_log), (log, true, true), "RestoreLog is on unless it was switched off");
-    assert_eq!(imported.warnings.iter().any(|w| w.contains("logs to StH.log in the logs folder")), !cfg!(windows));
+    assert_eq!((bob.log_file.as_str(), bob.log_date, bob.restore_log), ("StH.log", true, true), "RestoreLog is on unless it was switched off");
+    assert!(imported.warnings.iter().any(|w| w.contains("logs to StH.log in the logs folder")));
     let zed = &bob.puppets[0];
     assert_eq!((zed.name.as_str(), zed.receive_prefix.as_str(), zed.regex, zed.auto_open), ("Zed", "^Zed> ", true, false));
     assert!(imported.warnings.iter().any(|w| w.contains("Puppet \"Zed\"")));
@@ -219,9 +218,55 @@ fn merge_is_idempotent() {
 #[test]
 fn templates_and_keys() {
     assert_eq!(template(r"say \1 costs $5 \a12 \x"), r"say $1 costs $$5 ${12} \x");
+    assert_eq!(template(r"literal \\1 stays"), r"literal \1 stays");
     assert_eq!(key_chord("Control+Alt+A").as_deref(), Some("Ctrl+Alt+A"));
     assert_eq!(key_chord("?Shift+NumPad0").as_deref(), Some("KP_0"));
     assert_eq!(key_chord("F11").as_deref(), Some("F11"));
     assert_eq!(key_chord("PageUp").as_deref(), Some("Page_Up"));
     assert_eq!(key_chord("Gizmo"), None);
+}
+
+#[test]
+fn ipv6_host_log_traversal_and_disabled_items() {
+    let text = r#"Connections
+{
+  Servers
+  {
+    {
+      Name="IPv6 World"
+      Host="[2001:db8::1]:4201"
+      Characters
+      {
+        {
+          Name="Ada"
+          LogFileName="../../etc/passwd"
+          Aliases
+          {
+            {
+              Disabled=true
+              FindString.MatchText="a"
+              Replace="b"
+            }
+          }
+          KeyboardMacros2
+          {
+            {
+              Disabled=true
+              Key="F6"
+              Macro="nope"
+            }
+          }
+        }
+      }
+    }
+  }
+}
+"#;
+    let imported = import(text);
+    let w = &imported.worlds[0];
+    assert_eq!((w.host.as_str(), w.port), ("2001:db8::1", 4201));
+    let ada = &w.characters[0];
+    assert_eq!(ada.log_file, "passwd");
+    assert!(!ada.rules.aliases[0].enabled);
+    assert!(ada.rules.macros.is_empty());
 }

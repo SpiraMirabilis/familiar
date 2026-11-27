@@ -136,3 +136,27 @@ fn directions() {
     assert_eq!(reverse("portal"), None);
     assert_eq!(offset("up"), Some((0.5, -1.0)));
 }
+
+#[test]
+fn ire_non_numeric_area_and_exit_retarget_and_next_id() {
+    let named_area = info(r#"{"num": 7, "name": "Dock", "coords": "Harbor,2,-3,0"}"#);
+    assert_eq!(named_area.position, Some((2.0 * GRID_X, -3.0 * GRID_Y)));
+
+    let mut atlas = Atlas::default();
+    let a = atlas.add_room("A", "Z", Some((0.0, 0.0)));
+    let b = atlas.add_room("B", "Z", Some((GRID_X, 0.0)));
+    atlas.set_exit(a, "n", Some(b), Some("old".into()));
+    assert_eq!(atlas.room(a).unwrap().exit("n").unwrap().to, Some(b));
+    // Retargeting to an unmapped server id clears the stale destination room id.
+    atlas.set_exit(a, "n", None, Some("new".into()));
+    assert_eq!(atlas.room(a).unwrap().exit("n").unwrap().to, None);
+
+    // Loading a JSON file with stale next_id normalizes next_id past all existing room ids.
+    let dir = std::env::temp_dir().join(format!("mu-map-nextid-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("stale.json");
+    std::fs::write(&path, r#"{"next_id": 1, "rooms": {"42": {"id": 42, "name": "Hi", "area": "Z", "x": 0, "y": 0, "w": 5, "h": 5, "exits": []}}}"#).unwrap();
+    let mut loaded = Atlas::load(&path).unwrap();
+    assert_eq!(loaded.add_room("Next", "Z", None), 43);
+    std::fs::remove_dir_all(dir).unwrap();
+}

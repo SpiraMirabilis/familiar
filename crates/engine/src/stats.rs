@@ -20,6 +20,7 @@ pub fn parse_color(s: &str) -> Option<StatColor> {
     }
     if let Some(hex) = s.strip_prefix('#')
         && hex.len() == 6
+        && hex.bytes().all(|b| b.is_ascii_hexdigit())
     {
         let v = u32::from_str_radix(hex, 16).ok()?;
         return Some(StatColor::Rgb((v >> 16) as u8, (v >> 8) as u8, v as u8));
@@ -61,8 +62,8 @@ impl StatValue {
     pub fn fraction(&self) -> Option<f64> {
         match self {
             StatValue::Range { value, min, max, .. } => {
-                let span = (*max - *min) as f64;
-                Some(if span > 0.0 { ((*value - *min) as f64 / span).clamp(0.0, 1.0) } else { 0.0 })
+                let span = *max as f64 - *min as f64;
+                Some(if span > 0.0 { ((*value as f64 - *min as f64) / span).clamp(0.0, 1.0) } else { 0.0 })
             }
             StatValue::Progress { value, .. } => Some(value.clamp(0.0, 1.0)),
             _ => None,

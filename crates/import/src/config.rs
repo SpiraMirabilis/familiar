@@ -82,10 +82,28 @@ impl Ctx {
             self.warn(format!("World \"{name}\" has no host, so it was skipped"));
             return None;
         }
-        let (host, port) = match host_port.rsplit_once(':').map(|(h, p)| (h, p.trim().parse::<u16>())) {
-            Some((h, Ok(p))) => (h.trim().to_string(), p),
-            _ => (host_port.trim().to_string(), server.int("Port").and_then(|p| u16::try_from(p).ok()).unwrap_or(23)),
+        let host_port = host_port.trim();
+        let default_port = server.int("Port").and_then(|p| u16::try_from(p).ok()).unwrap_or(23);
+        let (host, port) = if let Some(rest) = host_port.strip_prefix('[') {
+            match rest.split_once(']') {
+                Some((h, after)) => {
+                    let port = after.strip_prefix(':').and_then(|p| p.trim().parse::<u16>().ok()).unwrap_or(default_port);
+                    (h.trim().to_string(), port)
+                }
+                None => (host_port.to_string(), default_port),
+            }
+        } else if host_port.matches(':').count() == 1 {
+            match host_port.split_once(':') {
+                Some((h, p)) if !h.trim().is_empty() && p.trim().parse::<u16>().is_ok() => (h.trim().to_string(), p.trim().parse().unwrap()),
+                _ => (host_port.to_string(), default_port),
+            }
+        } else {
+            (host_port.to_string(), default_port)
         };
+        if host.is_empty() {
+            self.warn(format!("World \"{name}\" has no host, so it was skipped"));
+            return None;
+        }
         let encoding = match server.string("Encoding").unwrap_or_default().trim() {
             "UTF8" => "UTF-8",
             "CP437" => "CP437",
@@ -165,18 +183,28 @@ impl Ctx {
         }
     }
 
-    /// A character's log file. A Windows path only works on Windows; elsewhere the file goes in
-    /// the logs folder under the same name.
+    /// A character's log file. Always normalized to a plain filename inside the logs folder so an
+    /// imported Config.txt cannot write outside Familiar's log directory.
     fn log_file(&mut self, path: String, label: &str) -> String {
-        let path = path.trim().to_string();
-        if cfg!(windows) || !(path.contains('\\') || path.get(1..2) == Some(":")) {
-            return path;
+        let path = path.trim();
+        if path.is_empty() {
+            return String::new();
         }
-        let name = path.rsplit(['\\', '/']).next().unwrap_or_default().to_string();
-        if !name.is_empty() {
-            self.warn(format!("{label} logged to {path}; it logs to {name} in the logs folder instead"));
+        let raw_name = path.rsplit(['\\', '/']).next().unwrap_or_default().trim();
+        let has_dir = path.contains(['\\', '/']) || path.get(1..2) == Some(":") || raw_name == "." || raw_name == "..";
+        let safe = if raw_name.is_empty() || raw_name == "." || raw_name == ".." {
+            String::new()
+        } else {
+            familiar_config::paths::file_name(raw_name, "")
+        };
+        if has_dir {
+            if !safe.is_empty() {
+                self.warn(format!("{label} logged to {path}; it logs to {safe} in the logs folder instead"));
+            } else {
+                self.warn(format!("{label} had an unusable log file path ({path}), which was ignored"));
+            }
         }
-        name
+        safe
     }
 
     /// The triggers, aliases and macros in a Connections, server or character scope.
@@ -190,9 +218,12 @@ impl Ctx {
             self.triggers(triggers, label, !active, None, &mut rules.triggers);
         }
         if let Some(aliases) = scope.scope("Aliases") {
-            self.aliases(aliases, label, aliases_on, None, &mut rules.aliases);
+            let active = aliases_on && aliases.flag_or("Active", true);
+            self.aliases(aliases, label, active, None, &mut rules.aliases);
         }
-        if let Some(macros) = scope.scope("KeyboardMacros2") {
+        if let Some(macros) = scope.scope("KeyboardMacros2")
+            && macros.flag_or("Active", true)
+        {
             self.macros(macros, label, &mut rules.macros);
         }
         if let Some(old) = scope.scope("KeyboardMacros") {
@@ -360,41 +391,52 @@ impl Ctx {
         if item.scope("Stat").is_some() {
             self.warn(format!("{what}: stat window updates aren't supported"));
         }
-        if item.scope("Paragraph").is_some_and(|p| p.values.iter().any(|(k, v)| k.starts_with("Use") && v.trim() == "true")) {
+        if item.scope("Paragraph").is_some_and(|p| p.values.iter().any(|(k, _)| k.starts_with("Use") && p.flag(k) == Some(true))) {
             self.warn(format!("{what}: paragraph styling (alignment, borders, indents) isn't supported"));
         }
     }
 
     fn aliases(&mut self, list: &Scope, label: &str, on: bool, parent: Option<&str>, out: &mut Vec<Alias>) {
         for item in list.items() {
+            let item_on = on && !item.flag_or("Disabled", false);
             let children = item.scope("Aliases");
             if item.flag_or("Folder", false) {
                 if let Some(children) = children {
-                    self.aliases(children, label, on, parent, out);
+                    self.aliases(children, label, item_on && children.flag_or("Active", true), parent, out);
                 }
                 continue;
             }
-            let Some(matcher) = find_string(item.scope("FindString").unwrap_or(item)) else { continue };
+            let Some(matcher) = find_string(item.scope("FindString").unwrap_or(item)) else {
+                if let Some(children) = children {
+                    self.aliases(children, label, item_on && children.flag_or("Active", true), parent, out);
+                }
+                continue;
+            };
             let name = item.string("Description").filter(|d| !d.is_empty()).unwrap_or_else(|| matcher.pattern.clone());
             if let Some(parent) = parent {
                 self.warn(format!("Alias \"{name}\" ({label}) only ran after \"{parent}\" matched; here it always runs"));
             }
             out.push(Alias {
-                enabled: on,
+                enabled: item_on,
                 matcher,
                 replacement: template(&item.str_or_empty("Replace")),
                 substitute: true,
                 stop: item.flag_or("StopProcessing", false),
             });
             if let Some(children) = children {
-                self.aliases(children, label, on, Some(&name), out);
+                self.aliases(children, label, item_on && children.flag_or("Active", true), Some(&name), out);
             }
         }
     }
 
     fn macros(&mut self, list: &Scope, label: &str, out: &mut Vec<Macro>) {
         for item in list.items() {
-            if let Some(children) = item.scope("KeyboardMacros2") {
+            if item.flag_or("Disabled", false) {
+                continue;
+            }
+            if let Some(children) = item.scope("KeyboardMacros2")
+                && children.flag_or("Active", true)
+            {
                 self.macros(children, label, out);
             }
             if item.flag_or("Folder", false) {
@@ -457,6 +499,10 @@ pub fn template(text: &str) -> String {
     while i < chars.len() {
         match chars[i] {
             '$' => out.push_str("$$"),
+            '\\' if chars.get(i + 1) == Some(&'\\') => {
+                out.push('\\');
+                i += 1;
+            }
             '\\' if chars.get(i + 1).is_some_and(char::is_ascii_digit) => {
                 out.push('$');
                 out.push(chars[i + 1]);

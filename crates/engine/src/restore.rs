@@ -16,7 +16,7 @@ const MARK: char = '\u{1}';
 
 pub struct RestoreLog {
     path: PathBuf,
-    file: BufWriter<File>,
+    file: Option<BufWriter<File>>,
     size: u64,
 }
 
@@ -31,12 +31,12 @@ pub enum Entry {
 impl RestoreLog {
     /// Opens the log for appending and records the start of a session.
     pub fn open(path: &Path) -> io::Result<Self> {
-        if let Some(dir) = path.parent() {
+        if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
             std::fs::create_dir_all(dir)?;
         }
         let file = OpenOptions::new().create(true).append(true).open(path)?;
         let size = file.metadata()?.len();
-        let mut log = Self { path: path.into(), file: BufWriter::new(file), size };
+        let mut log = Self { path: path.into(), file: Some(BufWriter::new(file)), size };
         log.write(&format!("{MARK}{}", Local::now().naive_local().format("%Y-%m-%d %H:%M:%S")))?;
         Ok(log)
     }
@@ -45,13 +45,14 @@ impl RestoreLog {
     pub fn line(&mut self, raw: &str) -> io::Result<()> {
         let raw = raw.replace(['\r', '\n'], "");
         // A line that happens to start with the marker would be read as one.
-        let raw = raw.strip_prefix(MARK).unwrap_or(&raw);
+        let raw = raw.trim_start_matches(MARK);
         self.write(raw)
     }
 
     fn write(&mut self, line: &str) -> io::Result<()> {
-        writeln!(self.file, "{line}")?;
-        self.file.flush()?;
+        let file = self.file.as_mut().ok_or_else(|| io::Error::other("restore log is closed"))?;
+        writeln!(file, "{line}")?;
+        file.flush()?;
         self.size += line.len() as u64 + 1;
         if self.size > KEEP_BYTES * 2 {
             self.trim()?;
@@ -61,11 +62,15 @@ impl RestoreLog {
 
     /// Cuts the file down to its last [`KEEP_BYTES`].
     fn trim(&mut self) -> io::Result<()> {
+        // Close our handle first so Windows can rename the temp file over `self.path`.
+        if let Some(mut file) = self.file.take() {
+            file.flush()?;
+        }
         let bytes = std::fs::read(&self.path)?;
         familiar_config::paths::write_atomic(&self.path, tail(&bytes))?;
         let file = OpenOptions::new().append(true).open(&self.path)?;
         self.size = file.metadata()?.len();
-        self.file = BufWriter::new(file);
+        self.file = Some(BufWriter::new(file));
         Ok(())
     }
 
@@ -84,8 +89,15 @@ impl RestoreLog {
                 None => Entry::Line(l.to_string()),
             })
             .collect();
-        // A session that received nothing isn't worth a heading.
-        entries.dedup_by(|b, a| matches!((a, b), (Entry::Start(_), Entry::Start(_))));
+        // A session that received nothing isn't worth a heading: keep the latest heading before content.
+        entries.dedup_by(|b, a| {
+            if matches!((&a, &b), (Entry::Start(_), Entry::Start(_))) {
+                std::mem::swap(a, b);
+                true
+            } else {
+                false
+            }
+        });
         if matches!(entries.last(), Some(Entry::Start(_))) {
             entries.pop();
         }

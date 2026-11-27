@@ -85,15 +85,34 @@ pub struct Atlas {
     rooms: BTreeMap<RoomId, Room>,
     #[serde(default)]
     next_id: RoomId,
+    /// Index of server room ids for O(1) lookup during automapping.
+    #[serde(skip)]
+    server_ids: HashMap<String, RoomId>,
     /// Changed since the last save.
     #[serde(skip)]
     dirty: bool,
 }
 
 impl Atlas {
+    fn rebuild_index(&mut self) {
+        self.server_ids.clear();
+        for (&id, room) in &self.rooms {
+            if let Some(sid) = &room.server_id {
+                self.server_ids.insert(sid.clone(), id);
+            }
+        }
+        if let Some(&max_id) = self.rooms.keys().next_back() {
+            self.next_id = self.next_id.max(max_id);
+        }
+    }
+
     pub fn load(path: &Path) -> Result<Self, String> {
         match std::fs::read_to_string(path) {
-            Ok(text) => serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display())),
+            Ok(text) => {
+                let mut atlas: Self = serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+                atlas.rebuild_index();
+                Ok(atlas)
+            }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
             Err(e) => Err(format!("{}: {e}", path.display())),
         }
@@ -144,7 +163,10 @@ impl Atlas {
     }
 
     pub fn find_by_server_id(&self, server_id: &str) -> Option<RoomId> {
-        self.rooms.values().find(|r| r.server_id.as_deref() == Some(server_id)).map(|r| r.id)
+        self.server_ids
+            .get(server_id)
+            .copied()
+            .or_else(|| self.rooms.values().find(|r| r.server_id.as_deref() == Some(server_id)).map(|r| r.id))
     }
 
     /// Rooms whose names contain `text`, ignoring case. Exact matches come first.
@@ -205,20 +227,36 @@ impl Atlas {
 
     /// Adds (or retargets) an exit from `from`.
     pub fn set_exit(&mut self, from: RoomId, command: &str, to: Option<RoomId>, to_server_id: Option<String>) {
-        let Some(room) = self.rooms.get_mut(&from) else { return };
+        self.set_exit_inner(from, command, to, to_server_id);
+    }
+
+    fn set_exit_inner(&mut self, from: RoomId, command: &str, to: Option<RoomId>, to_server_id: Option<String>) -> bool {
+        let Some(room) = self.rooms.get_mut(&from) else { return false };
         let wanted = canonical(command);
+        let mut changed = false;
         match room.exits.iter_mut().find(|e| canonical(&e.command) == wanted) {
             Some(exit) => {
-                if to.is_some() {
+                if to.is_some() && exit.to != to {
                     exit.to = to;
+                    changed = true;
                 }
-                if to_server_id.is_some() {
+                if to_server_id.is_some() && exit.to_server_id != to_server_id {
+                    if to.is_none() && exit.to.is_some() {
+                        exit.to = None;
+                    }
                     exit.to_server_id = to_server_id;
+                    changed = true;
                 }
             }
-            None => room.exits.push(Exit { command: command.to_string(), to, to_server_id }),
+            None => {
+                room.exits.push(Exit { command: command.to_string(), to, to_server_id });
+                changed = true;
+            }
         }
-        self.dirty = true;
+        if changed {
+            self.dirty = true;
+        }
+        changed
     }
 
     /// Creates a room reached from `from` by `there`, with `back` leading back. The new room is
@@ -252,8 +290,13 @@ impl Atlas {
 
     /// Deletes a room and every exit into it.
     pub fn delete_room(&mut self, id: RoomId) {
-        if self.rooms.remove(&id).is_none() {
+        let Some(removed) = self.rooms.remove(&id) else {
             return;
+        };
+        if let Some(sid) = removed.server_id
+            && self.server_ids.get(&sid) == Some(&id)
+        {
+            self.server_ids.remove(&sid);
         }
         for room in self.rooms.values_mut() {
             room.exits.retain(|e| e.to != Some(id));
@@ -263,6 +306,7 @@ impl Atlas {
 
     pub fn clear(&mut self) {
         self.rooms.clear();
+        self.server_ids.clear();
         self.dirty = true;
     }
 
@@ -322,6 +366,7 @@ impl Atlas {
                 let id = self.add_room(&name, &area, Some(at));
                 if let Some(server_id) = &info.id {
                     self.rooms.get_mut(&id).unwrap().server_id = Some(server_id.clone());
+                    self.server_ids.insert(server_id.clone(), id);
                     // Exits elsewhere that were waiting for this room.
                     for room in self.rooms.values_mut() {
                         for exit in &mut room.exits {
@@ -334,32 +379,51 @@ impl Atlas {
                 id
             }
         };
+        let mut changed = false;
         let room = self.rooms.get_mut(&id).unwrap();
         if !name.is_empty() && room.name != name {
             room.name = name;
+            changed = true;
         }
-        if let Some(area) = &info.area {
+        if let Some(area) = &info.area
+            && &room.area != area
+        {
             room.area = area.clone();
+            changed = true;
         }
-        if let Some((x, y)) = info.position {
+        if let Some((x, y)) = info.position
+            && x.is_finite()
+            && y.is_finite()
+            && (room.x != x || room.y != y)
+        {
             room.x = x;
             room.y = y;
+            changed = true;
         }
-        if let Some((w, h)) = info.size {
-            room.w = w;
-            room.h = h;
+        if let Some((w, h)) = info.size
+            && w.is_finite()
+            && h.is_finite()
+        {
+            let (w, h) = (w.max(8.0), h.max(8.0));
+            if room.w != w || room.h != h {
+                room.w = w;
+                room.h = h;
+                changed = true;
+            }
+        }
+        if changed {
+            self.dirty = true;
         }
         for (command, target) in &info.exits {
             let to = target.as_deref().and_then(|t| self.find_by_server_id(t));
-            self.set_exit(id, command, to, target.clone());
+            self.set_exit_inner(id, command, to, target.clone());
         }
         if let (Some(prev), Some(command)) = (previous, last_move)
             && prev != id
             && self.rooms.get(&prev).and_then(|r| r.exit(command)).is_none_or(|e| e.to.is_none())
         {
-            self.set_exit(prev, command, Some(id), None);
+            self.set_exit_inner(prev, command, Some(id), None);
         }
-        self.dirty = true;
         Some(id)
     }
 

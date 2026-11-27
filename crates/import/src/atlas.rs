@@ -23,12 +23,13 @@ pub struct AtlasImport {
 impl AtlasImport {
     pub fn describe(&self) -> String {
         let mut text = format!(
-            "Imported {} rooms and {} exits into {}",
+            "Imported {} rooms and {} exits{}",
             self.rooms,
             self.exits,
             match self.areas.as_slice() {
-                [one] => format!("area \"{one}\""),
-                many => format!("areas {}", many.iter().map(|a| format!("\"{a}\"")).collect::<Vec<_>>().join(", ")),
+                [] => String::new(),
+                [one] => format!(" into area \"{one}\""),
+                many => format!(" into areas {}", many.iter().map(|a| format!("\"{a}\"")).collect::<Vec<_>>().join(", ")),
             }
         );
         if !self.skipped.is_empty() {
@@ -56,6 +57,8 @@ struct RawExit {
     name_to: String,
 }
 
+const MAX_ATLAS_XML_BYTES: usize = 32 * 1024 * 1024;
+
 /// The XML inside a `.atlas` file, unzipping it if needed.
 fn xml_text(bytes: &[u8]) -> Result<String, String> {
     if bytes.starts_with(b"PK") {
@@ -64,11 +67,18 @@ fn xml_text(bytes: &[u8]) -> Result<String, String> {
             .filter_map(|i| zip.name_for_index(i).map(str::to_string))
             .find(|n| n.to_ascii_lowercase().ends_with(".xml"))
             .ok_or("the zip has no XML file in it")?;
-        let mut text = String::new();
-        zip.by_name(&name).map_err(|e| e.to_string())?.read_to_string(&mut text).map_err(|e| e.to_string())?;
-        return Ok(text);
+        let entry = zip.by_name(&name).map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        entry.take((MAX_ATLAS_XML_BYTES as u64) + 1).read_to_end(&mut out).map_err(|e| e.to_string())?;
+        if out.len() > MAX_ATLAS_XML_BYTES {
+            return Err("the atlas XML exceeds the 32 MiB size limit".into());
+        }
+        return String::from_utf8(out).map_err(|_| "the XML inside the zip isn't valid UTF-8".to_string());
     }
-    String::from_utf8(bytes.to_vec()).map_err(|_| "the file isn't UTF-8 XML".to_string())
+    if bytes.len() > MAX_ATLAS_XML_BYTES {
+        return Err("the atlas XML exceeds the 32 MiB size limit".into());
+    }
+    std::str::from_utf8(bytes).map(str::to_string).map_err(|_| "the file isn't UTF-8 XML".to_string())
 }
 
 fn attr(e: &BytesStart, name: &str) -> Option<String> {
@@ -81,7 +91,10 @@ fn index(e: &BytesStart, name: &str) -> Option<usize> {
 
 /// `left,top,right,bottom` as x, y, width, height.
 fn rect(text: &str) -> Option<(f64, f64, f64, f64)> {
-    let v: Vec<f64> = text.split(',').map(|p| p.trim().parse().ok()).collect::<Option<_>>()?;
+    let v: Vec<f64> = text
+        .split(',')
+        .map(|p| p.trim().parse::<f64>().ok().filter(|n| n.is_finite()))
+        .collect::<Option<_>>()?;
     match v.as_slice() {
         [l, t, r, b] => Some((l.min(*r), t.min(*b), (r - l).abs(), (b - t).abs())),
         _ => None,
@@ -97,12 +110,19 @@ pub fn import_atlas(bytes: &[u8], atlas: &mut Atlas) -> Result<AtlasImport, Stri
     let mut maps: Vec<Vec<RoomId>> = Vec::new();
     let mut exits: Vec<RawExit> = Vec::new();
     let mut saw_atlas = false;
+    let mut in_map = false;
     let taken: Vec<String> = atlas.areas();
     loop {
         let event = reader.read_event().map_err(|e| format!("bad XML at byte {}: {e}", reader.buffer_position()))?;
         let (e, is_start) = match &event {
             Event::Start(e) => (e, true),
             Event::Empty(e) => (e, false),
+            Event::End(e) => {
+                if e.name().as_ref() == b"map" {
+                    in_map = false;
+                }
+                continue;
+            }
             Event::Eof => break,
             _ => continue,
         };
@@ -118,20 +138,23 @@ pub fn import_atlas(bytes: &[u8], atlas: &mut Atlas) -> Result<AtlasImport, Stri
                 }
                 report.areas.push(area);
                 maps.push(Vec::new());
-                if !is_start {
-                    continue;
-                }
+                in_map = is_start;
             }
             b"room" => {
+                if !in_map {
+                    continue;
+                }
                 let (Some(area), Some(rooms)) = (report.areas.last(), maps.last_mut()) else { continue };
                 let name = attr(e, "name").unwrap_or_default();
                 let (x, y, w, h) = attr(e, "rect").and_then(|r| rect(&r)).unwrap_or((0.0, 0.0, familiar_map::ROOM_W, familiar_map::ROOM_H));
-                let color = attr(e, "color").filter(|c| c.starts_with('#') && c.len() == 7).map(|c| c.to_ascii_lowercase());
+                let color = attr(e, "color")
+                    .filter(|c| c.starts_with('#') && c.len() == 7 && c[1..].bytes().all(|b| b.is_ascii_hexdigit()))
+                    .map(|c| c.to_ascii_lowercase());
                 rooms.push(atlas.insert_room(&name, area, (x, y, w, h), color));
                 report.rooms += 1;
             }
             b"exit" => {
-                if maps.is_empty() {
+                if !in_map || maps.is_empty() {
                     continue;
                 }
                 exits.push(RawExit {
@@ -166,10 +189,10 @@ pub fn import_atlas(bytes: &[u8], atlas: &mut Atlas) -> Result<AtlasImport, Stri
             report.exits += 1;
             added = true;
         }
-        if let (Some(to), Some(from)) = (to, from)
+        if let Some(to) = to
             && !x.name_to.trim().is_empty()
         {
-            atlas.set_exit(to, x.name_to.trim(), Some(from), None);
+            atlas.set_exit(to, x.name_to.trim(), from, None);
             report.exits += 1;
             added = true;
         }
@@ -222,5 +245,16 @@ mod tests {
     fn rejects_other_files() {
         assert!(import_atlas(b"<html></html>", &mut Atlas::default()).is_err());
         assert!(import_atlas(b"PK\x03\x04junk", &mut Atlas::default()).is_err());
+    }
+
+    #[test]
+    fn ignores_non_finite_rects_and_bad_colors() {
+        let xml = r##"<atlas><map name="M"><rooms><room name="R" rect="0,0,NaN,10" color="#zzzzzz"/><room name="Ok" rect="10,20,30,40" color="#00ff00"/></rooms></map></atlas>"##;
+        let mut atlas = Atlas::default();
+        let report = import_atlas(xml.as_bytes(), &mut atlas).unwrap();
+        assert_eq!(report.rooms, 2);
+        let r = atlas.rooms().find(|r| r.name == "R").unwrap();
+        assert!(r.color.is_none());
+        assert!(r.w.is_finite() && r.h.is_finite());
     }
 }

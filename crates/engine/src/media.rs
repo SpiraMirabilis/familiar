@@ -44,6 +44,25 @@ fn bool_value(v: &Value) -> Option<bool> {
     }
 }
 
+const MAX_LOADED: usize = 2048;
+const MAX_LOOPS: i64 = 100;
+const MAX_CACHE_BYTES: u64 = 256 * 1024 * 1024;
+
+/// True for `http://` and `https://` URLs (case-insensitive) without control characters.
+pub fn is_http_url(url: &str) -> bool {
+    let bytes = url.as_bytes();
+    let ok = bytes.get(..7).is_some_and(|s| s.eq_ignore_ascii_case(b"http://"))
+        || bytes.get(..8).is_some_and(|s| s.eq_ignore_ascii_case(b"https://"));
+    ok && !url.chars().any(char::is_control)
+}
+
+/// True for URIs safe to hand to the desktop launcher (`http://`, `https://`, `mailto:`).
+pub fn is_safe_open_uri(uri: &str) -> bool {
+    let bytes = uri.as_bytes();
+    let ok = is_http_url(uri) || bytes.get(..7).is_some_and(|s| s.eq_ignore_ascii_case(b"mailto:"));
+    ok && !uri.chars().any(char::is_control)
+}
+
 impl Media {
     fn resolve(&self, name: &str, base: Option<&str>) -> Result<String, String> {
         if let Some(url) = self.loaded.get(name).filter(|_| base.is_none()) {
@@ -52,7 +71,11 @@ impl Media {
         let base = base.or(self.default_url.as_deref()).ok_or_else(|| {
             format!("Client.Media: no URL for \"{name}\" (the server sent no url and no Client.Media.Default)")
         })?;
-        Ok(format!("{base}{name}"))
+        let url = format!("{base}{name}");
+        if !is_http_url(&url) {
+            return Err("Client.Media: only http:// and https:// URLs are allowed".into());
+        }
+        Ok(url)
     }
 
     /// Handles `Client.Media.<message>`. `message` is lowercase: default, load, play or stop.
@@ -61,20 +84,28 @@ impl Media {
         let s = |key: &str| v.get(key).and_then(Value::as_str).map(str::to_string);
         match message {
             "default" => {
-                self.default_url = s("url");
+                let url = s("url");
+                if let Some(ref u) = url
+                    && !is_http_url(u)
+                {
+                    return Err("Client.Media.Default: url must be http:// or https://".into());
+                }
+                self.default_url = url;
                 Ok(Vec::new())
             }
             "load" => {
                 let name = s("name").ok_or("Client.Media.Load: missing name")?;
                 let url = self.resolve(&name, s("url").as_deref())?;
-                self.loaded.insert(name, url.clone());
+                if self.loaded.contains_key(&name) || self.loaded.len() < MAX_LOADED {
+                    self.loaded.insert(name, url.clone());
+                }
                 Ok(vec![MediaCommand::Preload { url }])
             }
             "play" => {
                 let name = s("name").ok_or("Client.Media.Play: missing name")?;
                 let url = self.resolve(&name, s("url").as_deref())?;
-                let volume = v.get("volume").and_then(Value::as_f64).unwrap_or(50.0).clamp(0.0, 100.0) / 100.0;
-                let loops = v.get("loops").and_then(Value::as_i64).unwrap_or(1).clamp(-1, i32::MAX as i64) as i32;
+                let volume = v.get("volume").and_then(Value::as_f64).filter(|x| x.is_finite()).unwrap_or(50.0).clamp(0.0, 100.0) / 100.0;
+                let loops = v.get("loops").and_then(Value::as_i64).unwrap_or(1).clamp(-1, MAX_LOOPS) as i32;
                 let restart = !v.get("continue").and_then(bool_value).unwrap_or(true);
                 Ok(vec![MediaCommand::Play { name, url, volume, loops: if loops == 0 { 1 } else { loops }, restart }])
             }
@@ -89,16 +120,46 @@ pub fn cache_dir() -> PathBuf {
     familiar_config::paths::cache_dir().join("media")
 }
 
-/// FNV-1a, so cache names are stable across runs and Rust versions.
-fn fnv1a(s: &str) -> u64 {
-    s.bytes().fold(0xcbf29ce484222325, |h, b| (h ^ b as u64).wrapping_mul(0x100000001b3))
+/// FNV-1a (128-bit), so cache names are stable across runs and collision-resistant.
+fn fnv1a_128(s: &str) -> u128 {
+    s.bytes().fold(0x6c62272e07bb014262b821756295c58du128, |h, b| {
+        (h ^ b as u128).wrapping_mul(0x0000000001000000000000000000013bu128)
+    })
 }
 
-/// Returns a local path for a media URL, downloading it into the cache if needed. Blocks, so
-/// call it off the UI thread. `file://` URLs and plain paths are used as they are.
+fn prune_cache(dir: &std::path::Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let mut files: Vec<(PathBuf, u64, std::time::SystemTime)> = entries
+        .flatten()
+        .filter_map(|e| {
+            let meta = e.metadata().ok()?;
+            if !meta.is_file() {
+                return None;
+            }
+            let modified = meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+            Some((e.path(), meta.len(), modified))
+        })
+        .collect();
+    let mut total: u64 = files.iter().map(|(_, len, _)| *len).sum();
+    if total <= MAX_CACHE_BYTES {
+        return;
+    }
+    files.sort_by_key(|(_, _, modified)| *modified);
+    for (path, len, _) in files {
+        if total <= MAX_CACHE_BYTES {
+            break;
+        }
+        if std::fs::remove_file(&path).is_ok() {
+            total = total.saturating_sub(len);
+        }
+    }
+}
+
+/// Returns a local path for a remote media URL (`http://` or `https://`), downloading it into
+/// the cache if needed. Blocks, so call it off the UI thread.
 pub fn fetch(url: &str) -> Result<PathBuf, String> {
-    if !url.starts_with("http://") && !url.starts_with("https://") {
-        return Ok(familiar_config::paths::expand(url));
+    if !is_http_url(url) {
+        return Err(format!("{url}: only http:// and https:// URLs are allowed"));
     }
     let ext = url
         .rsplit('/')
@@ -109,7 +170,7 @@ pub fn fetch(url: &str) -> Result<PathBuf, String> {
         .filter(|ext| ext.len() <= 5 && ext.chars().all(|c| c.is_ascii_alphanumeric()))
         .unwrap_or("bin");
     let dir = cache_dir();
-    let path = dir.join(format!("{:016x}.{ext}", fnv1a(url)));
+    let path = dir.join(format!("{:032x}.{ext}", fnv1a_128(url)));
     if path.is_file() {
         return Ok(path);
     }
@@ -119,6 +180,7 @@ pub fn fetch(url: &str) -> Result<PathBuf, String> {
     let config = ureq::Agent::config_builder()
         .timeout_connect(Some(Duration::from_secs(15)))
         .timeout_global(Some(Duration::from_secs(120)))
+        .max_redirects(5)
         .build();
     let mut response =
         ureq::Agent::new_with_config(config).get(url).header("User-Agent", &agent).call().map_err(|e| format!("{url}: {e}"))?;
@@ -129,6 +191,7 @@ pub fn fetch(url: &str) -> Result<PathBuf, String> {
         .read_to_vec()
         .map_err(|e| format!("{url}: {e}"))?;
     familiar_config::paths::write_atomic(&path, &bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+    prune_cache(&dir);
     Ok(path)
 }
 
@@ -176,9 +239,11 @@ mod tests {
     }
 
     #[test]
-    fn fetch_local_paths() {
-        // Drive-letter URLs are covered in familiar_config::paths.
-        assert_eq!(fetch("file:///tmp/a%20b.wav").unwrap(), PathBuf::from("/tmp/a b.wav"));
-        assert_eq!(fetch("/tmp/b.ogg").unwrap(), PathBuf::from("/tmp/b.ogg"));
+    fn fetch_rejects_local_paths() {
+        assert!(fetch("file:///tmp/a%20b.wav").is_err());
+        assert!(fetch("/tmp/b.ogg").is_err());
+        let mut m = Media::default();
+        assert!(m.handle("default", r#"{"url":"file:///etc/"}"#).is_err());
+        assert!(m.handle("play", r#"{"name":"passwd","url":"file:///etc/"}"#).is_err());
     }
 }

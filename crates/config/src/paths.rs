@@ -68,8 +68,8 @@ pub fn file_url_path(url: &str, windows: bool) -> Option<String> {
     }
     let rest = &url[7..];
     // file://localhost/x is the same as file:///x.
-    let rest = match rest.strip_prefix("localhost") {
-        Some(after) if after.starts_with('/') => after,
+    let rest = match rest.get(..9) {
+        Some(prefix) if prefix.eq_ignore_ascii_case("localhost") && rest[9..].starts_with('/') => &rest[9..],
         _ => rest,
     };
     let path = percent_decode(rest);
@@ -86,7 +86,8 @@ pub fn file_url_path(url: &str, windows: bool) -> Option<String> {
     Some(path)
 }
 
-fn percent_decode(text: &str) -> String {
+/// Decodes `%XX` escapes. Invalid escapes are kept as they are.
+pub fn percent_decode(text: &str) -> String {
     let bytes = text.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
@@ -110,7 +111,11 @@ fn percent_decode(text: &str) -> String {
 /// Windows reserves for devices (`CON`, `NUL`, `COM1`…) get a `_` in front. `fallback` is used
 /// for an empty name.
 pub fn file_name(name: &str, fallback: &str) -> String {
-    let s: String = name.chars().map(|c| if c.is_alphanumeric() || matches!(c, '-' | '_' | '.') { c } else { '_' }).collect();
+    let s: String = name
+        .chars()
+        .map(|c| if c.is_alphanumeric() || matches!(c, '-' | '_' | '.') { c } else { '_' })
+        .take(120)
+        .collect();
     // Windows drops trailing dots, and reserves device names whatever the extension.
     let s = s.trim_end_matches('.').to_string();
     if s.is_empty() {
@@ -124,15 +129,37 @@ pub fn file_name(name: &str, fallback: &str) -> String {
 /// Writes a file by writing a temporary one beside it and renaming it into place, so a crash
 /// can't leave it half-written and two writers can't interleave.
 pub fn write_atomic(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    write_atomic_impl(path, contents, false)
+}
+
+/// Like [`write_atomic`], but restricts permissions to owner-only (`0600`) on Unix.
+pub fn write_atomic_private(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    write_atomic_impl(path, contents, true)
+}
+
+fn write_atomic_impl(path: &Path, contents: &[u8], private: bool) -> std::io::Result<()> {
+    use std::io::Write;
     use std::sync::atomic::{AtomicU32, Ordering};
     static COUNTER: AtomicU32 = AtomicU32::new(0);
-    if let Some(dir) = path.parent() {
+    if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
         std::fs::create_dir_all(dir)?;
     }
     let mut name = path.file_name().unwrap_or_default().to_os_string();
     name.push(format!(".{}-{}.tmp", std::process::id(), COUNTER.fetch_add(1, Ordering::Relaxed)));
     let tmp = path.with_file_name(name);
-    std::fs::write(&tmp, contents)?;
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    if private {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    #[cfg(not(unix))]
+    let _ = private;
+    {
+        let mut file = opts.open(&tmp)?;
+        file.write_all(contents)?;
+    }
     let mut tries = 0;
     loop {
         match std::fs::rename(&tmp, path) {

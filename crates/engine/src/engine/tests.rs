@@ -955,3 +955,97 @@ fn agents_only_where_the_frontend_runs_them() {
     assert_eq!(e.submit("/agent  codex ", false), vec![Output::Agent("codex".into())]);
     assert!(matches!(&e.submit("/help", false)[..], [Output::Notice(n)] if n.contains("/agent")));
 }
+
+#[test]
+fn delay_bounds_and_secret_login_delays() {
+    assert_eq!(parse_duration("infs"), None);
+    assert_eq!(parse_duration("1e20s"), None);
+    assert_eq!(parse_duration("NaNs"), None);
+    let mut cfg = config(
+        Rules { aliases: vec![Alias { matcher: pattern("connect"), replacement: "hijacked".into(), ..Alias::default() }], ..Rules::default() },
+        Rules::default(),
+        Rules::default(),
+    );
+    cfg.worlds[0].characters[0].login = "/delay 1s connect bob hunter2".into();
+    let (mut e, mut rx) = engine(&cfg);
+    e.handle_event(SessionEvent::Connected { addr: "127.0.0.1:4000".parse().unwrap() });
+    // Secret login delays are hidden from /delay list and bypass aliases/echo when firing.
+    assert!(notices(&e.submit("/delay list", false)).iter().all(|n| !n.contains("hunter2")));
+    let out = e.tick(Instant::now() + Duration::from_secs(2));
+    assert!(!out.iter().any(|o| matches!(o, Output::Echo(_))));
+    assert_eq!(sent(&mut rx), ["connect bob hunter2"]);
+}
+
+#[test]
+fn follow_link_sanitizes_crlf_and_blocks_unsafe_schemes() {
+    let (mut e, mut rx) = engine(&config(Rules::default(), Rules::default(), Rules::default()));
+    e.follow_link("send:look%0d%0akill%20guard");
+    assert_eq!(sent(&mut rx), ["lookkill guard"]);
+    assert!(notices(&e.follow_link("file:///etc/passwd"))[0].contains("Refused"));
+    assert!(notices(&e.follow_link("javascript:alert(1)"))[0].contains("Refused"));
+    assert_eq!(e.follow_link("mailto:test@example.org"), vec![Output::OpenUri("mailto:test@example.org".into())]);
+}
+
+#[test]
+fn expand_unknown_var_preserves_following_var() {
+    let caps = crate::expand::Captures::default();
+    let out = crate::expand::expand("%unknown%%target%", &caps, |name| (name == "target").then(|| "orc".to_string()));
+    assert_eq!(out, "%unknown%orc");
+}
+
+#[test]
+fn ansi_colored_room_name_tracks_map_and_reconnect_unsuspends_triggers() {
+    let global = Rules { triggers: vec![Trigger { matcher: pattern("echo"), send: "echo".into(), ..Trigger::default() }], ..Rules::default() };
+    let (mut e, mut rx) = engine(&config(global, Rules::default(), Rules::default()));
+    e.submit("/map addroom Hall", false);
+    e.submit("/map addroom Kitchen n s", false);
+    let kitchen = e.current_room().unwrap();
+    e.submit("/map here hall", false);
+    e.submit("n", false);
+    e.handle_event(SessionEvent::Line("\x1b[1;33mKitchen\x1b[0m".into()));
+    assert_eq!(e.current_room(), Some(kitchen));
+
+    // Suspend the trigger via runaway sends, then verify reconnect unsuspends it.
+    sent(&mut rx);
+    for _ in 0..30 {
+        e.handle_event(SessionEvent::Line("echo".into()));
+    }
+    assert_eq!(sent(&mut rx).len(), MAX_SENDS);
+    e.handle_event(SessionEvent::Line("echo".into()));
+    assert!(sent(&mut rx).is_empty());
+    e.handle_event(SessionEvent::Disconnected { error: None });
+    let (handle, mut rx) = SessionHandle::channel();
+    e.attach(handle);
+    e.handle_event(SessionEvent::Connected { addr: "127.0.0.1:4000".parse().unwrap() });
+    e.handle_event(SessionEvent::Line("echo".into()));
+    assert_eq!(sent(&mut rx), ["echo"]);
+}
+
+#[test]
+fn reload_updates_world_and_stats_fraction_handles_extreme_i64() {
+    let mut cfg = config(Rules::default(), Rules::default(), Rules::default());
+    let (mut e, _rx) = engine(&cfg);
+    cfg.worlds[0].program_language = "muf".into();
+    e.reload(&cfg);
+    assert_eq!(e.world().program_language, "muf");
+
+    let extreme = crate::stats::StatValue::Range { value: i64::MAX, min: i64::MIN, max: i64::MAX, colors: Default::default() };
+    assert!((extreme.fraction().unwrap() - 1.0).abs() < 1e-6);
+
+    let big_timeout = crate::mcp::AgentTool::parse(r#"{"name":"t","timeout":18446744073709551615}"#).unwrap();
+    assert_eq!(big_timeout.timeout, 3600);
+}
+
+#[test]
+fn restore_log_dedup_keeps_latest_and_strips_spoofed_markers() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("restore.log");
+    std::fs::write(&path, "\u{1}2026-01-01 00:00:00\n\u{1}2026-01-02 00:00:00\n").unwrap();
+    let mut log = crate::restore::RestoreLog::open(&path).unwrap();
+    log.line("\u{1}\u{1}spoofed").unwrap();
+    drop(log);
+    let entries = crate::restore::RestoreLog::read(&path).unwrap();
+    assert_eq!(entries.len(), 2);
+    assert!(matches!(entries[0], crate::restore::Entry::Start(dt) if dt.to_string() != "2026-01-01 00:00:00"));
+    assert_eq!(entries[1], crate::restore::Entry::Line("spoofed".into()));
+}

@@ -92,18 +92,18 @@ pub fn expand(template: &str, caps: &Captures, var: impl Fn(&str) -> Option<Stri
                 continue;
             }
             let name_len = after.find(|c: char| !is_var_char(c)).unwrap_or(after.len());
-            let value = (name_len > 0 && after[name_len..].starts_with('%'))
-                .then(|| var(&after[..name_len]))
-                .flatten();
-            match value {
-                Some(value) => {
-                    out.push_str(&value);
-                    rest = &after[name_len + 1..];
+            if name_len > 0 && after[name_len..].starts_with('%') {
+                match var(&after[..name_len]) {
+                    Some(value) => out.push_str(&value),
+                    None => {
+                        out.push('%');
+                        out.push_str(&after[..name_len + 1]);
+                    }
                 }
-                None => {
-                    out.push('%');
-                    rest = after;
-                }
+                rest = &after[name_len + 1..];
+            } else {
+                out.push('%');
+                rest = after;
             }
         }
     }

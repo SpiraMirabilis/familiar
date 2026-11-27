@@ -51,7 +51,7 @@ impl Logger {
     }
 
     fn open_file(path: &Path) -> io::Result<BufWriter<File>> {
-        if let Some(dir) = path.parent() {
+        if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
             std::fs::create_dir_all(dir)?;
         }
         Ok(BufWriter::new(OpenOptions::new().create(true).append(true).open(path)?))
@@ -70,10 +70,13 @@ impl Logger {
     pub fn line(&mut self, text: &str) -> io::Result<()> {
         let now = Local::now();
         if self.dated && now.date_naive() != self.date {
+            let new_date = now.date_naive();
+            let new_path = Self::dated_path(&self.base, new_date);
+            let new_file = Self::open_file(&new_path)?;
             self.banner("Continued in next file")?;
-            self.date = now.date_naive();
-            self.path = Self::dated_path(&self.base, self.date);
-            self.file = Self::open_file(&self.path)?;
+            self.date = new_date;
+            self.path = new_path;
+            self.file = new_file;
             self.banner("Log continued")?;
         }
         if self.timestamps {
