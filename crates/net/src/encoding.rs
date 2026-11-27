@@ -57,7 +57,8 @@ impl Encoding {
     /// a UTF-8 character waits too.)
     pub fn decode_partial(self, bytes: &[u8]) -> String {
         match self {
-            Self::Auto | Self::Utf8 => self.decode(trim_incomplete_utf8(bytes)),
+            Self::Auto => self.decode(trim_incomplete_utf8(bytes)),
+            Self::Utf8 => self.decode(trim_trailing_incomplete_utf8(bytes)),
             _ => self.decode(bytes),
         }
     }
@@ -67,11 +68,17 @@ impl Encoding {
         match self {
             Self::Auto | Self::Utf8 => text.as_bytes().to_vec(),
             Self::Windows1252 => {
+                let mut encoder = encoding_rs::WINDOWS_1252.new_encoder();
                 let mut out = Vec::with_capacity(text.len());
-                for c in text.chars() {
-                    let mut buf = [0u8; 4];
-                    let (bytes, _, had_errors) = encoding_rs::WINDOWS_1252.encode(c.encode_utf8(&mut buf));
-                    if had_errors { out.push(b'?') } else { out.extend_from_slice(&bytes) }
+                let mut buf = [0u8; 256];
+                let mut src = text;
+                while !src.is_empty() {
+                    let (result, read, written) = encoder.encode_from_utf8_without_replacement(src, &mut buf, true);
+                    out.extend_from_slice(&buf[..written]);
+                    src = &src[read..];
+                    if matches!(result, encoding_rs::EncoderResult::Unmappable(_)) {
+                        out.push(b'?');
+                    }
                 }
                 out
             }
@@ -96,6 +103,20 @@ fn trim_incomplete_utf8(bytes: &[u8]) -> &[u8] {
         Err(e) if e.error_len().is_none() => &bytes[..e.valid_up_to()],
         _ => bytes,
     }
+}
+
+/// Drops an unfinished trailing UTF-8 sequence even if earlier bytes were invalid UTF-8.
+fn trim_trailing_incomplete_utf8(bytes: &[u8]) -> &[u8] {
+    let start = bytes.len().saturating_sub(3);
+    for i in (start..bytes.len()).rev() {
+        if let Err(e) = std::str::from_utf8(&bytes[i..])
+            && e.valid_up_to() == 0
+            && e.error_len().is_none()
+        {
+            return &bytes[..i];
+        }
+    }
+    bytes
 }
 
 const CP437_HIGH: [char; 128] = [
@@ -142,6 +163,8 @@ mod tests {
         // A trailing byte that could start a UTF-8 character is ambiguous, so it waits for the
         // rest of the line.
         assert_eq!(Encoding::Auto.decode_partial(b"caf\xe9"), "caf");
+        // Strict UTF-8 holds back a split trailing char even after an earlier invalid byte.
+        assert_eq!(Encoding::Utf8.decode_partial(b"\xff hi \xe2\x98"), "\u{FFFD} hi ");
     }
 
     #[test]

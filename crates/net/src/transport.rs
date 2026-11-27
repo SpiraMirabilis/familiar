@@ -1,6 +1,6 @@
 use std::net::SocketAddr;
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant};
 
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::crypto::WebPkiSupportedAlgorithms;
@@ -44,8 +44,11 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> Stream for T {}
 /// asked. Returns the stream and the address it connected to.
 pub async fn connect(opts: &ConnectOptions) -> Result<(Box<dyn Stream>, SocketAddr), Error> {
     let target = format!("{}:{}", opts.host, opts.port);
-    let addrs: Vec<SocketAddr> = tokio::net::lookup_host((opts.host.as_str(), opts.port))
+    let deadline = Instant::now() + opts.timeout;
+    let remaining = || deadline.saturating_duration_since(Instant::now());
+    let addrs: Vec<SocketAddr> = tokio::time::timeout(remaining(), tokio::net::lookup_host((opts.host.as_str(), opts.port)))
         .await
+        .map_err(|_| Error::Timeout)?
         .map_err(|e| Error::Resolve(target.clone(), e))?
         .filter(|a| !opts.force_ipv4 || a.is_ipv4())
         .collect();
@@ -54,14 +57,23 @@ pub async fn connect(opts: &ConnectOptions) -> Result<(Box<dyn Stream>, SocketAd
     }
 
     let mut last_error = Error::NoAddresses(target);
-    for addr in addrs {
-        match tokio::time::timeout(opts.timeout, TcpStream::connect(addr)).await {
+    let count = addrs.len();
+    for (idx, addr) in addrs.into_iter().enumerate() {
+        let left = remaining();
+        if left.is_zero() {
+            return Err(Error::Timeout);
+        }
+        // Divide remaining time across candidate addresses so a blackholed IPv6 address
+        // doesn't consume the entire budget before trying IPv4.
+        let per_addr = left.div_f64((count - idx) as f64).max(Duration::from_millis(250)).min(left);
+        match tokio::time::timeout(per_addr, TcpStream::connect(addr)).await {
             Ok(Ok(tcp)) => {
-                tcp.set_nodelay(true)?;
+                let _ = tcp.set_nodelay(true);
                 if !opts.tls {
                     return Ok((Box::new(tcp), addr));
                 }
-                let stream = tokio::time::timeout(opts.timeout, tls_handshake(tcp, opts))
+                let tls_wait = remaining().max(Duration::from_secs(5));
+                let stream = tokio::time::timeout(tls_wait, tls_handshake(tcp, opts))
                     .await
                     .map_err(|_| Error::Timeout)??;
                 return Ok((stream, addr));
@@ -73,19 +85,46 @@ pub async fn connect(opts: &ConnectOptions) -> Result<(Box<dyn Stream>, SocketAd
     Err(last_error)
 }
 
-async fn tls_handshake(tcp: TcpStream, opts: &ConnectOptions) -> Result<Box<dyn Stream>, Error> {
-    let provider = Arc::new(rustls::crypto::ring::default_provider());
-    let builder = ClientConfig::builder_with_provider(provider.clone()).with_safe_default_protocol_versions()?;
-    let config = if opts.verify_certificate {
-        builder.with_platform_verifier()?.with_no_client_auth()
+fn tls_config(verify_certificate: bool) -> Result<Arc<ClientConfig>, rustls::Error> {
+    if verify_certificate {
+        static VERIFIED: OnceLock<Result<Arc<ClientConfig>, String>> = OnceLock::new();
+        let cached = VERIFIED.get_or_init(|| {
+            let provider = Arc::new(rustls::crypto::ring::default_provider());
+            let config = ClientConfig::builder_with_provider(provider)
+                .with_safe_default_protocol_versions()
+                .map_err(|e| e.to_string())?
+                .with_platform_verifier()
+                .map_err(|e| e.to_string())?
+                .with_no_client_auth();
+            Ok(Arc::new(config))
+        });
+        match cached {
+            Ok(cfg) => Ok(Arc::clone(cfg)),
+            Err(msg) => Err(rustls::Error::General(msg.clone())),
+        }
     } else {
-        builder
-            .dangerous()
-            .with_custom_certificate_verifier(Arc::new(NoVerification(provider.signature_verification_algorithms)))
-            .with_no_client_auth()
-    };
+        static INSECURE: OnceLock<Result<Arc<ClientConfig>, String>> = OnceLock::new();
+        let cached = INSECURE.get_or_init(|| {
+            let provider = Arc::new(rustls::crypto::ring::default_provider());
+            let config = ClientConfig::builder_with_provider(provider.clone())
+                .with_safe_default_protocol_versions()
+                .map_err(|e| e.to_string())?
+                .dangerous()
+                .with_custom_certificate_verifier(Arc::new(NoVerification(provider.signature_verification_algorithms)))
+                .with_no_client_auth();
+            Ok(Arc::new(config))
+        });
+        match cached {
+            Ok(cfg) => Ok(Arc::clone(cfg)),
+            Err(msg) => Err(rustls::Error::General(msg.clone())),
+        }
+    }
+}
+
+async fn tls_handshake(tcp: TcpStream, opts: &ConnectOptions) -> Result<Box<dyn Stream>, Error> {
+    let config = tls_config(opts.verify_certificate)?;
     let name = ServerName::try_from(opts.host.clone()).map_err(|_| Error::ServerName(opts.host.clone()))?;
-    let stream = TlsConnector::from(Arc::new(config)).connect(name, tcp).await?;
+    let stream = TlsConnector::from(config).connect(name, tcp).await?;
     Ok(Box::new(stream))
 }
 

@@ -73,17 +73,20 @@ pub struct TelnetConfig {
     pub charsets: Vec<String>,
 }
 
+const MAX_SB_LEN: usize = 256 * 1024;
+const MAX_INFLATE_PER_FEED: usize = 2 * 1024 * 1024;
+
 impl Default for TelnetConfig {
     fn default() -> Self {
         Self {
             client_name: "MU".into(),
             client_version: env!("CARGO_PKG_VERSION").into(),
             terminal_type: "XTERM-256COLOR".into(),
-            mtts: mtts::ANSI | mtts::UTF8 | mtts::COLORS_256 | mtts::TRUECOLOR | mtts::MSLP,
+            mtts: mtts::ANSI | mtts::UTF8 | mtts::COLORS_256 | mtts::TRUECOLOR,
             enable_mccp2: true,
             enable_gmcp: true,
             gmcp_supports: Vec::new(),
-            charsets: vec!["UTF-8".into()],
+            charsets: vec!["UTF-8".into(), "UTF8".into()],
         }
     }
 }
@@ -129,6 +132,7 @@ pub struct Telnet {
     state: State,
     sb_option: u8,
     sb_data: Vec<u8>,
+    sb_overflow: bool,
     data: Vec<u8>,
     events: Vec<Event>,
     out: Vec<u8>,
@@ -147,6 +151,7 @@ impl Telnet {
             state: State::Data,
             sb_option: 0,
             sb_data: Vec::new(),
+            sb_overflow: false,
             data: Vec::new(),
             events: Vec::new(),
             out: Vec::new(),
@@ -198,6 +203,7 @@ impl Telnet {
     fn feed_compressed<'a>(&mut self, input: &'a [u8]) -> &'a [u8] {
         let mut buf = [0u8; 16384];
         let mut input = input;
+        let mut total_inflated: usize = 0;
         loop {
             let z = self.inflate.as_mut().unwrap();
             let before_in = z.total_in();
@@ -206,6 +212,12 @@ impl Telnet {
             let consumed = (z.total_in() - before_in) as usize;
             let produced = (z.total_out() - before_out) as usize;
             input = &input[consumed..];
+            total_inflated = total_inflated.saturating_add(produced);
+
+            if total_inflated > MAX_INFLATE_PER_FEED {
+                self.abort_compression("compressed stream exceeded safety limit".into());
+                return &input[input.len()..];
+            }
 
             // Parse the inflated bytes. If they turn compression off again (they shouldn't), the
             // remaining inflated bytes are still plain telnet, so parse them all.
@@ -227,17 +239,59 @@ impl Telnet {
                         return input;
                     }
                     if consumed == 0 && produced == 0 {
+                        if !input.is_empty() {
+                            self.abort_compression("decompressor made no progress".into());
+                        }
                         return &input[input.len()..];
                     }
                 }
                 Err(e) => {
-                    self.inflate = None;
-                    self.remote[opt::MCCP2 as usize] = false;
-                    self.flush_data();
-                    self.events.push(Event::CompressionError(e.to_string()));
+                    self.abort_compression(e.to_string());
                     return &input[input.len()..];
                 }
             }
+        }
+    }
+
+    fn abort_compression(&mut self, reason: String) {
+        self.inflate = None;
+        if self.remote[opt::MCCP2 as usize] {
+            self.remote[opt::MCCP2 as usize] = false;
+            self.send_cmd(cmd::DONT, opt::MCCP2);
+            self.flush_data();
+            self.events.push(Event::OptionChanged { option: opt::MCCP2, local: false, enabled: false });
+        } else {
+            self.flush_data();
+        }
+        self.events.push(Event::CompressionError(reason));
+    }
+
+    fn handle_iac(&mut self, b: u8) {
+        self.state = State::Data;
+        match b {
+            cmd::IAC => self.data.push(cmd::IAC),
+            cmd::WILL => self.state = State::Will,
+            cmd::WONT => self.state = State::Wont,
+            cmd::DO => self.state = State::Do,
+            cmd::DONT => self.state = State::Dont,
+            cmd::SB => self.state = State::Sb,
+            cmd::GA | cmd::EOR => {
+                self.flush_data();
+                self.events.push(Event::Prompt);
+            }
+            _ => {} // NOP, AYT, etc.
+        }
+    }
+
+    fn push_sb_byte(&mut self, b: u8) {
+        if self.sb_overflow {
+            return;
+        }
+        if self.sb_data.len() >= MAX_SB_LEN {
+            self.sb_data.clear();
+            self.sb_overflow = true;
+        } else {
+            self.sb_data.push(b);
         }
     }
 
@@ -253,22 +307,7 @@ impl Telnet {
                         self.data.push(b);
                     }
                 }
-                State::Iac => {
-                    self.state = State::Data;
-                    match b {
-                        cmd::IAC => self.data.push(cmd::IAC),
-                        cmd::WILL => self.state = State::Will,
-                        cmd::WONT => self.state = State::Wont,
-                        cmd::DO => self.state = State::Do,
-                        cmd::DONT => self.state = State::Dont,
-                        cmd::SB => self.state = State::Sb,
-                        cmd::GA | cmd::EOR => {
-                            self.flush_data();
-                            self.events.push(Event::Prompt);
-                        }
-                        _ => {} // NOP, AYT, etc.
-                    }
-                }
+                State::Iac => self.handle_iac(b),
                 State::Will => {
                     self.state = State::Data;
                     self.on_will(b);
@@ -286,20 +325,25 @@ impl Telnet {
                     self.on_dont(b);
                 }
                 State::Sb => {
-                    self.sb_option = b;
                     self.sb_data.clear();
-                    self.state = State::SbData;
+                    self.sb_overflow = false;
+                    if b == cmd::IAC {
+                        self.state = State::Iac;
+                    } else {
+                        self.sb_option = b;
+                        self.state = State::SbData;
+                    }
                 }
                 State::SbData => {
                     if b == cmd::IAC {
                         self.state = State::SbIac;
                     } else {
-                        self.sb_data.push(b);
+                        self.push_sb_byte(b);
                     }
                 }
                 State::SbIac => match b {
                     cmd::IAC => {
-                        self.sb_data.push(cmd::IAC);
+                        self.push_sb_byte(cmd::IAC);
                         self.state = State::SbData;
                     }
                     cmd::SE => {
@@ -309,8 +353,10 @@ impl Telnet {
                         }
                     }
                     _ => {
-                        // Malformed subnegotiation. Drop it and stay in sync.
-                        self.state = State::Data;
+                        // Malformed subnegotiation. Drop it and handle the new IAC command.
+                        self.sb_data.clear();
+                        self.sb_overflow = false;
+                        self.handle_iac(b);
                     }
                 },
             }
@@ -420,24 +466,30 @@ impl Telnet {
     /// Handles a finished subnegotiation. Returns true if compression begins now, which means
     /// every byte after this one is compressed.
     fn on_subnegotiation(&mut self) -> bool {
+        let overflowed = std::mem::take(&mut self.sb_overflow);
         let data = std::mem::take(&mut self.sb_data);
+        if overflowed {
+            return false;
+        }
         match self.sb_option {
-            opt::MCCP2 if self.remote[opt::MCCP2 as usize] => {
+            opt::MCCP2 if self.remote[opt::MCCP2 as usize] && self.inflate.is_none() && data.is_empty() => {
                 self.flush_data();
                 self.inflate = Some(Decompress::new(true));
                 self.events.push(Event::CompressionStarted);
                 return true;
             }
+            opt::MCCP2 => {}
             opt::GMCP => {
                 self.flush_data();
                 let text = String::from_utf8_lossy(&data);
-                let (package, payload) = match text.split_once(|c: char| c.is_ascii_whitespace()) {
+                let trimmed = text.trim_start();
+                let (package, payload) = match trimmed.split_once(|c: char| c.is_ascii_whitespace()) {
                     Some((p, d)) => (p.to_string(), d.trim_start().to_string()),
-                    None => (text.to_string(), String::new()),
+                    None => (trimmed.to_string(), String::new()),
                 };
                 self.events.push(Event::Gmcp { package, data: payload });
             }
-            opt::TTYPE if data.first() == Some(&TTYPE_SEND) => self.send_ttype(),
+            opt::TTYPE if self.local[opt::TTYPE as usize] && data.first() == Some(&TTYPE_SEND) => self.send_ttype(),
             opt::CHARSET if data.first() == Some(&CHARSET_REQUEST) => self.on_charset_request(&data[1..]),
             opt::MSSP => {
                 self.flush_data();
@@ -459,7 +511,7 @@ impl Telnet {
         ];
         // Per MTTS, the last value repeats so the server can spot the end of the cycle.
         let name = &names[self.ttype_index.min(names.len() - 1)];
-        self.ttype_index += 1;
+        self.ttype_index = self.ttype_index.saturating_add(1);
         let mut payload = vec![TTYPE_IS];
         payload.extend_from_slice(name.as_bytes());
         self.send_sb(opt::TTYPE, &payload);
@@ -822,5 +874,61 @@ mod tests {
         let mut t = telnet();
         t.send_line(b"a\xFFb");
         assert_eq!(t.take_output(), b"a\xFF\xFFb\r\n");
+    }
+
+    #[test]
+    fn mccp2_decompression_bomb_is_aborted() {
+        let mut t = telnet();
+        t.feed(&[IAC, WILL, opt::MCCP2]);
+        t.take_output();
+        let bomb = vec![b'A'; MAX_INFLATE_PER_FEED + 65536];
+        let mut stream = vec![IAC, SB, opt::MCCP2, IAC, SE];
+        stream.extend_from_slice(&compress(&bomb, true));
+        let ev = t.feed(&stream);
+        assert!(ev.iter().any(|e| matches!(e, Event::CompressionError(_))));
+        assert!(!t.is_compressed());
+        assert_eq!(t.take_output(), vec![IAC, DONT, opt::MCCP2]);
+    }
+
+    #[test]
+    fn nested_mccp2_start_inside_compressed_stream_is_ignored() {
+        let mut t = telnet();
+        t.feed(&[IAC, WILL, opt::MCCP2]);
+        let mut inner = b"hi ".to_vec();
+        inner.extend_from_slice(&[IAC, SB, opt::MCCP2, IAC, SE]);
+        inner.extend_from_slice(b"still ok");
+        let mut stream = vec![IAC, SB, opt::MCCP2, IAC, SE];
+        stream.extend_from_slice(&compress(&inner, true));
+        let ev = t.feed(&stream);
+        assert_eq!(data_of(&ev), b"hi still ok");
+        assert!(!ev.iter().any(|e| matches!(e, Event::CompressionError(_))));
+    }
+
+    #[test]
+    fn oversized_and_malformed_subnegotiations_stay_bounded_and_in_sync() {
+        let mut t = telnet();
+        let mut stream = vec![IAC, SB, opt::GMCP];
+        stream.extend(std::iter::repeat_n(b'x', MAX_SB_LEN + 1024));
+        stream.extend_from_slice(&[IAC, SE]);
+        stream.extend_from_slice(b"after");
+        let ev = t.feed(&stream);
+        assert_eq!(data_of(&ev), b"after");
+        assert!(!ev.iter().any(|e| matches!(e, Event::Gmcp { .. })));
+
+        // Malformed SB interrupted by IAC WILL ECHO must not leak ECHO byte into text.
+        let ev = t.feed(&[IAC, SB, opt::GMCP, b'a', IAC, WILL, opt::ECHO, b'z']);
+        assert!(ev.contains(&Event::ServerEcho(true)));
+        assert_eq!(data_of(&ev), b"z");
+
+        // Missing option byte (IAC SB IAC SE) must not get stuck swallowing text.
+        let ev = t.feed(&[IAC, SB, IAC, SE, b'o', b'k']);
+        assert_eq!(data_of(&ev), b"ok");
+    }
+
+    #[test]
+    fn unnegotiated_ttype_is_ignored() {
+        let mut t = telnet();
+        t.feed(&[IAC, SB, opt::TTYPE, TTYPE_SEND, IAC, SE]);
+        assert!(t.take_output().is_empty());
     }
 }

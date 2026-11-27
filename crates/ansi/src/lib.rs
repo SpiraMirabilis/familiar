@@ -76,6 +76,7 @@ impl StyledLine {
         if start >= end {
             return;
         }
+        assert!(self.text.is_char_boundary(start) && self.text.is_char_boundary(end));
         let mut spans: Vec<Span> = Vec::with_capacity(self.spans.len() + 2);
         let mut push = |span: Span| match spans.last_mut() {
             Some(last) if last.style == span.style && last.end == span.start => last.end = span.end,
@@ -185,6 +186,9 @@ impl StyledLine {
     }
 }
 
+const MAX_CSI_LEN: usize = 1024;
+const MAX_OSC_LEN: usize = 8192;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum State {
     Ground,
@@ -195,9 +199,9 @@ enum State {
     /// `ESC` followed by intermediate bytes, e.g. `ESC ( B`.
     EscIntermediate,
     /// Inside an OSC string.
-    Osc(String),
+    Osc { data: String, overflow: bool },
     /// Saw `ESC` inside an OSC, expecting `\` to finish it.
-    OscEsc(String),
+    OscEsc { data: String, overflow: bool },
     /// Inside a DCS/SOS/PM/APC string. Ignored until ST.
     IgnoreString,
     IgnoreStringEsc,
@@ -257,9 +261,10 @@ impl AnsiParser {
                     line.push('\t', &self.style);
                     State::Ground
                 }
-                // C1 CSI (U+009B) and OSC (U+009D) are rare but legal.
+                // C1 CSI (U+009B), OSC (U+009D), and DCS/SOS/PM/APC are rare but legal.
                 '\u{9b}' => State::Csi { params: String::new(), private: false },
-                '\u{9d}' => State::Osc(String::new()),
+                '\u{9d}' => State::Osc { data: String::new(), overflow: false },
+                '\u{90}' | '\u{98}' | '\u{9e}' | '\u{9f}' => State::IgnoreString,
                 c if c.is_control() => State::Ground,
                 c => {
                     line.push(c, &self.style);
@@ -268,7 +273,7 @@ impl AnsiParser {
             },
             State::Esc => match c {
                 '[' => State::Csi { params: String::new(), private: false },
-                ']' => State::Osc(String::new()),
+                ']' => State::Osc { data: String::new(), overflow: false },
                 'P' | 'X' | '^' | '_' => State::IgnoreString,
                 '\x1b' => State::Esc,
                 ' '..='/' => State::EscIntermediate,
@@ -280,7 +285,11 @@ impl AnsiParser {
             },
             State::Csi { mut params, mut private } => match c {
                 '0'..='9' | ';' | ':' => {
-                    params.push(c);
+                    if params.len() < MAX_CSI_LEN {
+                        params.push(c);
+                    } else {
+                        private = true;
+                    }
                     State::Csi { params, private }
                 }
                 '<' | '=' | '>' | '?' | ' '..='/' => {
@@ -294,26 +303,34 @@ impl AnsiParser {
                     State::Ground
                 }
                 '\x1b' => State::Esc,
+                '\u{9b}' => State::Csi { params: String::new(), private: false },
+                '\u{9d}' => State::Osc { data: String::new(), overflow: false },
                 // Anything else is malformed. Abandon the sequence.
                 _ => State::Ground,
             },
-            State::Osc(mut s) => match c {
+            State::Osc { mut data, mut overflow } => match c {
                 '\x07' | '\u{9c}' => {
-                    self.apply_osc(&s);
+                    if !overflow {
+                        self.apply_osc(&data);
+                    }
                     State::Ground
                 }
-                '\x1b' => State::OscEsc(s),
+                '\x1b' => State::OscEsc { data, overflow },
                 _ => {
                     // Cap the length so a missing terminator can't eat memory.
-                    if s.len() < 8192 {
-                        s.push(c);
+                    if !overflow && data.len() + c.len_utf8() <= MAX_OSC_LEN {
+                        data.push(c);
+                    } else {
+                        overflow = true;
                     }
-                    State::Osc(s)
+                    State::Osc { data, overflow }
                 }
             },
-            State::OscEsc(s) => {
+            State::OscEsc { data, overflow } => {
                 if c == '\\' {
-                    self.apply_osc(&s);
+                    if !overflow {
+                        self.apply_osc(&data);
+                    }
                     State::Ground
                 } else {
                     // Unterminated OSC interrupted by a new escape. Treat it as that escape.
@@ -328,6 +345,7 @@ impl AnsiParser {
             },
             State::IgnoreStringEsc => match c {
                 '\\' => State::Ground,
+                '\x1b' => State::IgnoreStringEsc,
                 _ => State::IgnoreString,
             },
         };
@@ -337,7 +355,11 @@ impl AnsiParser {
         // OSC 8 ; params ; URI. An empty URI closes the link.
         if let Some(rest) = s.strip_prefix("8;") {
             let uri = rest.split_once(';').map_or("", |(_, uri)| uri);
-            self.style.link = if uri.is_empty() { None } else { Some(Arc::from(uri)) };
+            if uri.is_empty() {
+                self.style.link = None;
+            } else if !uri.chars().any(char::is_control) {
+                self.style.link = Some(Arc::from(uri));
+            }
         }
     }
 }
@@ -350,7 +372,12 @@ fn parse_params(params: &str) -> Vec<Vec<u32>> {
     }
     params
         .split(';')
-        .map(|group| group.split(':').map(|n| n.parse::<u32>().unwrap_or(0).min(65535)).collect())
+        .map(|group| {
+            group
+                .split(':')
+                .map(|n| if n.is_empty() { 0 } else { n.parse::<u32>().unwrap_or(u32::MAX).min(65535) })
+                .collect()
+        })
         .collect()
 }
 
@@ -395,13 +422,18 @@ fn apply_sgr(style: &mut Style, params: &str) {
                 let (color, used) = if group.len() > 1 {
                     (extended_color(&group[1..]), 0)
                 } else {
-                    let rest: Vec<u32> = groups[i + 1..].iter().map(|g| g[0]).collect();
-                    let used = match rest.first() {
+                    let tail = &groups[i + 1..];
+                    let mut rest = [0u32; 4];
+                    let n = tail.len().min(4);
+                    for (slot, g) in rest[..n].iter_mut().zip(&tail[..n]) {
+                        *slot = g[0];
+                    }
+                    let used = match rest[..n].first() {
                         Some(5) => 2,
                         Some(2) => 4,
-                        _ => rest.len(),
+                        _ => tail.len(),
                     };
-                    (extended_color_semicolon(&rest), used.min(rest.len()))
+                    (extended_color_semicolon(&rest[..n]), used.min(tail.len()))
                 };
                 i += used;
                 if let Some(color) = color {
@@ -418,12 +450,16 @@ fn apply_sgr(style: &mut Style, params: &str) {
     }
 }
 
+fn byte(n: u32) -> Option<u8> {
+    u8::try_from(n).ok()
+}
+
 /// Colon form: `38:5:n` or `38:2:[colorspace]:r:g:b`.
 fn extended_color(sub: &[u32]) -> Option<Color> {
     match sub {
-        [5, n, ..] => Some(Color::Indexed(*n as u8)),
-        [2, _cs, r, g, b, ..] => Some(Color::Rgb(*r as u8, *g as u8, *b as u8)),
-        [2, r, g, b] => Some(Color::Rgb(*r as u8, *g as u8, *b as u8)),
+        [5, n, ..] => Some(Color::Indexed(byte(*n)?)),
+        [2, _cs, r, g, b, ..] => Some(Color::Rgb(byte(*r)?, byte(*g)?, byte(*b)?)),
+        [2, r, g, b] => Some(Color::Rgb(byte(*r)?, byte(*g)?, byte(*b)?)),
         _ => None,
     }
 }
@@ -431,8 +467,8 @@ fn extended_color(sub: &[u32]) -> Option<Color> {
 /// Semicolon form: `38;5;n` or `38;2;r;g;b`.
 fn extended_color_semicolon(rest: &[u32]) -> Option<Color> {
     match rest {
-        [5, n, ..] => Some(Color::Indexed(*n as u8)),
-        [2, r, g, b, ..] => Some(Color::Rgb(*r as u8, *g as u8, *b as u8)),
+        [5, n, ..] => Some(Color::Indexed(byte(*n)?)),
+        [2, r, g, b, ..] => Some(Color::Rgb(byte(*r)?, byte(*g)?, byte(*b)?)),
         _ => None,
     }
 }
@@ -621,5 +657,36 @@ mod tests {
     fn underline_subparam_zero_turns_off() {
         let l = parse("\x1b[4m\x1b[4:0mx");
         assert!(!l.spans[0].style.underline);
+    }
+
+    #[test]
+    fn sgr_overflow_and_out_of_range_colors_are_ignored() {
+        let l = parse("\x1b[31m\x1b[999999999999mx");
+        assert_eq!(l.spans[0].style.fg, Color::Indexed(1), "overflowing param must not reset style");
+        let l = parse("\x1b[38;5;256ma\x1b[38;2;256;0;0mb");
+        assert_eq!(l.spans[0].style.fg, Color::Default);
+    }
+
+    #[test]
+    fn ignore_string_handles_double_esc_st() {
+        let l = parse("a\x1bPignored\x1b\x1b\\b");
+        assert_eq!(l.text, "ab");
+    }
+
+    #[test]
+    fn osc8_overflow_and_control_chars_rejected() {
+        let long = format!("\x1b]8;;https://example.com/{}\x07hi\x1b]8;;\x07", "a".repeat(MAX_OSC_LEN));
+        let l = parse(&long);
+        assert_eq!(l.spans[0].style.link, None);
+
+        let ctrl = parse("\x1b]8;;https://example.com/\x01bad\x1b\\hi\x1b]8;;\x1b\\");
+        assert_eq!(ctrl.spans[0].style.link, None);
+    }
+
+    #[test]
+    fn csi_length_cap_and_large_sgr_are_fast() {
+        let huge = format!("\x1b[{}mhi", "38;5;1;".repeat(5000));
+        let l = parse(&huge);
+        assert_eq!(l.text, "hi");
     }
 }

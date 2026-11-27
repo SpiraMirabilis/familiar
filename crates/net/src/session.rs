@@ -118,6 +118,10 @@ pub fn spawn_session(mut opts: SessionOptions) -> (SessionHandle, mpsc::Unbounde
     if opts.connect.tls {
         opts.telnet.mtts |= mtts::SSL;
     }
+    // Don't let CHARSET negotiation override an explicit legacy encoding chosen by the user.
+    if !matches!(opts.encoding, Encoding::Auto | Encoding::Utf8) {
+        opts.telnet.charsets.clear();
+    }
     tokio::spawn(async move {
         let error = run(opts, cmd_rx, &event_tx).await.err();
         let _ = event_tx.send(SessionEvent::Disconnected { error });
@@ -189,24 +193,56 @@ impl Session<'_> {
     }
 }
 
+const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
+const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Waits for `fut` while still honoring `Disconnect` or a dropped command channel.
+async fn cancellable<T>(
+    fut: impl std::future::Future<Output = Result<T, String>>,
+    commands: &mut mpsc::UnboundedReceiver<SessionCommand>,
+    queued: &mut Vec<SessionCommand>,
+) -> Result<Option<T>, String> {
+    tokio::pin!(fut);
+    loop {
+        tokio::select! {
+            res = &mut fut => return res.map(Some),
+            cmd = commands.recv() => match cmd {
+                None | Some(SessionCommand::Disconnect) => return Ok(None),
+                Some(other) => queued.push(other),
+            },
+        }
+    }
+}
+
 async fn run(
     opts: SessionOptions,
     mut commands: mpsc::UnboundedReceiver<SessionCommand>,
     events: &mpsc::UnboundedSender<SessionEvent>,
 ) -> Result<(), String> {
     let target = opts.bouncer.as_ref().map_or(&opts.connect, |b| &b.connect);
-    let (mut stream, addr) = connect(target).await.map_err(|e| e.to_string())?;
+    let mut pre_commands = Vec::new();
+    let Some((mut stream, addr)) = cancellable(async { connect(target).await.map_err(|e| e.to_string()) }, &mut commands, &mut pre_commands).await? else {
+        return Ok(());
+    };
     let mut bouncer = match &opts.bouncer {
         Some(b) => {
             let wait = opts.connect.timeout.max(Duration::from_secs(30));
-            let link = tokio::time::timeout(wait, BouncerLink::open(&mut stream, &opts, b, events))
-                .await
-                .map_err(|_| "the bouncer didn't answer".to_string())??;
+            let open = async {
+                tokio::time::timeout(wait, BouncerLink::open(&mut stream, &opts, b, events))
+                    .await
+                    .map_err(|_| "the bouncer didn't answer".to_string())?
+            };
+            let Some(link) = cancellable(open, &mut commands, &mut pre_commands).await? else {
+                let _ = tokio::time::timeout(SHUTDOWN_TIMEOUT, stream.shutdown()).await;
+                return Ok(());
+            };
             Some(link)
         }
         None => None,
     };
-    let _ = events.send(SessionEvent::Connected { addr });
+    if events.send(SessionEvent::Connected { addr }).is_err() {
+        return Ok(());
+    }
 
     let mut session = Session {
         telnet: Telnet::new(opts.telnet.clone()),
@@ -214,10 +250,28 @@ async fn run(
         encoding: opts.encoding,
         events,
     };
+    for command in pre_commands {
+        match command {
+            SessionCommand::Bouncer(request) if bouncer.is_some() => bouncer.as_mut().unwrap().request(request),
+            other => session.on_command(other),
+        }
+    }
+    // Drain any frames that arrived in the same TCP read as ServerMsg::Attached.
+    if let Some(link) = bouncer.as_mut()
+        && !link.frames.is_empty()
+        && !link.on_read(&[], &mut session)?
+    {
+        return Ok(());
+    }
+    write_pending(&mut stream, &mut session.telnet, bouncer.as_mut()).await?;
+
     let mut buf = vec![0u8; 16384];
     let mut partial_shown = false;
 
     loop {
+        if events.is_closed() {
+            break;
+        }
         let prompt_wait = match opts.prompt_timeout {
             Some(t) if !partial_shown && !session.lines.partial().is_empty() => Some(t),
             _ => None,
@@ -225,12 +279,18 @@ async fn run(
         tokio::select! {
             read = stream.read(&mut buf) => match read {
                 Ok(0) => {
+                    if !partial_shown
+                        && let Some(line) = session.lines.take_prompt()
+                    {
+                        session.emit(SessionEvent::Prompt(session.encoding.decode(&line.bytes)));
+                    }
                     if bouncer.is_some() {
                         return Err("the bouncer closed the connection".into());
                     }
                     break;
                 }
                 Ok(n) => {
+                    let prev_partial = session.lines.partial().to_vec();
                     match bouncer.as_mut() {
                         Some(link) => {
                             if !link.on_read(&buf[..n], &mut session)? {
@@ -239,7 +299,9 @@ async fn run(
                         }
                         None => session.on_data(&buf[..n]),
                     }
-                    partial_shown = false;
+                    if session.lines.partial() != prev_partial.as_slice() {
+                        partial_shown = false;
+                    }
                 }
                 Err(e) => return Err(e.to_string()),
             },
@@ -247,9 +309,9 @@ async fn run(
                 None | Some(SessionCommand::Disconnect) => {
                     if let Some(link) = bouncer.as_mut() {
                         link.send(&ClientMsg::Detach { session: link.session });
-                        let _ = write_pending(&mut stream, &mut session.telnet, bouncer.as_mut()).await;
+                        let _ = tokio::time::timeout(SHUTDOWN_TIMEOUT, write_pending(&mut stream, &mut session.telnet, bouncer.as_mut())).await;
                     }
-                    let _ = stream.shutdown().await;
+                    let _ = tokio::time::timeout(SHUTDOWN_TIMEOUT, stream.shutdown()).await;
                     break;
                 }
                 Some(SessionCommand::Bouncer(request)) if bouncer.is_some() => {
@@ -271,14 +333,21 @@ async fn run(
 async fn write_pending(stream: &mut Box<dyn Stream>, telnet: &mut Telnet, bouncer: Option<&mut BouncerLink>) -> Result<(), String> {
     let mut out = telnet.take_output();
     if let Some(link) = bouncer {
-        if !out.is_empty() {
-            link.out.extend(Frame::Data { session: link.session, bytes: out }.encode());
+        // Chunk Frame::Data so it never exceeds MAX_FRAME_LEN.
+        let max_chunk = crate::bouncer::MAX_FRAME_LEN - 5;
+        for chunk in out.chunks(max_chunk) {
+            link.out.extend(Frame::Data { session: link.session, bytes: chunk.to_vec() }.encode());
         }
         out = std::mem::take(&mut link.out);
     }
     if !out.is_empty() {
-        stream.write_all(&out).await.map_err(|e| e.to_string())?;
-        stream.flush().await.map_err(|e| e.to_string())?;
+        tokio::time::timeout(WRITE_TIMEOUT, async {
+            stream.write_all(&out).await?;
+            stream.flush().await
+        })
+        .await
+        .map_err(|_| "timed out writing to the server".to_string())?
+        .map_err(|e| e.to_string())?;
     }
     Ok(())
 }
@@ -317,6 +386,7 @@ impl BouncerLink {
         let client = format!("{}/{}", opts.telnet.client_name, opts.telnet.client_version);
         let auth = ClientMsg::Auth { password: bouncer.password.clone(), client };
         stream.write_all(&Frame::control(&auth).encode()).await.map_err(|e| e.to_string())?;
+        stream.flush().await.map_err(|e| e.to_string())?;
         match read_control(stream, &mut frames).await? {
             ServerMsg::AuthOk => {}
             ServerMsg::Error { message } => return Err(format!("bouncer: {message}")),
@@ -392,11 +462,20 @@ impl BouncerLink {
                 Frame::Backlog { session: id, ts_ms, bytes } if id == self.session => {
                     match self.backlog_at {
                         None => session.emit(SessionEvent::Notice(format!("Bouncer: what arrived while you were away, from {}:", time(ts_ms)))),
-                        Some(last) if ts_ms - last >= BACKLOG_GAP_MS => session.emit(SessionEvent::Notice(format!("Bouncer: {}", time(ts_ms)))),
+                        Some(last) if ts_ms.saturating_sub(last) >= BACKLOG_GAP_MS => session.emit(SessionEvent::Notice(format!("Bouncer: {}", time(ts_ms)))),
                         _ => {}
                     }
                     self.backlog_at = Some(ts_ms);
+                    // Historical backlog may contain telnet negotiations; never send replies back to the live world.
+                    let saved_out = session.telnet.take_output();
                     session.on_data(&bytes);
+                    let _ = session.telnet.take_output();
+                    if !saved_out.is_empty() {
+                        let max_chunk = crate::bouncer::MAX_FRAME_LEN - 5;
+                        for chunk in saved_out.chunks(max_chunk) {
+                            self.out.extend(Frame::Data { session: self.session, bytes: chunk.to_vec() }.encode());
+                        }
+                    }
                 }
                 Frame::Data { .. } | Frame::Backlog { .. } => {}
                 Frame::Control(json) => {

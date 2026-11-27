@@ -13,7 +13,7 @@ use crate::ConnectOptions;
 const FRAME_CONTROL: u8 = 0x01;
 const FRAME_DATA: u8 = 0x02;
 const FRAME_BACKLOG: u8 = 0x03;
-const MAX_FRAME_LEN: usize = 16 * 1024 * 1024;
+pub(crate) const MAX_FRAME_LEN: usize = 16 * 1024 * 1024;
 
 pub type SessionId = u32;
 
@@ -74,6 +74,7 @@ impl Frame {
             }
         };
         let len = 1 + header.len() + body.len();
+        assert!(len <= MAX_FRAME_LEN, "bouncer frame exceeds MAX_FRAME_LEN ({len})");
         let mut out = Vec::with_capacity(4 + len);
         out.extend_from_slice(&(len as u32).to_be_bytes());
         out.push(ty);
@@ -88,26 +89,36 @@ impl Frame {
 #[derive(Default)]
 pub(crate) struct Deframer {
     buf: Vec<u8>,
+    pos: usize,
 }
 
 impl Deframer {
     pub(crate) fn push(&mut self, data: &[u8]) {
+        if self.pos > 0 && self.pos == self.buf.len() {
+            self.buf.clear();
+            self.pos = 0;
+        }
         self.buf.extend_from_slice(data);
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.pos >= self.buf.len()
     }
 
     /// The next complete frame, if there is one.
     pub(crate) fn next(&mut self) -> Result<Option<Frame>, String> {
-        if self.buf.len() < 4 {
+        let avail = &self.buf[self.pos..];
+        if avail.len() < 4 {
             return Ok(None);
         }
-        let len = u32::from_be_bytes(self.buf[..4].try_into().unwrap()) as usize;
+        let len = u32::from_be_bytes(avail[..4].try_into().unwrap()) as usize;
         if len == 0 || len > MAX_FRAME_LEN {
             return Err(format!("bouncer sent a bad frame length ({len})"));
         }
-        if self.buf.len() < 4 + len {
+        if avail.len() < 4 + len {
             return Ok(None);
         }
-        let body: Vec<u8> = self.buf.drain(..4 + len).skip(4).collect();
+        let body = &avail[4..4 + len];
         let (ty, p) = (body[0], &body[1..]);
         let short = || "bouncer sent a truncated frame".to_string();
         let frame = match ty {
@@ -126,6 +137,17 @@ impl Deframer {
             }
             t => return Err(format!("bouncer sent an unknown frame type 0x{t:02x}")),
         };
+        self.pos += 4 + len;
+        if self.pos == self.buf.len() {
+            self.buf.clear();
+            self.pos = 0;
+            if self.buf.capacity() > 64 * 1024 {
+                self.buf.shrink_to(64 * 1024);
+            }
+        } else if self.pos >= 64 * 1024 {
+            self.buf.drain(..self.pos);
+            self.pos = 0;
+        }
         Ok(Some(frame))
     }
 }
@@ -288,9 +310,9 @@ pub fn login_script(login: &str, parse_delay: impl Fn(&str) -> Option<std::time:
                 }
                 let (time, cmd) = rest.trim_start().split_once(char::is_whitespace)?;
                 let wait = parse_delay(time)?;
-                let cmd = cmd.trim();
-                let cmd = cmd.strip_prefix('"').and_then(|c| c.strip_suffix('"')).unwrap_or(cmd).replace("\\\"", "\"");
-                (!cmd.starts_with('/') || cmd.starts_with("//")).then(|| (wait.as_millis() as u64, cmd.strip_prefix('/').map_or(cmd.clone(), str::to_string)))
+                let cmd = unquote_delay_cmd(cmd.trim());
+                let at = u64::try_from(wait.as_millis()).unwrap_or(u64::MAX);
+                (!cmd.starts_with('/') || cmd.starts_with("//")).then(|| (at, cmd.strip_prefix('/').map_or(cmd.clone(), str::to_string)))
             });
             match delayed {
                 Some(step) => timed.push(step),
@@ -311,6 +333,27 @@ pub fn login_script(login: &str, parse_delay: impl Fn(&str) -> Option<std::time:
         })
         .collect();
     (steps, local)
+}
+
+fn unquote_delay_cmd(cmd: &str) -> String {
+    if let Some(inner) = cmd.strip_prefix('"').and_then(|c| c.strip_suffix('"')) {
+        let mut escaped = false;
+        let mut has_inner_quote = false;
+        for c in inner.chars() {
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == '"' {
+                has_inner_quote = true;
+                break;
+            }
+        }
+        if !has_inner_quote {
+            return inner.replace("\\\"", "\"");
+        }
+    }
+    cmd.to_string()
 }
 
 #[cfg(test)]

@@ -13,6 +13,9 @@ pub struct LineSplitter {
     partial: Vec<u8>,
 }
 
+/// Maximum bytes accumulated for a single unterminated line before flushing a forced split.
+const MAX_LINE_BYTES: usize = 256 * 1024;
+
 impl LineSplitter {
     pub fn new() -> Self {
         Self::default()
@@ -25,7 +28,12 @@ impl LineSplitter {
             match b {
                 b'\n' => lines.push(Line { bytes: std::mem::take(&mut self.partial), prompt: false }),
                 b'\r' | 0 => {}
-                _ => self.partial.push(b),
+                _ => {
+                    self.partial.push(b);
+                    if self.partial.len() >= MAX_LINE_BYTES {
+                        lines.push(Line { bytes: std::mem::take(&mut self.partial), prompt: false });
+                    }
+                }
             }
         }
         lines
@@ -73,5 +81,15 @@ mod tests {
     fn empty_lines_are_kept() {
         let mut s = LineSplitter::new();
         assert_eq!(s.push(b"\r\n\r\n").len(), 2);
+    }
+
+    #[test]
+    fn overly_long_unterminated_line_is_flushed() {
+        let mut s = LineSplitter::new();
+        let data = vec![b'a'; MAX_LINE_BYTES + 10];
+        let lines = s.push(&data);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].bytes.len(), MAX_LINE_BYTES);
+        assert_eq!(s.partial().len(), 10);
     }
 }
