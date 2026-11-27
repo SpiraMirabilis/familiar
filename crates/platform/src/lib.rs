@@ -7,21 +7,18 @@ mod sound;
 pub use sound::SoundPlayer;
 
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 
 fn is_executable_file(path: &Path) -> bool {
     let Ok(meta) = std::fs::metadata(path) else { return false };
-    if !meta.is_file() {
-        return false;
-    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        meta.permissions().mode() & 0o111 != 0
+        meta.is_file() && meta.permissions().mode() & 0o111 != 0
     }
     #[cfg(not(unix))]
     {
-        true
+        meta.is_file()
     }
 }
 
@@ -50,15 +47,17 @@ fn quiet(command: &mut Command) -> &mut Command {
 /// Spawns a fire-and-forget child and reaps it on a background thread on Unix so it never
 /// accumulates as a zombie process.
 fn spawn_reaped(command: &mut Command) -> std::io::Result<()> {
-    let mut child: Child = quiet(command).spawn()?;
     #[cfg(unix)]
     {
+        let mut child = quiet(command).spawn()?;
         let _ = std::thread::Builder::new().name("familiar-reap".into()).spawn(move || {
             let _ = child.wait();
         });
     }
     #[cfg(not(unix))]
-    let _ = &mut child;
+    {
+        let _ = quiet(command).spawn()?;
+    }
     Ok(())
 }
 
